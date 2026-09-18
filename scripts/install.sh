@@ -135,7 +135,17 @@ RUNTIME=$(command -v docker || command -v podman || true)
 [ -n "$RUNTIME" ] || { echo "neither docker nor podman is installed"; exit 1; }
 [ -e /dev/net/tun ] || { echo "no /dev/net/tun — the kernel needs the tun module"; exit 1; }
 command -v systemctl >/dev/null || { echo "no systemd; see docker/compose-node.yml to run it yourself"; exit 1; }
-echo "  $(basename "$RUNTIME") $("$RUNTIME" version --format '{{.Server.Version}}' 2>/dev/null || echo '?'), /dev/net/tun present"
+
+# WHICH of the two it is, asked of the binary rather than read off its name.
+# The podman-docker package installs /usr/bin/docker as a shim over podman, and
+# that is what a Fedora box with "docker" on it usually has — so the filename
+# said docker, the unit was ordered after a docker.service that does not exist,
+# and the line below claimed a docker version that came out of podman.
+KIND=docker
+if "$RUNTIME" --version 2>/dev/null | grep -qi podman; then
+    KIND=podman
+fi
+echo "  $KIND $("$RUNTIME" version --format '{{.Server.Version}}' 2>/dev/null || echo '?'), /dev/net/tun present"
 
 # podman has no daemon to wait for, and ordering after a unit that does not
 # exist would hold the service back on every boot.

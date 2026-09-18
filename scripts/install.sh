@@ -93,6 +93,35 @@ case "$1" in
 esac
 SETUP=("$@")
 
+# This script's own options, typed after the verb.
+#
+# The loop above stops at the first non-option, so `install.sh init --force`
+# leaves FORCE at 0 and hands --force to shrooms, which has no such flag on any
+# verb. Both halves of that are silent: the config-present branch returns before
+# the setup container ever runs, so nothing rejects the flag, and the message
+# printed is "config already present (--force to replace)" — to somebody who has
+# just typed --force. Say where it goes instead of guessing what was meant.
+MISPLACED=()
+REST=()
+i=0
+while [ $i -lt ${#SETUP[@]} ]; do
+    case "${SETUP[$i]}" in
+        --force) MISPLACED+=("--force") ;;
+        # --image carries its value with it, or the suggestion below would put
+        # the reference where the verb belongs.
+        --image) MISPLACED+=("--image" "${SETUP[$((i + 1))]:-}"); i=$((i + 1)) ;;
+        *) REST+=("${SETUP[$i]}") ;;
+    esac
+    i=$((i + 1))
+done
+if [ ${#MISPLACED[@]} -gt 0 ]; then
+    echo "${MISPLACED[0]} is this script's option rather than one of shrooms', so it goes"
+    echo "before the verb. You want:"
+    echo
+    echo "  sudo $0 ${MISPLACED[*]} ${REST[*]}"
+    exit 1
+fi
+
 [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo $0 ...)"; exit 1; }
 
 echo "==> checking this machine"

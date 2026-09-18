@@ -60,7 +60,9 @@ whatever that version supports:
 
 This script's own options:
   --image REF          image to run (default: $IMAGE)
-  --force              regenerate the config if one exists
+  --force              regenerate the config if one exists. Not needed to turn
+                       a prepared machine into the first one: init mints into
+                       the config prepare wrote
 
 Examples:
   sudo $0 prepare --name fedora        # then: sudo shrooms join TOKEN
@@ -189,7 +191,24 @@ chmod 700 /etc/shrooms /var/lib/shrooms
 # file format.
 # ---------------------------------------------------------------------------
 
-if [ -f /etc/shrooms/config.toml ] && [ $FORCE -eq 0 ]; then
+# A config that `prepare` wrote, on a machine that turns out to be the first.
+#
+# `shrooms init` mints INTO such a config, keeping the name, port, mode and
+# relay setting already chosen, and refuses one that is already on a mesh. So
+# the thing to do here is run init and let it decide — not skip it because a
+# file exists, which is what left somebody with a prepared machine and no way
+# to create a mesh on it.
+#
+# Deliberately not deleting the config first. That was the obvious way to stop
+# init refusing, and it throws away exactly what init now preserves.
+PREPARED=0
+if [ -f /etc/shrooms/config.toml ] &&
+   grep -q 'PASTE-THE-NETWORK-KEY-HERE' /etc/shrooms/config.toml; then
+    PREPARED=1
+fi
+
+if [ -f /etc/shrooms/config.toml ] && [ $FORCE -eq 0 ] &&
+   ! { [ "${SETUP[0]}" = init ] && [ $PREPARED -eq 1 ]; }; then
     echo "==> config already present, leaving it alone (--force to replace)"
 else
     echo "==> generating config (${SETUP[0]})"

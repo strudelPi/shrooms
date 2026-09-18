@@ -72,8 +72,24 @@
 
 <ol class="steps">
 <li>
-<pre><code><span class="cmd">curl -fsSLO https://raw.githubusercontent.com/vpavlin/shrooms/master/scripts/install.sh</span>
-<span class="cmd">sudo bash install.sh prepare --name nas</span></code></pre>
+<pre><code><span class="cmd">curl -fsSLO https://raw.githubusercontent.com/vpavlin/shrooms/master/scripts/install.sh</span></code></pre>
+<p>
+    Then one of two verbs, not both. On your <strong>first</strong> machine,
+    the one that creates the mesh and keeps its admin key:
+</p>
+<pre><code><span class="cmd">sudo bash install.sh init --name laptop</span></code></pre>
+<p>
+    It prints a recovery key once and never again, so read
+    <a href="#first">The first mesh</a> before running it. On
+    <strong>every machine after that</strong>, which is admitted rather than
+    creating anything:
+</p>
+<pre><code><span class="cmd">sudo bash install.sh prepare --name nas</span></code></pre>
+<p>
+    <code>prepare</code> installs the same daemon with no mesh at all and
+    leaves it waiting, which is what <a href="#second">an invite</a> needs it
+    to be doing.
+</p>
 </li>
 <li>
 <p>If a firewall is running, open the port — on laptops too, not only servers:</p>
@@ -82,9 +98,11 @@
 </li>
 <li>
 <p>
-    You now have a daemon running with no mesh.
-    <a href="#first">Create one</a> if this is your first device, or
-    <a href="#second">redeem an invite</a> if it is not.
+    The daemon is running either way. After <code>init</code> you are on a mesh
+    of one and the next thing to do is
+    <a href="#second">admit a second device</a>. After <code>prepare</code> it
+    is waiting, and <a href="#second">redeeming an invite</a> brings it up
+    without a restart.
 </p>
 </li>
 </ol>
@@ -125,6 +143,7 @@
 
 <details>
 <summary>What you should see</summary>
+<p>After <code>prepare</code>:</p>
 <pre><code>==&gt; checking this machine
 ==&gt; fetching ghcr.io/vpavlin/shrooms:latest
 ==&gt; generating config (prepare)
@@ -137,6 +156,11 @@ On a machine already on one:
 
 and back here:
   sudo shrooms join &lt;TOKEN&gt; --name nas</code></pre>
+<p>
+    After <code>init</code> the same three lines, and then the mesh itself —
+    network key, admin key, and the recovery key printed once. That output is
+    in <a href="#first">The first mesh</a>.
+</p>
 </details>
 
 <details>
@@ -537,7 +561,9 @@ A firewall is running here. Peers reach this node on UDP 51820, so open it:
 <h2 id="first">The first mesh</h2>
 
 <p>
-    One command, on the machine that will hold the admin key. It mints the
+    One command, on the machine that will hold the admin key —
+    <code>shrooms init</code> where the binary is on the host, and
+    <code>bash install.sh init</code> where it is in a container. It mints the
     network key, a pair of admin keys, and this device's own credential, then
     asks twice for a passphrase to encrypt the admin key at rest:
 </p>
@@ -592,15 +618,32 @@ Store it away from this machine. A password manager, a Keycard, paper.</code></p
 <pre><code><span class="cmd">sudo systemctl enable --now shrooms</span></code></pre>
 
 <p>
-    The container installer takes the same verb —
-    <code>sudo bash install.sh init --name laptop</code> — and works the same
-    way: the setup container is given a stdin so the passphrase prompt has
-    somewhere to read from, and your own <code>~/.config/shrooms</code> is
-    mounted into it so the admin key survives the container it was minted in.
-    <code>--no-admin</code> creates a mesh with no authority at all, where
-    membership is the network key alone and nothing can be revoked short of
-    rotating it for everybody.
+    The container installer's <code>init</code> works the same way, and does the
+    starting for you: the setup container is given a stdin so the passphrase
+    prompt has somewhere to read from, and your own
+    <code>~/.config/shrooms</code> is mounted into it so the admin key survives
+    the container it was minted in. <code>--no-admin</code>, on either, creates
+    a mesh with no authority at all, where membership is the network key alone
+    and nothing can be revoked short of rotating it for everybody.
 </p>
+
+<div class="note">
+    <p>
+        <strong>If this machine already ran <code>install.sh prepare</code></strong>,
+        run the installer again with the other verb — there is nothing to undo
+        first:
+    </p>
+    <pre><code><span class="cmd">sudo bash install.sh init --name laptop</span></code></pre>
+    <p>
+        <code>init</code> mints into the config <code>prepare</code> wrote,
+        keeping the name, port, mode and relay setting already chosen there, and
+        anything you pass on the command line wins over them. The device
+        identity under <code>/var/lib/shrooms</code> is untouched either way, so
+        the machine keeps the keys it generated. A config that is already
+        <em>on</em> a mesh is refused instead, since minting over it would leave
+        this device holding a key no peer has heard of.
+    </p>
+</div>
 
 <h2 id="second">The second device</h2>
 

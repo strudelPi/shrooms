@@ -28,7 +28,9 @@
 #   /var/lib/shrooms/       device identity and announce sequence number
 #   /run/shrooms/           control socket
 #   /usr/local/bin/shrooms  wrapper so `shrooms status` works on the host
-#   a shrooms systemd unit, and a container of the same name
+#   /usr/local/lib/shrooms/ the host-side resolver registration, where a
+#                           container cannot reach systemd-resolved itself
+#   a shrooms systemd unit, a shrooms-resolved unit, and a container
 #
 # Re-running is safe: an existing config and identity are left alone unless
 # --force is given. Losing the identity means a new overlay address and looking
@@ -150,7 +152,7 @@ echo "  $KIND $("$RUNTIME" version --format '{{.Server.Version}}' 2>/dev/null ||
 # podman has no daemon to wait for, and ordering after a unit that does not
 # exist would hold the service back on every boot.
 AFTER="network-online.target"
-if [ "$(basename "$RUNTIME")" = docker ]; then
+if [ "$KIND" = docker ]; then
     AFTER="docker.service network-online.target"
 fi
 
@@ -243,18 +245,6 @@ else
     mkdir -p "$admin_dir"
     [ -n "${SUDO_USER:-}" ] && chown "$SUDO_USER" "$admin_dir"
 
-    "$RUNTIME" run --rm -i \
-        --hostname "$(hostname -s 2>/dev/null || hostname)" \
-        -v "/etc/shrooms:/etc/shrooms$Z" \
-        -v "/var/lib/shrooms:/var/lib/shrooms$Z" \
-        -v "$admin_dir:/root/.config/shrooms$Z" \
-        "$IMAGE" "${SETUP[@]}" \
-        --config /etc/shrooms/config.toml \
-        --state /var/lib/shrooms
-    [ -n "${SUDO_USER:-}" ] && chown -R "$SUDO_USER" "$admin_dir" || true
-    chmod 600 /etc/shrooms/config.toml
-fi
-
     # An admin key from a mesh minted here before.
     #
     # `init` refuses it, and is right to — the admin key set is fixed at mint,
@@ -289,6 +279,18 @@ If it is finished and you are starting over, the key is what ends it:
 EOF
         exit 1
     fi
+
+    "$RUNTIME" run --rm -i \
+        --hostname "$(hostname -s 2>/dev/null || hostname)" \
+        -v "/etc/shrooms:/etc/shrooms$Z" \
+        -v "/var/lib/shrooms:/var/lib/shrooms$Z" \
+        -v "$admin_dir:/root/.config/shrooms$Z" \
+        "$IMAGE" "${SETUP[@]}" \
+        --config /etc/shrooms/config.toml \
+        --state /var/lib/shrooms
+    [ -n "${SUDO_USER:-}" ] && chown -R "$SUDO_USER" "$admin_dir" || true
+    chmod 600 /etc/shrooms/config.toml
+fi
 
 # ---------------------------------------------------------------------------
 # Service. A unit wrapping `docker run` rather than compose: compose is a
@@ -346,6 +348,8 @@ EOF
 cat > /usr/local/bin/shrooms <<EOF
 #!/bin/sh
 RUNTIME=$RUNTIME
+IMAGE=$IMAGE
+Z=$Z
 EOF
 cat >> /usr/local/bin/shrooms <<'EOF'
 # Thin wrapper, with two paths — because one of them must not run inside the
@@ -393,8 +397,6 @@ fi
 if [ "$needs_admin_key" = yes ]; then
     # SUDO_USER, not $HOME: this is normally run under sudo, so $HOME is root's
     # while the admin key belongs to the person. Resolved here and mounted at
-IMAGE=$IMAGE
-Z=$Z
     # /root/.config/shrooms, because inside the container there is no SUDO_USER
     # and that is where the CLI's own default lands.
     admin_home=$(getent passwd "${SUDO_USER:-$(id -un)}" 2>/dev/null | cut -d: -f6)
@@ -449,8 +451,147 @@ exec "$RUNTIME" exec -i shrooms shrooms "$@"
 EOF
 chmod 755 /usr/local/bin/shrooms
 
+# ---------------------------------------------------------------------------
+# Names, which the daemon cannot arrange for itself here.
+#
+# The daemon serves DNS for the mesh and then tells the host's resolver to ask
+# it — by running `resolvectl`, which is not in the image and is not going to
+# be: it belongs to systemd, and the image has no systemd. So on a container
+# install that second half has always failed, the daemon logged a warning, and
+# `ping6 nas.mesh` said "Name or service not known" beside a status page showing
+# a perfectly healthy mesh.
+#
+# Done from the host instead, where resolvectl lives. The container runs with
+# host networking, so the tun interface and the address the resolver listens on
+# are both in this namespace already — the same two commands the daemon would
+# have run, run by something that can.
+#
+# NOT by mounting the host's D-Bus socket into the container, which is the other
+# way to make resolvectl work in there. That would hand a VPN daemon the whole
+# system bus to register a domain, and the line ADR-025 draws about what the
+# daemon can reach is worth more than the convenience.
+if command -v resolvectl >/dev/null 2>&1; then
+    echo "==> installing the resolver registration"
+    install -d /usr/local/lib/shrooms
+    cat > /usr/local/lib/shrooms/register-dns <<'EOF'
+#!/bin/sh
+# Point this host's systemd-resolved at the mesh resolver the daemon runs.
+#
+# Started by shrooms-resolved.service after shrooms.service, and stopped with
+# it. See the comment in scripts/install.sh for why this is not done inside the
+# container.
+set -eu
+
+# Beside the control socket: the unit mounts /run/shrooms into the container, so
+# it is the one directory both sides can see. The daemon reads this file to know
+# that registration happened after all, and reports names as working rather than
+# warning about something that has already been dealt with.
+MARKER=/run/shrooms/resolver-registered
+
+# By path, not by PATH: this runs from a unit, and a service manager's idea of
+# where to look for a binary is not the shell's.
+SHROOMS=${SHROOMS:-/usr/local/bin/shrooms}
+
+if [ "${1:-}" = "--revert" ]; then
+    # resolved forgets a link when its interface disappears, which is the usual
+    # case — but a daemon stopped while the tun survives would leave the host
+    # pointing at a resolver that has gone. The interface is read back from the
+    # marker because by now there may be no container left to ask.
+    [ -f "$MARKER" ] || exit 0
+    iface=$(cat "$MARKER")
+    rm -f "$MARKER"
+    case "$iface" in ''|*[!A-Za-z0-9._-]*) exit 0 ;; esac
+    resolvectl revert "$iface" >/dev/null 2>&1 || true
+    exit 0
+fi
+
+command -v resolvectl >/dev/null 2>&1 || exit 0
+
+# Polled rather than run once: systemd considers the service started as soon as
+# `docker run` is forked, which is long before the container has pulled up a
+# tun or the daemon knows its own address. Sixty seconds, then give up quietly —
+# a machine whose daemon never came up has a bigger problem than names, and
+# failing here would take the unit down with it.
+json=
+i=0
+while [ $i -lt 30 ]; do
+    if json=$("$SHROOMS" status --json 2>/dev/null) && [ -n "$json" ]; then
+        break
+    fi
+    json=
+    i=$((i + 1))
+    sleep 2
+done
+if [ -z "$json" ]; then
+    echo "the daemon did not answer in 60s; mesh names will not resolve" >&2
+    exit 0
+fi
+
+# The dns object holds only scalars, so the first closing brace ends it and
+# nothing here needs a JSON parser that the host may not have.
+dns=${json#*\"dns\":\{}
+dns=${dns%%\}*}
+case "$dns" in
+    *'"serving":true'*) ;;
+    *) echo "the daemon is not serving names; nothing to register" >&2; exit 0 ;;
+esac
+
+addr=$(printf '%s' "$dns" | sed -n 's/.*"address":"\([^"]*\)".*/\1/p')
+suffix=$(printf '%s' "$dns" | sed -n 's/.*"suffix":"\([^"]*\)".*/\1/p')
+iface=$(printf '%s' "$json" | grep -o '"interface":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+# Validated before being handed to resolvectl, because this runs as root and
+# these three values came out of a container. Rejecting is the right failure:
+# names not working is recoverable, and root running an arbitrary string is not.
+case "$iface"  in ''|*[!A-Za-z0-9._-]*)  echo "refusing odd interface: $iface" >&2; exit 0 ;; esac
+case "$addr"   in ''|*[!0-9A-Fa-f:.]*)   echo "refusing odd address: $addr"   >&2; exit 0 ;; esac
+case "$suffix" in ''|*[!A-Za-z0-9.-]*)   suffix=internal ;; esac
+
+# Both suffixes, because the resolver answers both: the configured one and the
+# legacy `.mesh`, kept answerable so a change of default does not break every
+# ssh config on the same day. Registering one leaves the other dead.
+set -- "~$suffix"
+[ "$suffix" = mesh ] || set -- "$@" "~mesh"
+
+resolvectl dns "$iface" "$addr"
+resolvectl domain "$iface" "$@"
+
+mkdir -p /run/shrooms
+printf '%s\n' "$iface" > "$MARKER"
+echo "mesh names resolve here: $iface -> $addr, domains $*"
+EOF
+    chmod 755 /usr/local/lib/shrooms/register-dns
+
+    # A separate unit rather than ExecStartPost on shrooms.service: this polls
+    # for up to a minute, and ExecStartPost holds the main unit in `activating`
+    # until it returns. PartOf means a restart of the daemon re-runs it, which
+    # matters because the tun is new each time and resolved forgets the old one.
+    cat > /etc/systemd/system/shrooms-resolved.service <<'EOF'
+[Unit]
+Description=shrooms mesh names, in systemd-resolved
+Documentation=https://github.com/vpavlin/shrooms
+After=shrooms.service
+PartOf=shrooms.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/shrooms/register-dns
+ExecStop=/usr/local/lib/shrooms/register-dns --revert
+
+[Install]
+WantedBy=shrooms.service
+EOF
+else
+    echo "==> no resolvectl here, so mesh names will need /etc/hosts"
+    echo "    sudo shrooms hosts | sudo tee -a /etc/hosts"
+fi
+
 systemctl daemon-reload
 systemctl enable shrooms >/dev/null 2>&1
+if [ -f /etc/systemd/system/shrooms-resolved.service ]; then
+    systemctl enable shrooms-resolved >/dev/null 2>&1
+fi
 
 # A prepared machine used not to be started, on the grounds that a daemon with
 # no key would only fail. That stopped being true: a daemon without a mesh now

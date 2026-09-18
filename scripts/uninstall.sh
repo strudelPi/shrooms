@@ -219,7 +219,10 @@ fi
 # and podman is present, and a machine can have been through the rename.
 UNITS=""
 if [ $HAVE_SYSTEMD -eq 1 ]; then
-    for unit in shrooms.service logos-vpn.service; do
+    # shrooms-resolved first, so it is stopped while the daemon and its
+    # interface are still there: stopping it is what reverts this host's
+    # resolver, and afterwards there is nothing left to revert it from.
+    for unit in shrooms-resolved.service shrooms.service logos-vpn.service; do
         # `systemctl cat`, not list-unit-files: the latter exits 0 with "0 unit
         # files listed" on some versions, which is not an answer.
         if systemctl cat "$unit" >/dev/null 2>&1; then
@@ -433,7 +436,7 @@ zap "$DESTDIR$BINDIR/logos-vpn"
 zap "$DESTDIR$LIBDIR"
 zap "$DESTDIR$OPTDIR"
 
-for u in shrooms.service logos-vpn.service; do
+for u in shrooms.service shrooms-resolved.service logos-vpn.service; do
     zap "$DESTDIR/etc/systemd/system/$u"
     zap "$DESTDIR/usr/lib/systemd/system/$u"
 done

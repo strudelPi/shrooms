@@ -1267,6 +1267,22 @@ func restartable() bool {
 		os.Getpid() == 1
 }
 
+// ResolverMarker is the file a host-side registrar drops to say it has pointed
+// this machine's resolver at us.
+//
+// Beside the control socket, because that directory is the one thing already
+// shared between a containerised daemon and the host that installed it — the
+// unit mounts /run/shrooms and nothing else of the host's is reachable from
+// inside. It holds the interface it registered, which is what makes reverting
+// possible after the container is gone.
+const ResolverMarker = "resolver-registered"
+
+// hostRegisteredResolver reports whether that marker is present.
+func hostRegisteredResolver(sock string) bool {
+	_, err := os.Stat(filepath.Join(filepath.Dir(sock), ResolverMarker))
+	return err == nil
+}
+
 // runtimeBits is what the control socket needs that is not a mesh: the log
 // tail it serves, the channel it ends the process through, and where name
 // resolution got to. One struct rather than three more parameters, because
@@ -1314,6 +1330,17 @@ func serveControl(ctx context.Context, log *slog.Logger, path string, instances 
 		if rt != nil {
 			if d := rt.dns.Load(); d != nil {
 				out.DNS = *d
+				// Registered by the host on our behalf.
+				//
+				// A container install cannot register at all — no resolvectl in
+				// the image — so scripts/install.sh installs a unit that does it
+				// from the host and drops this marker where the daemon can see
+				// it. Without reading it, `status` would report names as broken
+				// on a machine where they work, which is worse than the warning
+				// it replaced: a false alarm teaches people to ignore the line.
+				if !out.DNS.Registered && hostRegisteredResolver(path) {
+					out.DNS.Registered = true
+				}
 			}
 		}
 		if v4self, ok := m.LookupV4(self); ok {

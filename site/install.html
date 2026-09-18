@@ -113,7 +113,7 @@
         It installs a container, writes a systemd unit and hands a network
         interface to a daemon — which is what you want, and is
         indistinguishable from what you would not want until you have read it.
-        It is 343 lines with nothing clever in it:
+        It is 803 lines with nothing clever in it:
         <a href="https://github.com/vpavlin/shrooms/blob/master/scripts/install.sh">scripts/install.sh</a>.
     </p>
 </div>
@@ -195,7 +195,9 @@ and back here:
 <p>
     It touches <code>/etc/shrooms/</code> (config), <code>/var/lib/shrooms/</code>
     (device identity), <code>/run/shrooms/</code> (control socket), a
-    <code>shrooms</code> systemd unit and container, and
+    <code>shrooms</code> systemd unit and container, a
+    <code>shrooms-resolved</code> unit that registers mesh names with the host's
+    resolver, and
     <code>/usr/local/bin/shrooms</code> — a wrapper so <code>shrooms status</code>
     works on the host without anyone remembering the docker incantation. It runs
     <code>docker exec -i</code>, with a stdin, so the commands that prompt work
@@ -807,11 +809,45 @@ NAME         OVERLAY IP                              ANNOUNCE  TUNNEL  ENDPOINT 
 </p>
 
 <p>
-    Names need nothing set up: the daemon runs a resolver for the mesh and
-    registers it with the system on startup, scoped to its own interface, so
-    <code>.mesh</code> is answered there and every other name keeps going
-    wherever it went before.
+    Names need nothing set up <em>on a host install</em>: the daemon runs a
+    resolver for the mesh and registers it with the system on startup, scoped to
+    its own interface, so mesh names are answered there and every other name
+    keeps going wherever it went before.
 </p>
+
+<div class="note">
+    <p>
+        <strong>The container install cannot do that half itself</strong>, so
+        the installer arranges it. Registering means running
+        <code>resolvectl</code>, which belongs to systemd and is not in the
+        image — the daemon serves names correctly and nothing on the host ever
+        asks it. So <code>install.sh</code> writes a second unit,
+        <code>shrooms-resolved.service</code>, which waits for the daemon to
+        have an address and then runs those two commands from the host. It is
+        tied to the daemon with <code>PartOf=</code>, so a restart re-registers
+        — the tun is new each time and resolved forgets the old one — and
+        stopping it reverts the host's resolver.
+    </p>
+    <p>
+        Mounting the host's D-Bus socket into the container would also work, and
+        is deliberately not what happens: that hands a VPN daemon the whole
+        system bus in order to register one domain.
+    </p>
+    <p>
+        If the host has no <code>resolvectl</code>, the installer says so and
+        names resolve through <code>/etc/hosts</code> instead. Note that
+        <code>shrooms hosts --write</code> through the wrapper writes the
+        <em>container's</em> copy, which nothing reads and the next restart
+        destroys — so print it and write it yourself:
+    </p>
+    <pre><code><span class="cmd">sudo shrooms hosts | sudo tee -a /etc/hosts</span></code></pre>
+    <p>
+        Either way <code>shrooms status</code> is where you find out: it says
+        <code>names !! not resolving here</code>, with the two commands and this
+        device's own address, whenever the resolver is serving and nothing has
+        registered it.
+    </p>
+</div>
 
 <pre><code><span class="cmd">shrooms paths</span>
 reflexive addresses (as peers observe us):
@@ -861,9 +897,60 @@ reflexive addresses (as peers observe us):
 </tr>
 
 <tr>
-    <td><code>.mesh</code> names do not resolve</td>
-    <td>the resolver is running but the host is not asking it — serving DNS and being asked are different things</td>
-    <td><code>resolvectl status shrooms0</code> should list the overlay address under DNS Servers and <code>~mesh</code> as the domain. The daemon log says why not. <code>sudo shrooms hosts --write</code> is the fallback for hosts without systemd-resolved</td>
+    <td>mesh names do not resolve — <code>ping6 nas.mesh</code> says
+    <code>Name or service not known</code> while <code>status</code> shows the
+    peer up</td>
+    <td>the resolver is running but the host is not asking it — serving DNS and
+    being asked are different things. The daemon cannot do the second half from
+    inside a container (no <code>resolvectl</code> in the image), which is what
+    <code>shrooms-resolved.service</code> is for; if that unit is missing,
+    failed, or the host has no systemd-resolved, nothing registered</td>
+    <td><code>systemctl status shrooms-resolved</code> first — it logs which
+    interface and address it registered, or why it gave up.
+    <code>shrooms status</code> prints the two commands with this device's
+    address filled in, to run on the host rather than through the wrapper. Then
+    <code>resolvectl status shrooms0</code> should list the overlay address
+    under DNS Servers and the suffix as a routing domain.
+    <code>sudo shrooms hosts | sudo tee -a /etc/hosts</code> is the fallback
+    where there is no resolved at all; <code>--write</code> is for a host
+    install, since through the wrapper it writes the container's own file</td>
+</tr>
+
+<tr>
+    <td><code>shrooms join</code> times out, and the daemon log repeats
+    <code>connectToRelayPeers: won't attempt new connections - node is
+    offline</code> beside <code>Failed to query DNS … address=one.one.one.one
+    error="(1) Operation not permitted"</code></td>
+    <td>the delivery library does not use the system resolver. Its
+    <code>dnsAddrsNameServers</code> defaults to <code>1.1.1.1</code> and
+    <code>1.0.0.1</code>, which is how it resolves the fleet's
+    <code>/dns4/</code> entry nodes and how it probes whether it is online at
+    all. Anything that blocks direct DNS to those addresses — a VPN with
+    DNS-leak protection, a network that permits only its own resolver, a local
+    service holding <code>1.1.1.1</code> — fails the probe, and the node then
+    declares itself offline and dials nothing. The mesh never gets as far as
+    being unreachable</td>
+    <td><code>dig +short @1.1.1.1 one.one.one.one</code>. If that fails while
+    <code>host one.one.one.one</code> works, this is it — the two go through
+    different paths and only the direct one matters here. Disconnecting the VPN
+    restores it; if it does not, look for a "block when disconnected" setting,
+    which keeps the firewall rules on while the tunnel is off. Then restart
+    shrooms and read the log with <code>--since</code>: <code>journalctl … |
+    head</code> shows the <em>oldest</em> entries, and diagnosing last week's
+    failure as though it were this minute's is the easiest mistake here</td>
+</tr>
+
+<tr>
+    <td><code>shrooms status</code> says <code>the shrooms container is not
+    running</code>, and <code>systemctl status shrooms</code> says it plainly
+    is</td>
+    <td>a container install on podman, run as yourself. The daemon's container
+    belongs to root, and rootless podman is a <em>separate store</em> that
+    cannot see root's containers at all — including through the
+    <code>docker</code> shim that <code>podman-docker</code> installs</td>
+    <td><code>sudo shrooms ...</code>. On a real docker host the equivalent is
+    membership of the <code>docker</code> group, which is what lets the check
+    see the container without root</td>
 </tr>
 
 <tr>
@@ -902,43 +989,6 @@ reflexive addresses (as peers observe us):
     like a failure. <strong>The rendezvous plane can die while everything looks
     fine</strong> — tunnels keep carrying traffic, the roster stops changing, and
     peers age out one at a time until the status page is a list of healthy
-<tr>
-    <td><code>shrooms join</code> times out, and the daemon log repeats
-    <code>connectToRelayPeers: won't attempt new connections - node is
-    offline</code> beside <code>Failed to query DNS … address=one.one.one.one
-    error="(1) Operation not permitted"</code></td>
-    <td>the delivery library does not use the system resolver. Its
-    <code>dnsAddrsNameServers</code> defaults to <code>1.1.1.1</code> and
-    <code>1.0.0.1</code>, which is how it resolves the fleet's
-    <code>/dns4/</code> entry nodes and how it probes whether it is online at
-    all. Anything that blocks direct DNS to those addresses — a VPN with
-    DNS-leak protection, a network that permits only its own resolver, a local
-    service holding <code>1.1.1.1</code> — fails the probe, and the node then
-    declares itself offline and dials nothing. The mesh never gets as far as
-    being unreachable</td>
-    <td><code>dig +short @1.1.1.1 one.one.one.one</code>. If that fails while
-    <code>host one.one.one.one</code> works, this is it — the two go through
-    different paths and only the direct one matters here. Disconnecting the VPN
-    restores it; if it does not, look for a "block when disconnected" setting,
-    which keeps the firewall rules on while the tunnel is off. Then restart
-    shrooms and read the log with <code>--since</code>: <code>journalctl … |
-    head</code> shows the <em>oldest</em> entries, and diagnosing last week's
-    failure as though it were this minute's is the easiest mistake here</td>
-</tr>
-
-<tr>
-    <td><code>shrooms status</code> says <code>the shrooms container is not
-    running</code>, and <code>systemctl status shrooms</code> says it plainly
-    is</td>
-    <td>a container install on podman, run as yourself. The daemon's container
-    belongs to root, and rootless podman is a <em>separate store</em> that
-    cannot see root's containers at all — including through the
-    <code>docker</code> shim that <code>podman-docker</code> installs</td>
-    <td><code>sudo shrooms ...</code>. On a real docker host the equivalent is
-    membership of the <code>docker</code> group, which is what lets the check
-    see the container without root</td>
-</tr>
-
     devices marked offline. Both the daemon and the app watch for it now, and
     recovery is a restart in both places. And <strong>renewal has never been
     watched happen on a live mesh</strong>: the sweep is built and unit-tested,

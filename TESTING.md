@@ -285,6 +285,19 @@ that config must survive it: set `--relay` during `prepare`, leave it off during
 `init`, and check it is still on afterwards. On a host that is already *in* a
 mesh the same command must refuse rather than mint a second one.
 
+**And names, which nothing inside the container can arrange.** `ping6 b.mesh`
+from a, with no manual step in between: `shrooms-resolved.service` should be
+active and its log should name the interface and address it registered.
+`sudo systemctl restart shrooms` and ping again — the tun is new and resolved
+forgets the old one, so this is where a registration that only happens at
+install time is caught. `sudo systemctl stop shrooms` should revert it, leaving
+no link settings behind in `resolvectl status`.
+
+**Watch for:** `shrooms status` claiming `names !! not resolving here` when they
+do resolve, or staying silent when they do not. It reads that from a marker the
+host-side unit drops in `/run/shrooms`, which is the only place the two sides
+can both see.
+
 ---
 
 ## Tearing down

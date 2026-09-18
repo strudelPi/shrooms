@@ -43,9 +43,9 @@ usage() {
 usage: $0 [--image REF] [--force] (init | prepare) [flags...]
 
   init                 create a new mesh
-  prepare              install and wait; join later with an invite
-  prepare              write the config with the key left blank, for setting a
-                       machine up without the key passing through anyone else
+  prepare              install and wait: the config is written with no key,
+                       so the machine is set up without the key passing
+                       through anybody, and joins later with an invite
 
 Everything after init/join is passed straight to shrooms, so its flags are
 whatever that version supports:

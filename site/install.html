@@ -542,6 +542,15 @@ A firewall is running here. Peers reach this node on UDP 51820, so open it:
     asks twice for a passphrase to encrypt the admin key at rest:
 </p>
 
+<p>
+    It is also what to run on a machine already set up with
+    <code>install.sh prepare</code>: that writes a config with no key, and
+    <code>init</code> mints into it, keeping the name, port, mode and relay
+    setting it already has. A config that is already on a mesh is refused
+    instead, since minting over it would leave the device holding a key no peer
+    has heard of.
+</p>
+
 <pre><code><span class="cmd">sudo shrooms init --name laptop</span>
 <span class="p">Network key: GUPDIZSVIQRCBBC6APQFYDSDKTWK6Q5SYZY6ZLMVECQDQX3GIOYQ</span>
   copy this to your other machines — it is the only secret

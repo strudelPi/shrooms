@@ -51,9 +51,36 @@ func cmdInit(args []string) error {
 		return addMeshWith(*cfgPath, *stateDir, *adminDir, *label, *relay, *noAdmin, *sock, *card, *reader)
 	}
 
+	// A config that `prepare` wrote is adopted rather than refused.
+	//
+	// `prepare` installs a device with its keys, its name and no mesh, so the
+	// obvious next step on the machine that turns out to be first is `init` —
+	// which said "/etc/shrooms/config.toml already exists — remove it". Somebody
+	// reported exactly that (#13) after following install.sh and then the site,
+	// and deleting the config by hand is the worst available answer: it throws
+	// away the port, the mode and the relay setting that were just chosen.
+	//
+	// Only a PREPARED config, which has the key placeholder and no meshes. One
+	// that is already on a mesh still refuses, because minting over it would
+	// leave the device holding a key its peers have never heard of.
+	var base *state.Config
 	if _, err := os.Stat(*cfgPath); err == nil {
-		return fmt.Errorf("%s already exists — remove it, use a different --config, "+
-			"or add a second mesh with --mesh <name>", *cfgPath)
+		prep, err := preparedConfig(*cfgPath)
+		if err != nil {
+			return err
+		}
+		base = prep
+		// What prepare wrote stays, unless this command was told otherwise.
+		if !flagGiven(fs, "name") {
+			*name = prep.Name
+		}
+		if !flagGiven(fs, "port") {
+			*port = uint(prep.ListenPort)
+		}
+		if !flagGiven(fs, "relay") {
+			*relay = prep.Relay
+		}
+		fmt.Printf("Minting a mesh into the prepared config at %s.\n\n", *cfgPath)
 	}
 
 	// Same for a first mesh: nothing is written until the card answers.
@@ -67,7 +94,7 @@ func cmdInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := setup(*cfgPath, *stateDir, nk, *name, uint16(*port), *advertise, *relay, true); err != nil {
+	if err := setupFrom(base, *cfgPath, *stateDir, nk, *name, uint16(*port), *advertise, *relay, true); err != nil {
 		return err
 	}
 	if *noAdmin {
@@ -271,6 +298,46 @@ func setup(cfgPath, stateDir string, nk identity.NetworkKey, name string, port u
 	return setupMesh(cfgPath, stateDir, nk, name, "", port, advertise, relay, fresh)
 }
 
+// setupFrom is setup starting from an existing config rather than the defaults,
+// so a mesh minted into a prepared config keeps everything else that config
+// says — the mode, the interface, published services, a pinned delivery port.
+// Rebuilding from DefaultConfig would silently drop all of it.
+func setupFrom(base *state.Config, cfgPath, stateDir string, nk identity.NetworkKey,
+	name string, port uint16, advertise string, relay, fresh bool) error {
+	return setupMeshFrom(base, cfgPath, stateDir, nk, name, "", port, advertise, relay, fresh, nil)
+}
+
+// preparedConfig returns the config at path when it is one `prepare` wrote:
+// the key placeholder and no meshes. Anything else is a config already on a
+// mesh, and the error says what it used to say.
+func preparedConfig(path string) (*state.Config, error) {
+	inUse := fmt.Errorf("%s already exists — remove it, use a different --config, "+
+		"or add a second mesh with --mesh <name>", path)
+	cfg, err := state.LoadConfigUnvalidated(path)
+	if err != nil {
+		return nil, inUse
+	}
+	if len(cfg.MeshSet) > 0 {
+		return nil, inUse
+	}
+	if cfg.NetworkKey != "" && cfg.NetworkKey != state.KeyPlaceholder {
+		return nil, inUse
+	}
+	return &cfg, nil
+}
+
+// flagGiven reports whether a flag was set on the command line, as opposed to
+// holding its default. Same reading as invite.go's portGiven.
+func flagGiven(fs *flag.FlagSet, name string) bool {
+	given := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			given = true
+		}
+	})
+	return given
+}
+
 // setupMesh is setup with a local name for the mesh (ADR-015). An empty label
 // writes the single-mesh form, which is what init and `join <KEY>` want.
 func setupMesh(cfgPath, stateDir string, nk identity.NetworkKey, name, label string, port uint16, advertise string, relay, fresh bool) error {
@@ -285,7 +352,16 @@ func setupMesh(cfgPath, stateDir string, nk identity.NetworkKey, name, label str
 // to look: `join` writes the config, so there was nowhere to put the answer
 // before it was needed.
 func setupMeshWith(cfgPath, stateDir string, nk identity.NetworkKey, name, label string, port uint16, advertise string, relay, fresh bool, entry []string) error {
+	return setupMeshFrom(nil, cfgPath, stateDir, nk, name, label, port, advertise, relay, fresh, entry)
+}
+
+// setupMeshFrom is setupMeshWith over a given base config; nil means the
+// defaults, which is every caller but `init` adopting a prepared config.
+func setupMeshFrom(base *state.Config, cfgPath, stateDir string, nk identity.NetworkKey, name, label string, port uint16, advertise string, relay, fresh bool, entry []string) error {
 	cfg := state.DefaultConfig()
+	if base != nil {
+		cfg = *base
+	}
 	cfg.NetworkKey = nk.String()
 	cfg.ListenPort = port
 	if len(entry) > 0 {
@@ -527,6 +603,20 @@ func readSecret(prompt string) (string, error) {
 		fmt.Fprintln(os.Stderr)
 		return string(b), err
 	}
+	// The prompt is printed here too, and it used to be printed only above.
+	//
+	// Off a terminal — a pipe, a setup container, `bash install.sh` — this
+	// waited in silence, so it read as a command that had hung, and anything
+	// typed was echoed by the shell rather than hidden by us. #13, on 2026-08-24:
+	// "there is no prompt for the passphrase, the command just seems to hang",
+	// and "the input is visible in the terminal".
+	//
+	// It goes to stderr, so a script capturing stdout is unaffected, and it
+	// carries the warning that what follows will be visible: we cannot turn the
+	// echo off on something that is not a terminal, and somebody about to type a
+	// passphrase should be told that before they type it, not after.
+	fmt.Fprint(os.Stderr, prompt)
+	fmt.Fprint(os.Stderr, "(not a terminal — what you type will be visible) ")
 	line, err := stdin().ReadString('\n')
 	if err != nil && line == "" {
 		return "", err

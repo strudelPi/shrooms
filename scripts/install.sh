@@ -245,6 +245,41 @@ else
     chmod 600 /etc/shrooms/config.toml
 fi
 
+    # An admin key from a mesh minted here before.
+    #
+    # `init` refuses it, and is right to — the admin key set is fixed at mint,
+    # so a second one is a DIFFERENT mesh. But it refuses in the container's
+    # words: "/root/.config/shrooms/admin.json already exists", a path that does
+    # not exist on this machine, when what it means is the directory below,
+    # mounted there. Said here, where the host path is known.
+    #
+    # It is the ordinary way to meet this: `uninstall.sh --purge` keeps the admin
+    # key on purpose, so re-installing after one lands exactly here.
+    admin_check=yes
+    for a in "${SETUP[@]}"; do
+        case "$a" in
+            # --mesh mints admin-<label>.json, --admin-dir looks elsewhere, and
+            # --no-admin mints nothing at all.
+            --no-admin|--mesh|--mesh=*|--admin-dir|--admin-dir=*) admin_check=no ;;
+        esac
+    done
+    if [ "${SETUP[0]}" = init ] && [ "$admin_check" = yes ] && [ -e "$admin_dir/admin.json" ]; then
+        cat <<EOF
+
+$admin_dir/admin.json is the authority of a mesh minted here before.
+Minting another would create a DIFFERENT mesh — the mesh id is the hash of its
+admin keys — so init stops rather than quietly replacing it.
+
+If that mesh is still alive, keep the file. This machine rejoins it with an
+invite from a device that is still a member, not by minting again:
+  sudo bash $0 prepare --name $(hostname -s 2>/dev/null || hostname)
+
+If it is finished and you are starting over, the key is what ends it:
+  rm $admin_dir/admin.json
+EOF
+        exit 1
+    fi
+
 # ---------------------------------------------------------------------------
 # Service. A unit wrapping `docker run` rather than compose: compose is a
 # separate install, and on podman hosts podman-compose is the least reliable

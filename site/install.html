@@ -197,10 +197,23 @@ and back here:
     (device identity), <code>/run/shrooms/</code> (control socket), a
     <code>shrooms</code> systemd unit and container, and
     <code>/usr/local/bin/shrooms</code> — a wrapper so <code>shrooms status</code>
-    works on the host without anyone remembering the docker incantation. The
-    wrapper runs <code>docker exec -i</code>, so the commands that prompt —
-    <code>invite</code>, <code>admin init</code>, <code>key rotate</code> — work
-    through it.
+    works on the host without anyone remembering the docker incantation. It runs
+    <code>docker exec -i</code>, with a stdin, so the commands that prompt work
+    through it. Under <code>sudo</code> on a podman host: the daemon's container
+    is root's, and a rootless podman cannot see it.
+</p>
+
+<p>
+    With one exception, which is the whole reason the wrapper is more than one
+    line. The commands that touch the mesh authority —
+    <code>init</code>, <code>invite</code>, <code>admin</code>,
+    <code>keycard</code> — read and write <code>~/.config/shrooms</code>, and the
+    daemon container has no such directory: its unit mounts the config, the state
+    and the socket, and nothing of yours. So those run in a <em>sibling</em>
+    container with your admin directory mounted, rather than inside the daemon's.
+    The daemon is deliberately left without it: it verifies credentials and never
+    signs one, and a process that cannot read a key cannot leak it
+    (<a href="adr/025-control-from-a-desktop-app.html">ADR-025</a>).
 </p>
 
 <p>
@@ -889,6 +902,43 @@ reflexive addresses (as peers observe us):
     like a failure. <strong>The rendezvous plane can die while everything looks
     fine</strong> — tunnels keep carrying traffic, the roster stops changing, and
     peers age out one at a time until the status page is a list of healthy
+<tr>
+    <td><code>shrooms join</code> times out, and the daemon log repeats
+    <code>connectToRelayPeers: won't attempt new connections - node is
+    offline</code> beside <code>Failed to query DNS … address=one.one.one.one
+    error="(1) Operation not permitted"</code></td>
+    <td>the delivery library does not use the system resolver. Its
+    <code>dnsAddrsNameServers</code> defaults to <code>1.1.1.1</code> and
+    <code>1.0.0.1</code>, which is how it resolves the fleet's
+    <code>/dns4/</code> entry nodes and how it probes whether it is online at
+    all. Anything that blocks direct DNS to those addresses — a VPN with
+    DNS-leak protection, a network that permits only its own resolver, a local
+    service holding <code>1.1.1.1</code> — fails the probe, and the node then
+    declares itself offline and dials nothing. The mesh never gets as far as
+    being unreachable</td>
+    <td><code>dig +short @1.1.1.1 one.one.one.one</code>. If that fails while
+    <code>host one.one.one.one</code> works, this is it — the two go through
+    different paths and only the direct one matters here. Disconnecting the VPN
+    restores it; if it does not, look for a "block when disconnected" setting,
+    which keeps the firewall rules on while the tunnel is off. Then restart
+    shrooms and read the log with <code>--since</code>: <code>journalctl … |
+    head</code> shows the <em>oldest</em> entries, and diagnosing last week's
+    failure as though it were this minute's is the easiest mistake here</td>
+</tr>
+
+<tr>
+    <td><code>shrooms status</code> says <code>the shrooms container is not
+    running</code>, and <code>systemctl status shrooms</code> says it plainly
+    is</td>
+    <td>a container install on podman, run as yourself. The daemon's container
+    belongs to root, and rootless podman is a <em>separate store</em> that
+    cannot see root's containers at all — including through the
+    <code>docker</code> shim that <code>podman-docker</code> installs</td>
+    <td><code>sudo shrooms ...</code>. On a real docker host the equivalent is
+    membership of the <code>docker</code> group, which is what lets the check
+    see the container without root</td>
+</tr>
+
     devices marked offline. Both the daemon and the app watch for it now, and
     recovery is a restart in both places. And <strong>renewal has never been
     watched happen on a live mesh</strong>: the sweep is built and unit-tested,

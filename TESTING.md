@@ -237,7 +237,7 @@ error — the daemon must not take a port from an application that binds it.
 The install path, run as a stranger would.
 
 **Do:** on a clean host, `install.sh prepare`, then redeem an invite from a node
-already on the mesh — `sudo shrooms join --invite <TOKEN>`.
+already on the mesh — `sudo shrooms join <TOKEN>`.
 **Pass:** it appears in every other node's `status` within seconds, is reachable
 by name, and survives a reboot.
 
@@ -254,6 +254,36 @@ running twice.
 ```console
 $ sudo ./scripts/uninstall.sh --purge --yes
 ```
+
+---
+
+## T12 — the first mesh, minted in a container
+
+The other half of T11, and the one nothing else covers: the machine that
+*creates* the mesh when the binary is in an image rather than on the host.
+
+**Do:** on a clean host, `sudo bash install.sh init --name a`. Write down the
+recovery key. Then `sudo systemctl restart shrooms`, `sudo shrooms invite`, and
+redeem the token on a second host prepared with `install.sh prepare --name b`.
+
+**Pass:** `admin.json` is in the invoking user's `~/.config/shrooms` on the
+**host** — not root's, and not inside the container — and is still there after
+the restart. `invite` finds it, b enrols, and each appears in the other's
+`status`.
+
+**Watch for:** the admin key written into the container. That has no symptom at
+all until the first invite, by which time the `--rm` container holding it has
+been replaced and the mesh can never admit another device. The wrapper runs
+`init`, `invite`, `admin` and `keycard` in a sibling container for exactly this
+reason, so `shrooms invite` — through the wrapper, not `docker exec` by hand —
+is what this test has to use.
+
+**Then:** on that same prepared-but-not-yet-joined machine, check the other
+order too. `sudo bash install.sh init --name a` — no `--force` — must mint a
+mesh into the config `prepare` wrote, and the name, port and relay setting from
+that config must survive it: set `--relay` during `prepare`, leave it off during
+`init`, and check it is still on afterwards. On a host that is already *in* a
+mesh the same command must refuse rather than mint a second one.
 
 ---
 

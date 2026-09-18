@@ -1299,13 +1299,24 @@ no checkout, no liblogosdelivery — everything is in the image. Re-running is
 safe: the device identity is never replaced by accident, because losing it means
 a new overlay address and looking like a different device to every peer.
 
+The wrapper runs most commands inside the daemon container, and the ones that
+touch the mesh authority — `init`, `invite`, `admin`, `keycard` — in a sibling
+container with your `~/.config/shrooms` mounted. The daemon's own container is
+never given that directory: it verifies credentials and never signs one, so it
+has no use for the admin key and cannot leak what it cannot read.
+
 Afterwards:
 
 ```console
 $ systemctl status shrooms      # is it up
-$ shrooms status                # who is on the mesh
+$ sudo shrooms status           # who is on the mesh
 $ journalctl -u shrooms -f      # follow the log
 ```
+
+The `sudo` is not decoration on a podman host. The daemon's container is root's,
+and rootless podman is a separate store that cannot see it — so as yourself the
+wrapper reports "the shrooms container is not running" about a container that
+is. On docker, the `docker` group does the same job.
 
 Read the script before running it as root, as you should with anything fetched
 this way.

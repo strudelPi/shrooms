@@ -299,14 +299,14 @@ func cmdDaemon(args []string) error {
 		// Serving DNS and being asked are different things; the daemon used to
 		// do only the first and report success. Scoped to the suffix, so the
 		// system's own resolvers keep everything else.
-		if err := dnssrv.Register(ctx, cfg.Interface, self, cfg.HostsSuffix); err != nil {
+		if err := dnssrv.Register(ctx, cfg.Interface, self, cfg.HostsSuffix, dnssrv.LegacySuffix); err != nil {
 			dns.Err = err.Error()
 			rt.dns.Store(&dns)
 			log.Warn("could not register the resolver with the host; "+
 				"mesh names will not resolve system-wide",
 				"err", err,
-				"hint", fmt.Sprintf("resolvectl dns %s %s && resolvectl domain %s '~%s'",
-					cfg.Interface, self, cfg.Interface, cfg.HostsSuffix))
+				"hint", dnssrv.RegisterCommand("", cfg.Interface, self.String(),
+					cfg.HostsSuffix, dnssrv.LegacySuffix))
 		} else {
 			log.Info("resolver registered with the host",
 				"interface", cfg.Interface, "domain", "~"+cfg.HostsSuffix)

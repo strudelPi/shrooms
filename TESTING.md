@@ -286,12 +286,17 @@ that config must survive it: set `--relay` during `prepare`, leave it off during
 mesh the same command must refuse rather than mint a second one.
 
 **And names, which nothing inside the container can arrange.** `ping6 b.mesh`
-from a, with no manual step in between: `shrooms-resolved.service` should be
-active and its log should name the interface and address it registered.
-`sudo systemctl restart shrooms` and ping again — the tun is new and resolved
-forgets the old one, so this is where a registration that only happens at
-install time is caught. `sudo systemctl stop shrooms` should revert it, leaving
-no link settings behind in `resolvectl status`.
+from a, with no manual step in between — and on **b**, the machine that was
+`prepare`d and then joined, which is the case that broke: the join re-execs the
+daemon in place, so no systemd event marks the moment names became answerable.
+`shrooms-resolved.service` should register within ~30s of the join without
+anyone restarting anything, and its log should name the interface and address.
+
+Then `sudo systemctl restart shrooms` and ping again — the tun is new and
+resolved forgets the old one. `sudo systemctl stop shrooms` should revert,
+leaving no link settings behind in `resolvectl status`. And while b sits
+prepared but unjoined, its journal should stay quiet: no `podman exec` every
+thirty seconds to be told there is still no mesh.
 
 **Watch for:** `shrooms status` claiming `names !! not resolving here` when they
 do resolve, or staying silent when they do not. It reads that from a marker the

@@ -113,7 +113,7 @@
         It installs a container, writes a systemd unit and hands a network
         interface to a daemon — which is what you want, and is
         indistinguishable from what you would not want until you have read it.
-        It is 838 lines with nothing clever in it:
+        It is 887 lines with nothing clever in it:
         <a href="https://github.com/vpavlin/shrooms/blob/master/scripts/install.sh">scripts/install.sh</a>.
     </p>
 </div>
@@ -822,11 +822,21 @@ NAME         OVERLAY IP                              ANNOUNCE  TUNNEL  ENDPOINT 
         <code>resolvectl</code>, which belongs to systemd and is not in the
         image — the daemon serves names correctly and nothing on the host ever
         asks it. So <code>install.sh</code> writes a second unit,
-        <code>shrooms-resolved.service</code>, which waits for the daemon to
-        have an address and then runs those two commands from the host. It is
-        tied to the daemon with <code>PartOf=</code>, so a restart re-registers
-        — the tun is new each time and resolved forgets the old one — and
-        stopping it reverts the host's resolver.
+        <code>shrooms-resolved.service</code>, which runs those two commands
+        from the host on the daemon's behalf.
+    </p>
+    <p>
+        It <em>watches</em> rather than firing once, and that is not
+        belt-and-braces. Redeeming an invite produces no systemd event at all:
+        <code>shrooms join</code> hands the token to the waiting daemon, which
+        re-executes itself into the mesh — same pid, no restart — so the moment
+        names first become answerable is invisible to the service manager. On a
+        machine set up with <code>prepare</code>, which is every device after
+        the first, nothing would ever register them. So it reconciles every
+        thirty seconds: registered already and resolved still holding the link,
+        do nothing; no mesh in the config yet, do nothing and do not even wake
+        the container; otherwise register. That also covers a later restart in
+        place and resolved forgetting a link. Stopping it reverts.
     </p>
     <p>
         Mounting the host's D-Bus socket into the container would also work, and

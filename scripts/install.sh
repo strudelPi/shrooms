@@ -548,9 +548,25 @@ if [ -z "$json" ]; then
     exit 0
 fi
 
+# Whitespace first: `shrooms status --json` pretty-prints, so the document says
+# `"dns": {` and `"serving": true` — with spaces. Matching the compact spelling
+# found nothing, and since ${var#pattern} returns the string unchanged when the
+# pattern is absent, that failure came out of this script as "the daemon is not
+# serving names" on a machine whose names were fine. Two hours of looking at the
+# wrong end, so: normalise, then parse.
+#
+# Safe to strip blindly because the three values read below cannot contain
+# whitespace, and each is validated before it is used.
+compact=$(printf '%s' "$json" | tr -d ' \t\n')
+
+case "$compact" in
+    *'"dns":{'*) ;;
+    *) echo "no dns block in \`shrooms status --json\`; cannot register" >&2; exit 0 ;;
+esac
+
 # The dns object holds only scalars, so the first closing brace ends it and
 # nothing here needs a JSON parser that the host may not have.
-dns=${json#*\"dns\":\{}
+dns=${compact#*\"dns\":\{}
 dns=${dns%%\}*}
 case "$dns" in
     *'"serving":true'*) ;;
@@ -563,7 +579,7 @@ esac
 # greedy sed would have taken the last.
 addr=${dns#*\"address\":\"};   addr=${addr%%\"*}
 suffix=${dns#*\"suffix\":\"};  suffix=${suffix%%\"*}
-iface=${json#*\"interface\":\"}; iface=${iface%%\"*}
+iface=${compact#*\"interface\":\"}; iface=${iface%%\"*}
 
 # Validated before being handed to resolvectl, because this runs as root and
 # these three values came out of a container. Rejecting is the right failure:

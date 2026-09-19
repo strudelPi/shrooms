@@ -43,6 +43,12 @@ set -euo pipefail
 IMAGE=${IMAGE:-ghcr.io/vpavlin/shrooms:latest}
 FORCE=0
 
+# What `prepare` writes where the network key goes, and therefore how both this
+# script and the registrar it installs tell a prepared machine from a member.
+# state.KeyPlaceholder in the Go, pinned to this file by a test in
+# internal/state so the two cannot drift apart unnoticed.
+PLACEHOLDER=PASTE-THE-NETWORK-KEY-HERE
+
 usage() {
     cat <<EOF
 usage: $0 [--image REF] [--force] (init | prepare) [flags...]
@@ -213,14 +219,8 @@ chmod 700 /etc/shrooms /var/lib/shrooms
 #
 # Deliberately not deleting the config first. That was the obvious way to stop
 # init refusing, and it throws away exactly what init now preserves.
-PREPARED=0
-if [ -f /etc/shrooms/config.toml ] &&
-   grep -q 'PASTE-THE-NETWORK-KEY-HERE' /etc/shrooms/config.toml; then
-    PREPARED=1
-fi
-
 if [ -f /etc/shrooms/config.toml ] && [ $FORCE -eq 0 ] &&
-   ! { [ "${SETUP[0]}" = init ] && [ $PREPARED -eq 1 ]; }; then
+   ! { [ "${SETUP[0]}" = init ] && grep -q "$PLACEHOLDER" /etc/shrooms/config.toml; }; then
     echo "==> config already present, leaving it alone (--force to replace)"
 else
     echo "==> generating config (${SETUP[0]})"
@@ -494,8 +494,13 @@ if command -v resolvectl >/dev/null 2>&1; then
     RESOLVED=1
     echo "==> installing the resolver registration"
     install -d /usr/local/lib/shrooms
-    cat > /usr/local/lib/shrooms/register-dns <<'EOF'
+    # Unquoted heredoc for the one value that has to come from here, then a
+    # quoted body so the rest survives verbatim. Same trick as the wrapper.
+    cat > /usr/local/lib/shrooms/register-dns <<EOF
 #!/bin/sh
+PLACEHOLDER=$PLACEHOLDER
+EOF
+    cat >> /usr/local/lib/shrooms/register-dns <<'EOF'
 # Point this host's systemd-resolved at the mesh resolver the daemon runs.
 #
 # Run by shrooms-resolved.service, which watches rather than fires once. See the
@@ -514,25 +519,45 @@ SHROOMS=${SHROOMS:-/usr/local/bin/shrooms}
 CONFIG=${CONFIG:-/etc/shrooms/config.toml}
 INTERVAL=${INTERVAL:-30}
 
+# What root is willing to hand to resolvectl, defined once. Both readers of the
+# marker and the value freshly parsed out of the container go through it.
+valid_iface() {
+    case "$1" in
+        ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+}
+
+# The interface this host was registered for, left in $iface. `read`, not
+# `cat`: this is the most-executed line in the script, and a builtin costs no
+# fork where a subshell and /bin/cat cost two.
+marker_iface() {
+    [ -f "$MARKER" ] || return 1
+    read -r iface < "$MARKER" || return 1
+    valid_iface "$iface"
+}
+
 revert() {
     # resolved forgets a link when its interface disappears, which is the usual
     # case — but a daemon stopped while the tun survives would leave the host
     # pointing at a resolver that has gone. The interface is read back from the
     # marker because by now there may be no container left to ask.
-    [ -f "$MARKER" ] || return 0
-    iface=$(cat "$MARKER")
-    rm -f "$MARKER"
-    case "$iface" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
-    resolvectl revert "$iface" >/dev/null 2>&1 || true
+    if marker_iface; then
+        rm -f "$MARKER"
+        resolvectl revert "$iface" >/dev/null 2>&1 || true
+    else
+        rm -f "$MARKER"
+    fi
 }
 
-# Already done, and still true. Cheap on purpose: no container is touched, so
-# the watch loop costs a D-Bus call while everything is working.
+# Already done, and still true. Cheap on purpose: no container is touched, so a
+# tick of the watch loop costs one fork and one D-Bus call while everything is
+# working — `case` rather than a pipe into grep, for the same reason.
 registered() {
-    [ -f "$MARKER" ] || return 1
-    iface=$(cat "$MARKER")
-    case "$iface" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
-    resolvectl status "$iface" 2>/dev/null | grep -q "DNS Servers"
+    marker_iface || return 1
+    case $(resolvectl status "$iface" 2>/dev/null) in
+        *"DNS Servers"*) ;;
+        *) return 1 ;;
+    esac
 }
 
 # Is there a mesh to register names for? Read off the config rather than asked
@@ -541,7 +566,7 @@ registered() {
 # be told the same thing.
 has_mesh() {
     [ -f "$CONFIG" ] || return 1
-    ! grep -q 'PASTE-THE-NETWORK-KEY-HERE' "$CONFIG"
+    ! grep -q "$PLACEHOLDER" "$CONFIG"
 }
 
 # One message per reason, not one per attempt. In watch mode the same complaint
@@ -554,30 +579,30 @@ say() {
 }
 
 register() {
-    json=$("$SHROOMS" status --json 2>/dev/null) || json=
+    # Compacted as it arrives, so one spelling of the document is in scope
+    # rather than two. `shrooms status --json` pretty-prints, so it says
+    # `"dns": {` and `"serving": true` — with spaces. Matching the compact
+    # spelling found nothing, and since ${var#pattern} returns the string
+    # unchanged when the pattern is absent, that failure came out of this
+    # script as "the daemon is not serving names" on a machine whose names were
+    # fine.
+    #
+    # Safe to strip blindly because the three values read below cannot contain
+    # whitespace, and each is validated before it is used.
+    json=$("$SHROOMS" status --json 2>/dev/null | tr -d ' \t\n') || json=
     if [ -z "$json" ]; then
         say "the daemon is not answering yet"
         return 1
     fi
 
-    # Whitespace first: `shrooms status --json` pretty-prints, so the document
-    # says `"dns": {` and `"serving": true` — with spaces. Matching the compact
-    # spelling found nothing, and since ${var#pattern} returns the string
-    # unchanged when the pattern is absent, that failure came out of this script
-    # as "the daemon is not serving names" on a machine whose names were fine.
-    #
-    # Safe to strip blindly because the three values read below cannot contain
-    # whitespace, and each is validated before it is used.
-    compact=$(printf '%s' "$json" | tr -d ' \t\n')
-
-    case "$compact" in
+    case "$json" in
         *'"dns":{'*) ;;
         *) say "no dns block in \`shrooms status --json\`; cannot register"; return 1 ;;
     esac
 
     # The dns object holds only scalars, so the first closing brace ends it and
     # nothing here needs a JSON parser that the host may not have.
-    dns=${compact#*\"dns\":\{}
+    dns=${json#*\"dns\":\{}
     dns=${dns%%\}*}
     case "$dns" in
         *'"serving":true'*) ;;
@@ -585,17 +610,23 @@ register() {
     esac
 
     # Parameter expansion throughout, and no forked sed or grep: `#` strips the
-    # shortest leading match, so the interface read out of the whole payload is
-    # the FIRST one — the primary mesh's, which is the one the daemon registers.
+    # shortest leading match, so each of these takes the FIRST occurrence.
+    #
+    # The interface is read out of the meshes array rather than the whole
+    # document, so it is the primary mesh's — the one the daemon registers —
+    # because it is first in that array, not because of where Go happens to
+    # declare the field. Taking it from the document meant any earlier key
+    # named "interface" would have pointed root's resolvectl at another link.
     addr=${dns#*\"address\":\"};   addr=${addr%%\"*}
     suffix=${dns#*\"suffix\":\"};  suffix=${suffix%%\"*}
-    iface=${compact#*\"interface\":\"}; iface=${iface%%\"*}
+    meshes=${json#*\"meshes\":\[}
+    iface=${meshes#*\"interface\":\"}; iface=${iface%%\"*}
 
     # Validated before being handed to resolvectl, because this runs as root and
     # these three values came out of a container. Rejecting is the right
     # failure: names not working is recoverable, and root running an arbitrary
     # string is not.
-    case "$iface"  in ''|*[!A-Za-z0-9._-]*)  say "refusing odd interface: $iface"; return 1 ;; esac
+    valid_iface "$iface" || { say "refusing odd interface: $iface"; return 1; }
     case "$addr"   in ''|*[!0-9A-Fa-f:.]*)   say "refusing odd address: $addr";    return 1 ;; esac
     case "$suffix" in ''|*[!A-Za-z0-9.-]*)   suffix=internal ;; esac
 
@@ -622,35 +653,68 @@ register() {
 # mesh and no names, which is where this started. Reconciling on a loop covers
 # that, a later in-place restart, and resolved forgetting a link, none of which
 # announce themselves.
-reconcile() {
-    registered && return 0
-    has_mesh || { say "no mesh in $CONFIG yet; nothing to register"; return 0; }
-    register || true
+# How long until the next look. INTERVAL while things are moving, doubling up
+# to a ceiling while they are not — because "cannot register" is a state a
+# machine can sit in permanently. A daemon that failed to bind port 53 serves
+# no names for its whole life, and retrying that every thirty seconds is two
+# `podman exec`s a minute, forever, to be told the same thing. Reset on
+# success, so a machine that recovers is prompt again.
+wait_for=$INTERVAL
+MAX_WAIT=${MAX_WAIT:-600}
+
+backoff() {
+    wait_for=$((wait_for * 2))
+    [ $wait_for -gt $MAX_WAIT ] && wait_for=$MAX_WAIT
+    return 0
 }
+
+reconcile() {
+    if registered; then
+        wait_for=$INTERVAL
+        return 0
+    fi
+    # No mesh yet is not a failure and does not back off: the config gate costs
+    # one grep and never wakes the container, and the moment an invite lands we
+    # want to be looking.
+    has_mesh || {
+        say "no mesh in $CONFIG yet; nothing to register"
+        wait_for=$INTERVAL
+        return 0
+    }
+    if register; then
+        wait_for=$INTERVAL
+    else
+        backoff
+    fi
+}
+
+command -v resolvectl >/dev/null 2>&1 || exit 0
 
 case "${1:-}" in
     --revert)
         revert
         ;;
     --watch)
-        command -v resolvectl >/dev/null 2>&1 || exit 0
         while :; do
             reconcile
-            sleep "$INTERVAL"
+            sleep "$wait_for"
         done
         ;;
     *)
-        command -v resolvectl >/dev/null 2>&1 || exit 0
+        # One pass, for running it by hand. The unit uses --watch; this is what
+        # you want when you are standing in front of a machine asking why names
+        # are not resolving, and it is what the comments above describe.
         reconcile
         ;;
 esac
 EOF
     chmod 755 /usr/local/lib/shrooms/register-dns
 
-    # A separate unit rather than ExecStartPost on shrooms.service: this polls
-    # for up to a minute, and ExecStartPost holds the main unit in `activating`
-    # until it returns. PartOf means a restart of the daemon re-runs it, which
-    # matters because the tun is new each time and resolved forgets the old one.
+    # A separate unit rather than ExecStartPost on shrooms.service: this never
+    # returns, and ExecStartPost would hold the main unit in `activating` for as
+    # long as it ran. PartOf means a restart of the daemon restarts it too,
+    # which matters because the tun is new each time and resolved forgets the
+    # old one.
     cat > /etc/systemd/system/shrooms-resolved.service <<'EOF'
 [Unit]
 Description=shrooms mesh names, in systemd-resolved
@@ -665,7 +729,9 @@ PartOf=shrooms.service
 Type=simple
 ExecStart=/usr/local/lib/shrooms/register-dns --watch
 ExecStop=/usr/local/lib/shrooms/register-dns --revert
-Restart=on-failure
+# always, not on-failure: this is a supervisor now, and the loop only ends by
+# being killed. If it dies, something took it down and names stop working.
+Restart=always
 RestartSec=10
 
 [Install]

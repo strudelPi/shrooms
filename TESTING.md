@@ -316,8 +316,16 @@ $ sudo ./scripts/uninstall.sh --purge    # identity and config too
 so there is no separate preview to run. It undoes all three install
 paths — `make install`, `install.sh` and the portable installer — plus what a
 running daemon leaves behind: the managed `/etc/hosts` block and any stranded
-`shrooms*` interface. `make uninstall` and `make purge` are the same two things
-from a checkout.
+`shrooms*` or `logos*` interface — both bases, because a mesh after the first
+gets a derived name that is never written to the config. `make uninstall` and
+`make purge` are the same two things from a checkout.
+
+**Most of that is testable without a machine to wreck.** `make test-uninstall`
+runs the script against a staged tree — `DESTDIR` for every path, `HOSTS_FILE`
+pointed at a copy, no root — and checks all three install paths are removed, the
+hosts block is stripped without disturbing anything else, and the mesh authority
+survives `--purge`. CI runs it. What it cannot cover is the interface sweep,
+which needs a real tun: that is what the run below is for.
 
 `--purge` discards the device identity and this device's credential, so the
 machine returns as a **new** device with a different overlay address and needs a

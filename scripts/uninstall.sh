@@ -73,6 +73,12 @@ DESTDIR=${DESTDIR:-}
 # the block-stripping edit is the one step here that can break name resolution
 # for the whole machine, so it has to be exercisable against a copy.
 HOSTS_FILE=${HOSTS_FILE:-/etc/hosts}
+# Set when the caller named a file rather than taking the default. A staged run
+# leaves this machine alone, but a hosts file the caller pointed at is not this
+# machine's — and the block-stripping edit is the one step here that most wants
+# exercising without root.
+HOSTS_OWN=0
+[ "$HOSTS_FILE" != /etc/hosts ] && HOSTS_OWN=1
 
 usage() {
     cat <<EOF
@@ -152,18 +158,34 @@ run() { "$@" >/dev/null 2>&1 || true; }
 # created. The last word on every deletion, because a name is a guess and this
 # is a fact about the device.
 #
-# `ip -d link show` names the kind. A userspace WireGuard TUN — which is what
-# the daemon makes — is `link/none` with `tun type: tun`; a kernel WireGuard
-# link is `link/none` with `wireguard`. Everything that carries a machine's real
-# networking is `link/ether` or `link/loopback`: physical NICs, wifi, bridges,
-# bonds, vlans, veths, dummies. None of those can pass this, so no name
-# collision and no mistyped config can cost a machine its network.
+# The kind is read from `ip -d -j`, as a field, not guessed at from the text.
 #
-# Both halves are required. `link/none` alone would admit other virtual link
-# types, and a kind match alone would trust a string in the middle of a line.
+# A userspace WireGuard TUN — which is what the daemon makes — is `link/none`
+# with an info_kind of `tun`; a kernel WireGuard link is `link/none` with
+# `wireguard`. Everything that carries a machine's real networking is
+# `link/ether` or `link/loopback`: physical NICs, wifi, bridges, bonds, vlans,
+# veths, dummies. None of those can pass this, so no name collision and no
+# mistyped config can cost a machine its network.
 #
-# An `ip` too old or too cut-down to understand -d answers nothing, which reads
-# as "not a tunnel" and deletes nothing. That is the right way for this to fail.
+# It used to match `tun type:` against the plain output, and nothing has ever
+# printed that: iproute2 writes the kind and then `type tun` as separate words,
+# with no colon anywhere (checked against 6.1, 6.16 and 6.17 by a reviewer, and
+# it is the same in 6.19). So the only branch that could ever fire was the
+# kernel-WireGuard one, which is not what this project creates — the sweep
+# deleted nothing, ever, and said "matches the naming scheme but is not a
+# tunnel" about a real shrooms interface.
+#
+# Matched as a substring of the compact JSON rather than by position, because
+# the shape of that document is not ours to depend on.
+#
+# Both halves are still required. `link/none` alone would admit other virtual
+# link types, and a kind match alone would trust a string in the middle of a
+# line.
+#
+# An `ip` too old or too cut-down to understand -d -j answers nothing, which
+# reads as "not a tunnel" and deletes nothing. That is the right way for this to
+# fail, and it is why the plain-text form is not kept as a fallback: a wrong
+# guess here deletes a network interface.
 is_tunnel() {
     local d
     d=$(ip -d -o link show dev "$1" 2>/dev/null || true)
@@ -171,8 +193,11 @@ is_tunnel() {
         *link/none*) ;;
         *) return 1 ;;
     esac
-    case "$d" in
-        *"tun type:"*|*wireguard*) return 0 ;;
+
+    local j
+    j=$(ip -d -j link show dev "$1" 2>/dev/null | tr -d ' \t\n' || true)
+    case "$j" in
+        *'"info_kind":"tun"'*|*'"info_kind":"wireguard"'*) return 0 ;;
     esac
     return 1
 }
@@ -272,8 +297,12 @@ if [ $STAGED -eq 0 ] && [ -n "$RUNTIME" ]; then
         fi
     done
     if [ $PURGE -eq 1 ]; then
+        # Anchored at a slash OR at the start, so a locally built
+        # `docker build -t shrooms .` is found as well as the published
+        # ghcr.io/vpavlin/shrooms. Still anchored at both ends of the name:
+        # `my-shrooms-backup:latest` is somebody else's image.
         IMAGES=$("$RUNTIME" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
-                 | grep -E '/(shrooms|logos-vpn):' || true)
+                 | grep -E '(^|/)(shrooms|logos-vpn):' || true)
     fi
 fi
 
@@ -457,7 +486,7 @@ fi
 # removed them.
 # ---------------------------------------------------------------------------
 
-if [ $STAGED -eq 0 ]; then
+if [ $STAGED -eq 0 ] || [ $HOSTS_OWN -eq 1 ]; then
     step "removing what the daemon left behind"
 
     # /etc/hosts. Stale mesh names that still resolve are worse than names that
@@ -498,6 +527,12 @@ if [ $STAGED -eq 0 ]; then
         fi
     fi
 
+fi
+
+# Interfaces are this machine's whatever the caller staged, so this half never
+# runs with DESTDIR set — a staged run gets this far only to edit a hosts file
+# the caller named itself.
+if [ $STAGED -eq 0 ]; then
     # Interfaces. The daemon takes its own TUN down when it exits, and it was
     # stopped above, so anything still here outlived a crash or a kill -9.
     # Matched by the naming scheme (shrooms0, shrooms01, ... — one per mesh)
@@ -516,7 +551,12 @@ if [ $STAGED -eq 0 ]; then
         for iface in $live; do
             named=0
             case "$iface" in
-                shrooms[0-9]*) named=1 ;;
+                # Both bases, because a mesh after the first gets a derived
+                # name — base+index, see freeIface — which is never written to
+                # the config. On a machine installed before the rename that
+                # means logos01, logos02, which appear nowhere else and would
+                # otherwise be left behind.
+                shrooms[0-9]*|logos[0-9]*) named=1 ;;
             esac
             for c in $CONF_IFACES; do
                 if [ "$iface" = "$c" ]; then

@@ -25,7 +25,7 @@ GO ?= go
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 .PHONY: all deps deps-basecamp check-lib shrooms wakuspike s3topics m0demo \
-        s1 s3 probe relay relay-image m0 m1 m2 m2-edm m3 m3-remote dist image push-image deps-release install uninstall purge build-all vet-cgo vet-pcsc test test-unit e2e e2e-two-nodes e2e-keycard e2e-keycard-mesh android-deps android-core aar apk fdroid basecamp-check basecamp-lgx site-adrs fmt clean
+        s1 s3 probe relay relay-image m0 m1 m2 m2-edm m3 m3-remote dist image push-image deps-release install uninstall test-uninstall purge build-all vet-cgo vet-pcsc test test-unit e2e e2e-two-nodes e2e-keycard e2e-keycard-mesh android-deps android-core aar apk fdroid basecamp-check basecamp-lgx site-adrs fmt clean
 
 all: shrooms
 
@@ -159,6 +159,13 @@ install: check-lib
 ## installed in order to remove it.
 uninstall:
 	PREFIX=$(PREFIX) LIBDIR=$(LIBDIR) DESTDIR=$(DESTDIR) ./scripts/uninstall.sh
+
+## Exercise the uninstaller against a staged tree. No root, nothing of this
+## machine touched: DESTDIR stages every path and HOSTS_FILE points at a copy.
+## Run by CI, because the one bug found in that script by review was the kind
+## only a real run finds.
+test-uninstall:
+	./scripts/test-uninstall.sh
 
 ## As if never installed: also removes /etc/shrooms, /var/lib/shrooms, the
 ## pre-rename paths and the container image. This is the one to use before

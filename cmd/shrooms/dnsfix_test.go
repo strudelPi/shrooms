@@ -22,7 +22,7 @@ func TestDNSRegisterFix(t *testing.T) {
 		Address: "fd8d:4efd:5d78:d561:21ff:ba85:1620:2836",
 	}
 
-	got := dnsRegisterFix(base)
+	got := dnsRegisterFix(base, false)
 	for _, want := range []string{
 		"resolvectl dns shrooms0 fd8d:4efd:5d78:d561:21ff:ba85:1620:2836",
 		// One `domain` call naming every suffix the resolver answers. A config
@@ -40,7 +40,7 @@ func TestDNSRegisterFix(t *testing.T) {
 	// The container case, which is every install done by scripts/install.sh.
 	container := base
 	container.DNS.Err = `no resolvectl: exec: "resolvectl": executable file not found in $PATH`
-	if got := dnsRegisterFix(container); !strings.Contains(got, "on the host") {
+	if got := dnsRegisterFix(base, true); !strings.Contains(got, "on the host") {
 		t.Errorf("a container install has to be told where to run it:\n%s", got)
 	}
 
@@ -52,7 +52,7 @@ func TestDNSRegisterFix(t *testing.T) {
 	// was never asked to serve.
 	sparse := statusPayload{Overlay: "fd00::1"}
 	sparse.DNS = dnsStatus{Serving: true}
-	if got := dnsRegisterFix(sparse); !strings.Contains(got, "shrooms0 fd00::1") ||
+	if got := dnsRegisterFix(sparse, false); !strings.Contains(got, "shrooms0 fd00::1") ||
 		!strings.Contains(got, "'~"+dnssrv.DefaultSuffix+"'") {
 		t.Errorf("defaults did not fill in:\n%s", got)
 	}
@@ -61,7 +61,7 @@ func TestDNSRegisterFix(t *testing.T) {
 	// because the resolver answers both and only the registered ones reach it.
 	current := base
 	current.DNS.Suffix = dnssrv.DefaultSuffix
-	got = dnsRegisterFix(current)
+	got = dnsRegisterFix(current, false)
 	for _, want := range []string{"'~" + dnssrv.DefaultSuffix + "'", "'~" + dnssrv.LegacySuffix + "'"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("both suffixes should be registered, %q is missing:\n%s", want, got)

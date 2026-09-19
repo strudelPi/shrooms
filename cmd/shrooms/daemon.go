@@ -278,11 +278,16 @@ func cmdDaemon(args []string) error {
 		dns.Err = err.Error()
 		rt.dns.Store(&dns)
 	} else {
+		// The old suffix stays answerable, so a change of default does not
+		// break every ssh config and bookmark on the same day (ADR-032).
+		//
+		// One list, read by both the server and the registration below. They
+		// built it separately until now, which is exactly how the server came
+		// to answer two suffixes while only one of them was ever registered.
+		also := []string{dnssrv.LegacySuffix}
 		resolver := &dnssrv.Server{
 			Suffix: cfg.HostsSuffix,
-			// The old suffix stays answerable, so a change of default does not
-			// break every ssh config and bookmark on the same day (ADR-032).
-			Also:   []string{dnssrv.LegacySuffix},
+			Also:   also,
 			Lookup: resolveAcross(named(instances), knownLabels(cfg)),
 			Alias:  aliasAcross(named(instances)),
 			Log:    func(msg string, args ...any) { log.Debug(msg, args...) },
@@ -299,14 +304,14 @@ func cmdDaemon(args []string) error {
 		// Serving DNS and being asked are different things; the daemon used to
 		// do only the first and report success. Scoped to the suffix, so the
 		// system's own resolvers keep everything else.
-		if err := dnssrv.Register(ctx, cfg.Interface, self, cfg.HostsSuffix, dnssrv.LegacySuffix); err != nil {
+		if err := dnssrv.Register(ctx, cfg.Interface, self, cfg.HostsSuffix, also...); err != nil {
 			dns.Err = err.Error()
 			rt.dns.Store(&dns)
 			log.Warn("could not register the resolver with the host; "+
 				"mesh names will not resolve system-wide",
 				"err", err,
 				"hint", dnssrv.RegisterCommand("", cfg.Interface, self.String(),
-					cfg.HostsSuffix, dnssrv.LegacySuffix))
+					cfg.HostsSuffix, also...))
 		} else {
 			log.Info("resolver registered with the host",
 				"interface", cfg.Interface, "domain", "~"+cfg.HostsSuffix)
@@ -1267,7 +1272,7 @@ func restartable() bool {
 		os.Getpid() == 1
 }
 
-// ResolverMarker is the file a host-side registrar drops to say it has pointed
+// resolverMarker is the file a host-side registrar drops to say it has pointed
 // this machine's resolver at us.
 //
 // Beside the control socket, because that directory is the one thing already
@@ -1275,11 +1280,11 @@ func restartable() bool {
 // unit mounts /run/shrooms and nothing else of the host's is reachable from
 // inside. It holds the interface it registered, which is what makes reverting
 // possible after the container is gone.
-const ResolverMarker = "resolver-registered"
+const resolverMarker = "resolver-registered"
 
 // hostRegisteredResolver reports whether that marker is present.
 func hostRegisteredResolver(sock string) bool {
-	_, err := os.Stat(filepath.Join(filepath.Dir(sock), ResolverMarker))
+	_, err := os.Stat(filepath.Join(filepath.Dir(sock), resolverMarker))
 	return err == nil
 }
 

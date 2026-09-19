@@ -280,11 +280,23 @@ EOF
         exit 1
     fi
 
-    "$RUNTIME" run --rm -i \
+    # The same two things the wrapper gives an admin-key command, because this
+    # is one: a pty when there is one to give, so the passphrase prompt does not
+    # echo, and the card reader, without which `init --keycard` cannot reach the
+    # authority it is being told to use. The wrapper grew both and this did not,
+    # which made the same command behave differently depending on which of the
+    # two ran it.
+    TTY=
+    [ -t 0 ] && [ -t 1 ] && TTY=-t
+    CARD=
+    [ -S /run/pcscd/pcscd.comm ] && CARD="-v /run/pcscd:/run/pcscd$Z"
+
+    "$RUNTIME" run --rm -i $TTY \
         --hostname "$(hostname -s 2>/dev/null || hostname)" \
         -v "/etc/shrooms:/etc/shrooms$Z" \
         -v "/var/lib/shrooms:/var/lib/shrooms$Z" \
         -v "$admin_dir:/root/.config/shrooms$Z" \
+        $CARD \
         "$IMAGE" "${SETUP[@]}" \
         --config /etc/shrooms/config.toml \
         --state /var/lib/shrooms
@@ -385,7 +397,14 @@ esac
 #
 # Root goes ahead either way. Anyone else only if the runtime can already see
 # the container, which is what a working docker group looks like.
-if [ "$(id -u)" != 0 ] && ! "$RUNTIME" inspect shrooms >/dev/null 2>&1; then
+#
+# One inspect answers both questions asked below: empty output means the runtime
+# cannot see a container of that name at all, and anything else is its running
+# state. Asking twice cost a second podman inspect — a few hundred milliseconds
+# — on every command the wrapper exists to make convenient.
+running=$("$RUNTIME" inspect -f '{{.State.Running}}' shrooms 2>/dev/null || true)
+
+if [ "$(id -u)" != 0 ] && [ -z "$running" ]; then
     echo "cannot see the shrooms container as this user." >&2
     echo >&2
     echo "The daemon's container belongs to root. With podman yours is a separate" >&2
@@ -439,7 +458,7 @@ fi
 # could not see it at all was turned away above. The admin-key commands are not
 # held to this — minting a mesh, or reading `admin show`, is worth having on a
 # machine whose daemon is down.
-if ! "$RUNTIME" inspect -f '{{.State.Running}}' shrooms 2>/dev/null | grep -q true; then
+if [ "$running" != true ]; then
     echo "the shrooms container is not running" >&2
     echo "  sudo systemctl status shrooms" >&2
     exit 1
@@ -470,7 +489,9 @@ chmod 755 /usr/local/bin/shrooms
 # way to make resolvectl work in there. That would hand a VPN daemon the whole
 # system bus to register a domain, and the line ADR-025 draws about what the
 # daemon can reach is worth more than the convenience.
+RESOLVED=0
 if command -v resolvectl >/dev/null 2>&1; then
+    RESOLVED=1
     echo "==> installing the resolver registration"
     install -d /usr/local/lib/shrooms
     cat > /usr/local/lib/shrooms/register-dns <<'EOF'
@@ -536,9 +557,13 @@ case "$dns" in
     *) echo "the daemon is not serving names; nothing to register" >&2; exit 0 ;;
 esac
 
-addr=$(printf '%s' "$dns" | sed -n 's/.*"address":"\([^"]*\)".*/\1/p')
-suffix=$(printf '%s' "$dns" | sed -n 's/.*"suffix":"\([^"]*\)".*/\1/p')
-iface=$(printf '%s' "$json" | grep -o '"interface":"[^"]*"' | head -1 | cut -d'"' -f4)
+# Parameter expansion for all three, and no forked sed or grep: `#` strips the
+# shortest leading match, so the interface read out of the whole payload is the
+# FIRST one — the primary mesh's, which is the one the daemon registers. A
+# greedy sed would have taken the last.
+addr=${dns#*\"address\":\"};   addr=${addr%%\"*}
+suffix=${dns#*\"suffix\":\"};  suffix=${suffix%%\"*}
+iface=${json#*\"interface\":\"}; iface=${iface%%\"*}
 
 # Validated before being handed to resolvectl, because this runs as root and
 # these three values came out of a container. Rejecting is the right failure:
@@ -556,7 +581,6 @@ set -- "~$suffix"
 resolvectl dns "$iface" "$addr"
 resolvectl domain "$iface" "$@"
 
-mkdir -p /run/shrooms
 printf '%s\n' "$iface" > "$MARKER"
 echo "mesh names resolve here: $iface -> $addr, domains $*"
 EOF
@@ -589,7 +613,10 @@ fi
 
 systemctl daemon-reload
 systemctl enable shrooms >/dev/null 2>&1
-if [ -f /etc/systemd/system/shrooms-resolved.service ]; then
+# The flag, not a stat of the file: a unit left behind by a previous install on
+# a machine whose resolvectl has since gone would answer yes to the stat, and be
+# enabled to run a helper that now exits immediately.
+if [ $RESOLVED -eq 1 ]; then
     systemctl enable shrooms-resolved >/dev/null 2>&1
 fi
 

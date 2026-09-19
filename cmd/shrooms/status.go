@@ -229,7 +229,7 @@ func cmdStatus(args []string) error {
 	// The container install fails registration EVERY time: the image has no
 	// resolvectl. That makes this the common case rather than an oddity.
 	if st.DNS.Serving && !st.DNS.Registered {
-		fmt.Fprintf(head, "names\t!! not resolving here\t%s\n", dnsRegisterFix(st))
+		fmt.Fprintf(head, "names\t!! not resolving here\t%s\n", dnsRegisterFix(st, inContainer()))
 	}
 
 	// What this node has done as a relay, on the node that is one.
@@ -684,7 +684,7 @@ func hostOf(p peerStatus) string {
 // this device's overlay address and the interface is this mesh's, so nobody can
 // type either from memory and both are already known here. It is the same hint
 // the daemon logs, put where somebody will see it.
-func dnsRegisterFix(st statusPayload) string {
+func dnsRegisterFix(st statusPayload, containerised bool) string {
 	iface := "shrooms0"
 	if len(st.Meshes) > 0 && st.Meshes[0].Iface != "" {
 		iface = st.Meshes[0].Iface
@@ -704,7 +704,12 @@ func dnsRegisterFix(st statusPayload) string {
 	// and these have to be typed on the host. Through the `shrooms` wrapper
 	// they would run where the binary is missing, which is where the daemon
 	// already tried.
-	if strings.Contains(st.DNS.Err, "resolvectl") {
+	//
+	// Asked of the process rather than matched against the daemon's error text.
+	// Reading "resolvectl" out of that string made the message an API nobody
+	// had agreed to — and said "on the host, not through the wrapper" to a host
+	// install that simply has no systemd-resolved, where it means nothing.
+	if containerised {
 		return "on the host, not through the wrapper — " + fix
 	}
 	return fix

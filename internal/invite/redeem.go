@@ -37,8 +37,28 @@ type Transport interface {
 //
 // The joining device is usually the one on the worse network, and the first
 // publish often lands before its subscription has propagated. Repeating is
-// safe: the inviter answers at most once however many requests it sees.
+// safe: the inviter answers the same device again however many times it asks,
+// and admits nobody else.
 const RetryEvery = 5 * time.Second
+
+// Settle is how long to wait between subscribing to the invite topic and
+// publishing the first request.
+//
+// Subscribe returns before an Edge node can hear anything. Its subscription is
+// a filter request to service peers, and measured against the live fleet it
+// went live between one and one and a half seconds later: a message published
+// 0.9s after Subscribe returned was never delivered, one published 1.9s after
+// arrived in 275ms. Nothing signals the moment it becomes live. The inviter is
+// already connected and answers within a round trip, so a request sent the
+// instant Subscribe returned was answered into that gap — and on a fast network,
+// answered into it every time. A Core node has no such gap, being on the shard
+// from startup, which is why a laptop joined and a phone did not.
+//
+// The inviter now answers repeats too, so this is not what makes the exchange
+// work; it is what makes the first attempt work instead of the second. Three
+// seconds, on a path where somebody is already waiting for a fifteen-minute
+// token. A variable so tests do not have to wait it out.
+var Settle = 3 * time.Second
 
 // Redeem performs the joining side: publish a request, wait for the response
 // meant for this device.
@@ -120,6 +140,13 @@ func Redeem(ctx context.Context, t Transport, s Secret, req *Request) (*Response
 		return nil, fmt.Errorf("subscribe to the invite topic: %w", err)
 	}
 	defer t.Unsubscribe(name)
+
+	// Subscribed, and now able to hear. See Settle.
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(Settle):
+	}
 
 	send := func() error {
 		if _, err := t.Send(name, blob, true); err != nil {

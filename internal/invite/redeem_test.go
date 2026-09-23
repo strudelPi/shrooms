@@ -59,6 +59,17 @@ func (b *fakeBus) deliver(m Message) {
 
 func (b *fakeBus) Messages() <-chan Message { return b.msgs }
 
+func (b *fakeBus) subscribed(topic string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.subbed[topic]
+}
+
+// The settle is measured against a real fleet and is three seconds; every
+// exchange in this file would wait it out. Long enough to be a real pause the
+// test below can see, short enough not to matter anywhere else.
+func init() { Settle = 20 * time.Millisecond }
+
 func (b *fakeBus) lastSent() []byte {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -514,5 +525,38 @@ func TestTheRequestCarriesTheSealingKey(t *testing.T) {
 	}
 	if !bytes.Equal(got, seal) {
 		t.Errorf("the sealing key did not reach the issuer: got %x", got)
+	}
+}
+
+// Subscribe first, then wait, then ask. An Edge node cannot hear anything for
+// a second or so after Subscribe returns, and the inviter answers within a
+// round trip — so a request published the moment the subscription was made was
+// answered into silence. See Settle.
+func TestRedeemLetsTheSubscriptionSettleBeforeAsking(t *testing.T) {
+	old := Settle
+	Settle = 300 * time.Millisecond
+	defer func() { Settle = old }()
+
+	s, _ := New()
+	bus := newBus()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go Redeem(ctx, bus, s, &Request{
+		DevicePub: bytes.Repeat([]byte{1}, 32),
+		WGPub:     bytes.Repeat([]byte{2}, 32),
+		Name:      "phone",
+	})
+
+	time.Sleep(100 * time.Millisecond)
+	if !bus.subscribed(s.Topic()) {
+		t.Fatal("not subscribed to the invite topic yet")
+	}
+	if bus.lastSent() != nil {
+		t.Fatal("asked before the subscription had time to settle")
+	}
+
+	time.Sleep(400 * time.Millisecond)
+	if bus.lastSent() == nil {
+		t.Fatal("never asked")
 	}
 }

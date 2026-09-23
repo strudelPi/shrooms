@@ -72,6 +72,30 @@ cache key — same device, same ephemeral key — which is a different and sligh
 weaker statement, and it is the sort of thing worth deciding deliberately rather
 than discovering later.
 
+> **Resolved 2026-09-23.** Decided, and built. `ReplyInvite` keeps what it
+> published against the exchange, and `handleInvite` re-publishes it when a
+> request under the **same ephemeral key** arrives again — identical bytes,
+> sealed to that key, readable by that device and nobody else. A request under
+> any other key on a used token gets nothing. So "once" is now enforced by the
+> sealing key rather than by the response existing once, and the topic is
+> dropped when the token expires.
+>
+> The reason it mattered was not occasional loss. Measured against the
+> `logos.test` fleet with `wakuspike -mode Edge -listen` against a Core
+> publisher: a message published 0.9 s after the Edge node's `Subscribe()`
+> returned was never delivered; one published 1.9 s after arrived in 275 ms. An
+> Edge node's filter subscription goes live a second or so after `Subscribe()`
+> returns, nothing signals when, and the joiner published its request the
+> instant it had subscribed. The inviter, already connected, answered inside
+> that gap — on a fast network, every time. A Core node has no gap, being on
+> the shard from startup. So a phone (Edge since 2026-08-19) could not enrol as
+> its first mesh on a good Wi-Fi at all, while a laptop always could; six
+> attempts, six `Admitted`s on the inviter, six deadlines on the phone.
+>
+> `invite.Settle` now waits three seconds between subscribing and the first
+> request, so the first attempt works. The repeat is what makes the exchange
+> survive when it does not.
+
 **Whether `:latest` should wait for arm64 — and arm64 may not be fixable here.**
 
 > **Resolved 2026-09-18.** The delivery team built the pinned revision without

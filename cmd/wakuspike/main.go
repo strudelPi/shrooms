@@ -36,6 +36,12 @@ func main() {
 		probeOnly = flag.Bool("probe", false, "only print available configs/node info, then exit")
 		listen    = flag.Bool("listen", false, "subscribe and report the first message received; never publish")
 		verbose   = flag.Bool("v", false, "dump every event")
+		// Ephemeral, because that is what the control plane and the invite
+		// exchange actually publish, and an ephemeral message is not stored.
+		// A subscriber that leans on store to backfill therefore cannot see one
+		// it was not subscribed for at the moment it was sent — which is a
+		// different question from whether the subscription works at all.
+		ephemeral = flag.Bool("ephemeral", false, "publish with the ephemeral flag set")
 	)
 	flag.Parse()
 
@@ -183,10 +189,10 @@ func main() {
 	log.Printf("connected (status=%v), publishing", connStatus.Load())
 
 	marker := fmt.Sprintf("s1-spike-%d", time.Now().UnixNano())
-	log.Printf("publishing marker %q", marker)
+	log.Printf("publishing marker %q (ephemeral=%v)", marker, *ephemeral)
 
 	sentAt := time.Now()
-	if _, err := node.Send(*topic, []byte(marker), false); err != nil {
+	if _, err := node.Send(*topic, []byte(marker), *ephemeral); err != nil {
 		log.Fatalf("send: %v", err)
 	}
 

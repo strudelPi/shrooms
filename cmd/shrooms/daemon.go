@@ -24,6 +24,7 @@ import (
 
 	"github.com/vpavlin/shrooms/internal/cred"
 	dnssrv "github.com/vpavlin/shrooms/internal/dns"
+	"github.com/vpavlin/shrooms/internal/identity"
 	"github.com/vpavlin/shrooms/internal/invite"
 	"github.com/vpavlin/shrooms/internal/logtail"
 	"github.com/vpavlin/shrooms/internal/mesh"
@@ -1307,6 +1308,18 @@ type runtimeBits struct {
 	cfgPath string
 }
 
+// primaryKey is the network key of the mesh with this label, whichever shape
+// the config describes it in.
+func primaryKey(cfg state.Config, label string) identity.NetworkKey {
+	for _, m := range cfg.Meshes() {
+		if m.Label == label {
+			nk, _ := m.Key()
+			return nk
+		}
+	}
+	return identity.NetworkKey{}
+}
+
 func serveControl(ctx context.Context, log *slog.Logger, path string, instances []*instance,
 	cfg state.Config, rl *reloader, rt *runtimeBits) (*http.Server, error) {
 	var tail *logtail.Ring
@@ -1320,7 +1333,11 @@ func serveControl(ctx context.Context, log *slog.Logger, path string, instances 
 	primary := instances[0]
 	m, self := primary.mesh, primary.self
 
-	nk, _ := cfg.Key()
+	// The primary instance's own key, not cfg.Key(): that reads the top-level
+	// field, which a named first mesh does not have (docs/one-kind-of-mesh.md),
+	// so every config written since 2026-09-29 reported the zero key's prefix
+	// as this node's network. Same bug as the phone's OverlayAddress.
+	nk := primaryKey(cfg, primary.label)
 
 	mux := http.NewServeMux()
 	// One snapshot builder, read by the CLI over the unix socket and by the

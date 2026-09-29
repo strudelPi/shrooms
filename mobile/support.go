@@ -359,12 +359,6 @@ func (b *bridge) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (b *bridge) WithGroup(string) slog.Handler { return b }
 
-// mustKey is for paths where the config has already been validated.
-func mustKey(cfg state.Config) identity.NetworkKey {
-	nk, _ := cfg.Key()
-	return nk
-}
-
 // DNSSuffix is the domain the app should hand to VpnService.Builder as a search
 // domain, so `ping laptop` works and not only `laptop.mesh`.
 func DNSSuffix(configDir string) string {
@@ -384,12 +378,10 @@ func DNSSuffix(configDir string) string {
 // delivered locally by the kernel and never reaches the tun, so nothing can
 // answer it. See dns.ServiceAddr.
 func DNSAddress(configDir string) string {
-	cfg, _, err := load(configDir)
-	if err != nil {
-		return ""
-	}
-	nk, err := cfg.Key()
-	if err != nil {
+	// The primary mesh's prefix, not the top-level key, which a named first
+	// mesh does not have — see primaryOf.
+	nk, _, ok := primaryOf(configDir)
+	if !ok {
 		return ""
 	}
 	return dnssrv.ServiceAddr(nk.Prefix()).String()

@@ -524,15 +524,50 @@ func Configured(configDir string) bool {
 // configured. Derived from the device key, so it is stable for the life of the
 // installation.
 func OverlayAddress(configDir string) string {
+	nk, id, ok := primaryOf(configDir)
+	if !ok {
+		return ""
+	}
+	return identity.OverlayAddr(nk, id.DevicePub).String()
+}
+
+// primaryOf is the mesh the tunnel is built around — the first active one, the
+// same one Start picks — with its key and the identity it announces.
+//
+// These answers used to come from cfg.Key(), the config's TOP-LEVEL network
+// key. A first mesh stopped living there on 2026-09-29 (every mesh is named
+// now, docs/one-kind-of-mesh.md), so on every device that joined afterwards
+// OverlayAddress returned "" and connecting failed with "no overlay address;
+// config unreadable" — the first thing a pocophone saw after its first
+// successful join. OverlayV4 and DNSAddress had the same bug quietly: no IPv4
+// alias, and no resolver address, so names would not have worked either.
+//
+// Read-only on purpose. State.MeshState CREATES an entry and derives an
+// identity for a mesh it has not seen, and these are questions the app asks
+// before anything has started; asking must not change the answer.
+func primaryOf(configDir string) (identity.NetworkKey, *identity.Identity, bool) {
 	cfg, st, err := load(configDir)
 	if err != nil {
-		return ""
+		return identity.NetworkKey{}, nil, false
 	}
-	nk, err := cfg.Key()
+	meshes := cfg.Active()
+	if len(meshes) == 0 {
+		return identity.NetworkKey{}, nil, false
+	}
+	m := meshes[0]
+	nk, err := m.Key()
 	if err != nil {
-		return ""
+		return identity.NetworkKey{}, nil, false
 	}
-	return identity.OverlayAddr(nk, st.Identity.DevicePub).String()
+	if m.InheritsIdentity {
+		return nk, st.Identity, true
+	}
+	// A mesh with its own identity has one only once it has been started or
+	// joined; before that there is no address to report, which is the truth.
+	if ms, ok := st.Meshes[state.NetworkID(nk)]; ok && ms != nil && ms.Identity != nil {
+		return nk, ms.Identity, true
+	}
+	return identity.NetworkKey{}, nil, false
 }
 
 // OverlayV4 returns this device's synthetic IPv4 address, or "" if the device
@@ -541,17 +576,13 @@ func OverlayAddress(configDir string) string {
 // The VpnService needs it before anything starts: an address the interface does
 // not hold is an address the operating system will not send us packets for.
 func OverlayV4(configDir string) string {
-	cfg, st, err := load(configDir)
-	if err != nil {
-		return ""
-	}
-	nk, err := cfg.Key()
-	if err != nil {
+	nk, id, ok := primaryOf(configDir)
+	if !ok {
 		return ""
 	}
 	t := v4.NewTable(state.NetworkID(nk), v4.Entry{
-		Overlay:   identity.OverlayAddr(nk, st.Identity.DevicePub),
-		DevicePub: st.Identity.DevicePub,
+		Overlay:   identity.OverlayAddr(nk, id.DevicePub),
+		DevicePub: id.DevicePub,
 	}, nil)
 	return t.Self().String()
 }

@@ -17,7 +17,7 @@ import (
 // install actually writes, not what a helper returns.
 func TestAFreshPhoneIsAnEdgeNode(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := Init("test-phone", dir); err != nil {
+	if _, err := Init("test-phone", "home", dir); err != nil {
 		t.Fatal(err)
 	}
 	if got := Mode(dir); got != state.ModeEdge {
@@ -29,7 +29,7 @@ func TestAFreshPhoneIsAnEdgeNode(t *testing.T) {
 // not silently re-mode a phone that deliberately runs Core.
 func TestAnExistingChoiceSurvives(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := Init("test-phone", dir); err != nil {
+	if _, err := Init("test-phone", "home", dir); err != nil {
 		t.Fatal(err)
 	}
 	if err := SetMode(dir, state.ModeCore); err != nil {

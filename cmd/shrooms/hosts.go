@@ -24,10 +24,7 @@ func cmdHosts(args []string) error {
 		return err
 	}
 
-	entries := []hosts.Entry{{Name: st.Name, Addr: st.Overlay, AddrV4: st.OverlayV4}}
-	for _, p := range st.Peers {
-		entries = append(entries, hosts.Entry{Name: p.Name, Addr: p.Overlay, AddrV4: p.OverlayV4})
-	}
+	entries := hostsEntriesFrom(st)
 	block := hosts.Render(entries, *suffix)
 	if !*write {
 		fmt.Print(block)
@@ -49,4 +46,30 @@ func cmdHosts(args []string) error {
 	fmt.Printf("\nTo keep it current automatically, set in your config:\n")
 	fmt.Printf("  manage_hosts = \"true\"\n")
 	return nil
+}
+
+// hostsEntriesFrom is what the managed block should hold, from the daemon's
+// status: this device once per mesh it is running, and every peer under the
+// mesh it was heard on.
+//
+// Once per mesh because this device has a different address on each, and a
+// name is qualified by the mesh it is on — laptop.home and laptop.office are
+// two names for two addresses. It used to be one entry from the first mesh,
+// written unqualified, which answered for whichever mesh happened to be first.
+func hostsEntriesFrom(st statusPayload) []hosts.Entry {
+	var entries []hosts.Entry
+	for _, m := range st.Meshes {
+		if m.NotRunning || m.Overlay == "" {
+			continue
+		}
+		entries = append(entries, hosts.Entry{
+			Name: st.Name, Addr: m.Overlay, AddrV4: m.OverlayV4, Mesh: m.Label, Self: true,
+		})
+	}
+	for _, p := range st.Peers {
+		entries = append(entries, hosts.Entry{
+			Name: p.Name, Addr: p.Overlay, AddrV4: p.OverlayV4, Mesh: p.Mesh,
+		})
+	}
+	return entries
 }

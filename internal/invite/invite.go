@@ -271,6 +271,21 @@ type Response struct {
 	// coordinator in this design and the suffix is not one either. Dropped
 	// rather than validated, which also protects phones running older builds:
 	// they only adopted it when the field was non-empty.
+
+	// Label is what the inviter calls this mesh, offered as a name for the
+	// joiner to use too. A suggestion: the joiner validates it as one DNS
+	// label, drops it on a clash with a mesh it already has, and can override
+	// it; afterwards it is a local name like any other.
+	//
+	// Unlike the suffix above it cannot reach outside the mesh. It is one
+	// label BELOW the suffix — peer.<label>.mesh — so the most a hostile
+	// inviter can do is give its own mesh a silly name. What it fixes is
+	// real: with no name to go on, a joiner's first mesh was "default", which
+	// answers only peer.mesh, and nothing the rest of the mesh called anything
+	// resolved on it (docs/one-kind-of-mesh.md, 2026-09-29). Older joiners
+	// ignore the field.
+	Label string `json:"label,omitempty"`
+
 	Timestamp int64 `json:"ts"`
 }
 

@@ -187,7 +187,10 @@ func TestFullResponseFits(t *testing.T) {
 		NetworkKey: make([]byte, 32),
 		AdminKeys:  [][]byte{make([]byte, 32), make([]byte, 32), make([]byte, 32)},
 		Credential: make([]byte, 450),
-		Timestamp:  time.Now().Unix(),
+		// The longest name a mesh can have, which is the longest the inviter
+		// will ever suggest.
+		Label:     strings.Repeat("m", 63),
+		Timestamp: time.Now().Unix(),
 	})
 	if err != nil {
 		t.Fatalf("a full response does not fit the padding: %v", err)

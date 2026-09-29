@@ -223,11 +223,21 @@ type joinResult struct {
 func joinHere(ctx context.Context, log *slog.Logger, tr invite.Transport, cfgPath string, st *state.State, stateDir,
 	token, key, name, label string, port uint16, advertise string, relay bool) (*joinResult, error) {
 
+	// Meshes(), not NetworkKey: a first mesh is written in the named form
+	// now, so a device already on one has no top-level key at all, and this
+	// would have let a second join overwrite it.
 	if _, err := os.Stat(cfgPath); err == nil {
-		if cfg, err := state.LoadConfig(cfgPath); err == nil && cfg.NetworkKey != "" {
+		if cfg, err := state.LoadConfig(cfgPath); err == nil && len(cfg.Meshes()) > 0 {
 			return nil, errors.New("this daemon already has a mesh")
 		}
 	}
+	// Refused before anything is exchanged, where it costs nothing.
+	if label != "" {
+		if err := checkNewMeshLabel(label); err != nil {
+			return nil, err
+		}
+	}
+	suggested := ""
 
 	var (
 		nk        identity.NetworkKey
@@ -255,27 +265,19 @@ func joinHere(ctx context.Context, log *slog.Logger, tr invite.Transport, cfgPat
 		}
 
 		log.Info("redeeming an invite")
-		// An additional mesh derives the identity it will use there, which
-		// takes a second round because the mesh is not known until the first
-		// one answers (ADR-017). The device's first mesh keeps its base
-		// identity: that is what the single-mesh config form means, and
-		// re-deriving would change the address of a device that already has
-		// one.
+		// This device's first mesh, so it keeps its base identity whatever it
+		// is called: re-deriving would change the address of a device that
+		// already has one. It used to derive whenever a label was given, since
+		// only the unlabelled top-level shape could hold the base keys; every
+		// first mesh is named now, and InheritsIdentity says which one holds
+		// them.
 		base := &invite.Request{
 			DevicePub: st.Identity.DevicePub,
 			WGPub:     st.Identity.WGPub[:],
 			SealPub:   st.Identity.SealPub[:],
 			Name:      name,
 		}
-		var resp *invite.Response
-		if label != "" && label != state.DefaultLabel {
-			resp, err = invite.RedeemForMesh(ctx, tr, secret, base,
-				func(r *invite.Response) (*invite.Request, error) {
-					return perMeshRequest(st, r, name)
-				})
-		} else {
-			resp, err = invite.Redeem(ctx, tr, secret, base)
-		}
+		resp, err := invite.Redeem(ctx, tr, secret, base)
 		if err != nil {
 			return nil, fmt.Errorf("no answer — is `shrooms invite` still running there? (%w)", err)
 		}
@@ -286,6 +288,7 @@ func joinHere(ctx context.Context, log *slog.Logger, tr invite.Transport, cfgPat
 			adminKeys = append(adminKeys, b32.EncodeToString(k))
 		}
 		credRaw = resp.Credential
+		suggested = resp.Label
 
 	case key != "":
 		if nk, err = identity.ParseNetworkKey(key); err != nil {
@@ -296,26 +299,24 @@ func joinHere(ctx context.Context, log *slog.Logger, tr invite.Transport, cfgPat
 		return nil, errors.New("give either an invite token or a network key")
 	}
 
+	// What this device calls the mesh: the name it was given, else the one the
+	// inviting device uses, else one derived from the mesh id. Chosen after the
+	// exchange, because that is when the suggestion arrives, and never failing
+	// then, because the invite has already been spent.
+	meshName, from := state.ChooseMeshLabel(label, suggested, state.NetworkID(nk), nil)
+	log.Info("naming the mesh", "mesh", meshName, "from", from)
+
 	cfg := state.DefaultConfig()
 	cfg.Name = name
-	// A label names the mesh locally (ADR-015). Written as the multi-mesh form
-	// so the name survives — it is what `vps.test.mesh` and `--mesh test` refer
-	// to, and there is no way to learn it later: mesh names are local, and
-	// deliberately not carried on the wire.
-	if label != "" && label != state.DefaultLabel {
-		cfg.MeshSet = map[string]state.Mesh{label: {
-			Label: label, NetworkKey: nk.String(), Relay: relay, AdminKeys: adminKeys,
-		}}
-	} else {
-		cfg.NetworkKey = nk.String()
-	}
 	cfg.ListenPort = port
-	if cfg.NetworkKey != "" {
-		cfg.Relay = relay
-	}
 	if advertise != "" {
 		cfg.Advertise = []string{advertise}
 	}
+	// Named, with the base identity: every first mesh is written this way
+	// now (docs/one-kind-of-mesh.md). The admin keys go on the mesh entry.
+	cfg = cfg.WithFirstMesh(meshName, state.Mesh{
+		NetworkKey: nk.String(), Relay: relay, AdminKeys: adminKeys,
+	})
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -325,14 +326,8 @@ func joinHere(ctx context.Context, log *slog.Logger, tr invite.Transport, cfgPat
 	if err := state.WriteConfig(cfgPath, cfg); err != nil {
 		return nil, err
 	}
-	if len(adminKeys) > 0 && cfg.NetworkKey != "" {
-		if err := addAdminKeys(cfgPath, adminKeys); err != nil {
-			return nil, err
-		}
-	}
-
 	res := &joinResult{
-		Mesh:    label,
+		Mesh:    meshName,
 		Name:    name,
 		Overlay: identity.OverlayAddr(nk, st.Identity.DevicePub).String(),
 		Prefix:  nk.Prefix().String(),
@@ -349,7 +344,7 @@ func joinHere(ctx context.Context, log *slog.Logger, tr invite.Transport, cfgPat
 		if err != nil {
 			return nil, err
 		}
-		auth, err := written.Authority()
+		auth, err := written.MeshSet[meshName].Authority()
 		if err != nil {
 			return nil, err
 		}
@@ -358,14 +353,12 @@ func joinHere(ctx context.Context, log *slog.Logger, tr invite.Transport, cfgPat
 				return nil, fmt.Errorf("the credential in the invite does not verify: %w", err)
 			}
 		}
-		// Stored against the identity the credential actually names. For the
-		// device's first mesh that is the base identity, which is what the
-		// single-mesh config form means; for an additional mesh it is the one
-		// derived in the second round of the exchange (ADR-017). Storing it
-		// with the wrong flag derives a fresh identity beside a credential
-		// naming another, and every peer then refuses this device — correctly,
-		// and silently.
-		legacy := label == "" || label == state.DefaultLabel
+		// Stored against the base identity, which is what the credential
+		// names: this is the device's first mesh, redeemed with its own keys.
+		// The wrong flag derives a fresh identity beside a credential naming
+		// another, and every peer then refuses this device — correctly, and
+		// silently.
+		legacy := true
 
 		// And that it names THIS device.
 		//

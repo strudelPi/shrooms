@@ -77,7 +77,7 @@ still needed to sign.
 
 ## 4. Make the mesh
 
-    sudo shrooms init --keycard
+    sudo shrooms init --mesh home --keycard
 
 That is the whole thing: it reads the card's public key, makes that the mesh's
 authority, writes the config, and enrols this machine with a credential the card

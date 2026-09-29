@@ -368,6 +368,104 @@ func (c Config) validateMeshes() error {
 	return nil
 }
 
+// WithFirstMesh returns c describing m as this device's only mesh, in the
+// named form, and holding the device's base identity.
+//
+// Every first mesh is written this way now. It used to be written into the
+// top-level fields, which made it "default" — and "default" is treated as no
+// label at all, so the device answered only to peer.mesh while every device
+// on more than one mesh used peer.<label>.mesh. A tablet that joined "office"
+// on 2026-09-29 could reach nothing by the names the rest of the mesh used.
+//
+// InheritsIdentity is set because this is the mesh the device's base keys
+// belong to: an invite for it is redeemed with those keys and the credential
+// names them. Leaving it false derives a fresh identity for the mesh beside a
+// credential naming the old one, and every peer refuses the device — correctly
+// and silently. The device-wide settings are left where they are, exactly as
+// Flatten leaves them.
+//
+// The interface and port are pinned to the device's own, as Flatten pins them.
+// Unpinned, the mesh would hold them only while it sorted first: joining a
+// second mesh named "alpha" beside "office" would hand alpha the device's
+// interface and port and move office off them — the shuffle that took vps
+// down 22 times on 2026-09-16.
+func (c Config) WithFirstMesh(label string, m Mesh) Config {
+	out := c
+	m.Label = "" // the map key carries it; a field beside it would drift
+	m.InheritsIdentity = true
+	if m.Interface == "" {
+		m.Interface = c.Interface
+	}
+	if m.ListenPort == 0 {
+		m.ListenPort = c.ListenPort
+	}
+	// What the top-level fields said about the mesh moves onto it, as it does
+	// in Flatten: a prepared config can already carry services and announce
+	// settings, and clearing the fields below without carrying them would
+	// silently unpublish them.
+	if len(m.Services) == 0 {
+		m.Services = c.Services
+	}
+	m.AnnounceServices = m.AnnounceServices || c.AnnounceServices
+	m.AnnounceBound = m.AnnounceBound || c.AnnounceBound
+	m.QuietRevocations = m.QuietRevocations || c.QuietRevocations
+	out.MeshSet = map[string]Mesh{label: m}
+	out.NetworkKey = ""
+	out.AdminKeys = nil
+	out.Relay = false
+	out.Services = nil
+	out.AnnounceServices = false
+	out.AnnounceBound = false
+	out.QuietRevocations = false
+	return out
+}
+
+// Where a joining device's name for a mesh came from.
+const (
+	LabelAsked    = "asked"    // given on the command line or typed in the app
+	LabelInvite   = "invite"   // suggested by the device that issued the invite
+	LabelFallback = "fallback" // neither, so derived from the mesh id
+)
+
+// ChooseMeshLabel decides what a joining device calls the mesh it joins.
+//
+// In order: the name the person gave, the name the inviter suggested, and a
+// name derived from the mesh id. The last always exists, and that matters:
+// by the time the suggestion can be read the invite has been consumed, so
+// failing then would spend it for nothing.
+//
+// The suggestion is checked like any label and dropped if it is not one, if it
+// is "default" — never a name, only what the old config shape was called — or
+// if this device already uses it. asked is taken as given; callers validate it
+// before the exchange, where refusing costs nothing.
+func ChooseMeshLabel(asked, suggested, meshID string, taken func(string) bool) (string, string) {
+	if asked != "" {
+		return asked, LabelAsked
+	}
+	free := func(l string) bool { return taken == nil || !taken(l) }
+	if suggested != "" && suggested != DefaultLabel && ValidMeshLabel(suggested) == nil && free(suggested) {
+		return suggested, LabelInvite
+	}
+	base := "mesh"
+	var id strings.Builder
+	for _, r := range strings.ToLower(meshID) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			id.WriteRune(r)
+			if id.Len() == 6 {
+				break
+			}
+		}
+	}
+	if id.Len() > 0 {
+		base = "mesh-" + id.String()
+	}
+	label := base
+	for n := 2; !free(label); n++ {
+		label = fmt.Sprintf("%s-%d", base, n)
+	}
+	return label, LabelFallback
+}
+
 // ValidMeshLabel checks a name this device may call a mesh.
 //
 // It is a local nickname and nothing on the wire carries it, so the rules are
@@ -504,6 +602,7 @@ func (c Config) ForMesh(m Mesh, port uint16) Config {
 	out.AnnounceBound = m.AnnounceBound
 	out.QuietRevocations = m.QuietRevocations
 	out.ListenPort = port
+	out.MeshLabel = m.Label
 
 	// Advertise does NOT inherit. A device-wide entry names a port, and only
 	// one mesh listens there — the one keeping the device's base port. Giving

@@ -336,6 +336,17 @@ func cmdJoinInvite(token string, args []string) error {
 		pinPort = uint16(*port)
 	}
 
+	// Checked before anything is exchanged. A name that cannot be a label is
+	// refused here, where refusing costs nothing; after the second round it
+	// would cost the invite. "default" is refused too: it is not a name, only
+	// what the old single-mesh config shape was called, and a mesh called that
+	// answers to nothing the rest of the mesh uses (docs/one-kind-of-mesh.md).
+	if *label != "" {
+		if err := checkNewMeshLabel(*label); err != nil {
+			return err
+		}
+	}
+
 	if _, err := invite.ParseToken(token); err != nil {
 		return err
 	}
@@ -469,17 +480,12 @@ func cmdJoinInvite(token string, args []string) error {
 		return nil
 	}
 
-	var resp *invite.Response
-	// See perMeshRequest: only an additional mesh derives, because the first
-	// one is what the single-mesh config form describes.
-	if *label != "" && *label != state.DefaultLabel {
-		resp, err = invite.RedeemForMesh(ctx, tr, secret, base,
-			func(r *invite.Response) (*invite.Request, error) {
-				return perMeshRequest(st, r, deviceName)
-			})
-	} else {
-		resp, err = invite.Redeem(ctx, tr, secret, base)
-	}
+	// This device's first mesh, so it keeps the base identity whatever it is
+	// called. Only an ADDITIONAL mesh derives one (perMeshRequest). This used
+	// to derive whenever a label was given, because only the unlabelled
+	// top-level shape could hold the base keys; every first mesh is named now,
+	// and InheritsIdentity says which one holds them.
+	resp, err := invite.Redeem(ctx, tr, secret, base)
 	if err != nil {
 		return errors.New("no answer. Is `shrooms invite` still running on the other machine?")
 	}
@@ -488,11 +494,42 @@ func cmdJoinInvite(token string, args []string) error {
 	// say that anyone wants to read.
 	unhush()
 
+	if err := installFirstMesh(*cfgPath, *stateDir, st, resp, *label, deviceName,
+		uint16(*port), *advertise, *relay, splitList(*entryNodes)); err != nil {
+		return err
+	}
+
+	// A daemon that was waiting has just had its mesh written out from under
+	// it. Telling it is the difference between a node that is up and a node
+	// that reports "waiting for a mesh" after a join that plainly worked.
+	if nudgeDaemon(*sock) {
+		fmt.Println("\nThe daemon was waiting for this and is bringing the mesh up now.")
+	}
+	return nil
+}
+
+// installFirstMesh writes the mesh an invite admitted this device to, as its
+// first: named, holding the base identity, with the mesh's admin keys on its
+// own entry and the credential stored against the keys it names.
+//
+// Split out of cmdJoinInvite so the part that decides what the device ends up
+// with can be tested without a rendezvous node; this is the code it runs.
+func installFirstMesh(cfgPath, stateDir string, st *state.State, resp *invite.Response,
+	asked, deviceName string, port uint16, advertise string, relay bool, entry []string) error {
+
 	nk, err := identity.NetworkKeyFromBytes(resp.NetworkKey)
 	if err != nil {
 		return err
 	}
-	if err := setupMeshWith(*cfgPath, *stateDir, nk, deviceName, *label, uint16(*port), *advertise, *relay, false, splitList(*entryNodes)); err != nil {
+	meshName, from := state.ChooseMeshLabel(asked, resp.Label, state.NetworkID(nk), nil)
+	switch from {
+	case state.LabelInvite:
+		fmt.Printf("Calling this mesh %q, the name the inviting device uses.\n", meshName)
+	case state.LabelFallback:
+		fmt.Printf("The invite did not name this mesh, so it is %q here.\n"+
+			"Rename it with: shrooms mesh rename %s <name>\n", meshName, meshName)
+	}
+	if err := setupMeshWith(cfgPath, stateDir, nk, deviceName, meshName, port, advertise, relay, false, entry); err != nil {
 		return err
 	}
 
@@ -504,7 +541,7 @@ func cmdJoinInvite(token string, args []string) error {
 			}
 			encoded = append(encoded, b32.EncodeToString(k))
 		}
-		if err := addAdminKeys(*cfgPath, encoded); err != nil {
+		if err := addAdminKeysFor(cfgPath, meshName, encoded); err != nil {
 			return err
 		}
 	}
@@ -515,11 +552,13 @@ func cmdJoinInvite(token string, args []string) error {
 		}
 		// Checked before it is stored: a credential that does not verify here
 		// would fail silently later, as a mesh where nobody talks to us.
-		cfg, err := state.LoadConfig(*cfgPath)
+		cfg, err := state.LoadConfig(cfgPath)
 		if err != nil {
 			return err
 		}
-		auth, err := cfg.Authority()
+		// The mesh's own authority: a first mesh is named now, so its admin
+		// keys are on the mesh entry and the top-level set is empty.
+		auth, err := cfg.MeshSet[meshName].Authority()
 		if err != nil {
 			return err
 		}
@@ -528,27 +567,18 @@ func cmdJoinInvite(token string, args []string) error {
 				return fmt.Errorf("the credential in the invite does not verify: %w", err)
 			}
 		}
-		// Stored against the identity the credential actually names. For the
-		// device's first mesh that is the base identity, which is what the
-		// single-mesh config form means; for an additional mesh it is the one
-		// derived in the second round of the exchange (ADR-017). Storing it
-		// with the wrong flag derives a fresh identity beside a credential
-		// naming another, and every peer then refuses this device — correctly,
-		// and silently.
-		legacy := *label == "" || *label == state.DefaultLabel
-		if err := st.SetMeshCredentialFor(state.NetworkID(nk), legacy, resp.Credential); err != nil {
+		// Stored against the base identity, which is the one the credential
+		// names: this is the device's first mesh, redeemed with its own keys.
+		// Storing it with the wrong flag derives a fresh identity beside a
+		// credential naming another, and every peer then refuses this device —
+		// correctly, and silently.
+		if err := st.SetMeshCredentialFor(state.NetworkID(nk), true, resp.Credential); err != nil {
 			return err
 		}
 		fmt.Printf("\nEnrolled. Credential serial %d, expires %s.\n",
 			c.Serial, time.Unix(c.NotAfter, 0).Format(time.RFC3339))
 	}
 
-	// A daemon that was waiting has just had its mesh written out from under
-	// it. Telling it is the difference between a node that is up and a node
-	// that reports "waiting for a mesh" after a join that plainly worked.
-	if nudgeDaemon(*sock) {
-		fmt.Println("\nThe daemon was waiting for this and is bringing the mesh up now.")
-	}
 	return nil
 }
 

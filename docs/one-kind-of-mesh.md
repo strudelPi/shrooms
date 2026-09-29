@@ -1,6 +1,7 @@
 # One kind of mesh
 
-**Status:** proposed, not done. Vaclav's question, 2026-08-26: *"why do we even
+**Status:** decided 2026-09-29; stages 1 and 2 built, 3 and 4 open — see
+*Decided* at the end. Vaclav's question, 2026-08-26: *"why do we even
 have primary and secondary meshes? Do we need the distinction? I'd just name all
 the meshes — we could even alias one as default, but we should treat them all
 the same."*
@@ -176,3 +177,114 @@ the case worth keeping easy.
 mesh, and `relay_blind = "none"` opts a mesh out without naming a relay of its
 own. A literal empty list cannot say that: `[]` parses the same as an absent
 line, which means inherit.
+
+
+## Decided, 2026-09-29
+
+Prompted by a tablet (x6) that joined `office` by invite and could only resolve
+`peer.mesh`: the invite carried no label, so it wrote the old top-level shape,
+its one mesh became `default`, and `default` is treated as "no label".
+`peer.office.mesh` — what every multi-mesh device uses — could not resolve,
+because x6 had never been told the word `office`.
+
+Vaclav: *"we should drop the default mesh completely and only use the named
+meshes"*, and two choices made explicitly:
+
+1. **The invite suggests the name.** The inviter's label for the mesh rides in
+   the invite. The joiner takes it unless told otherwise (`--mesh`), validates
+   it as one DNS label, and refuses it on a collision with a mesh it already
+   has. It is still a local name afterwards — renaming is local, as before.
+
+   This is not the DNS-suffix field that was removed from the invite. That one
+   was device-wide and let an inviter make a phone authoritative for `.com`. A
+   label is scoped under the suffix — `peer.<label>.mesh` — so the worst a
+   hostile inviter can do is choose a silly name for its own mesh.
+
+2. **Qualified names only.** Every mesh answers `peer.<label>.mesh`, including a
+   device's only mesh, and `peer.mesh` stops resolving anywhere. This reverses
+   the August position that the short form should stay for typing: the same
+   name meaning different machines on different devices is what x6 hit, and a
+   name that resolves identically everywhere is worth the bookmarks it breaks.
+
+Stages, in order:
+
+1. New configs are always `[mesh.<label>]`: `init` requires a name, joins take
+   the invite's suggestion, and the first mesh on a device carries
+   `inherits_identity` so it keeps the base identity as before.
+2. The resolver and `hosts --write` answer qualified names only.
+3. Existing top-level configs migrate with `Flatten` plus a rename away from
+   `default`; `status` says so until it has happened.
+4. Everything still printing or using the short form — CLI output, the app's
+   service URLs, docs, the site — moves to the qualified form.
+
+### Stages 1 and 2: built
+
+**New configs are named.** `shrooms init` requires `--mesh <name>` on a fresh or
+prepared config and refuses `default`; on a config already on a mesh,
+`--mesh` still adds a second one. Every first mesh — from `init`, from the
+command line's `join`, from a waiting daemon's join, and from the app's join
+and "create one" — is written as `[mesh.<name>]` by `Config.WithFirstMesh`,
+which:
+
+- sets `inherits_identity`, so the mesh announces with the device's base keys,
+  which are the keys its credential names. Leaving it unset derives fresh keys
+  beside a credential naming the old ones, and every peer refuses the device —
+  `joinnamed_test.go` fails without it;
+- pins the interface and port to the device's own, as `Flatten` does, so a
+  later mesh that sorts first (`alpha` beside `home`) cannot take them;
+- moves what the top-level fields said about the mesh — services, announce
+  settings — onto it rather than dropping them.
+
+A first mesh now always keeps the base identity, whatever it is called. It
+used to derive a new one whenever a label was given on a first join, since
+only the unlabelled shape could hold the base keys.
+
+Its authority is filed as `admin-<name>.json`; commands that read an authority
+with no `--mesh` fall back to the directory's only labelled one when
+`admin.json` is absent, so a single-mesh device needs no flag.
+
+**The invite suggests the name.** `invite.Response.Label` carries the
+inviter's name for the mesh (`Config.MeshLabel`, set by `ForMesh`), never
+`default`. The joiner takes `--mesh`, else the suggestion if it is a valid
+label not already used here, else `mesh-<id>`; the choice is made after the
+exchange and never fails there (`state.ChooseMeshLabel`).
+
+The app's mesh identity is read from `InheritsIdentity` in all three places it
+is chosen; it was decided by config shape, which also gave a *flattened* phone
+config a derived identity.
+
+**Qualified names only.** The daemon and the app resolve through one rule,
+`mesh.ResolveQualified`: the last label is the mesh, and a name without one
+answers nothing. `QualifiedDNSName` returns no name for an empty label. Status,
+`bound`, service names and `hosts --write` all qualify, on a device with one
+mesh as on one with several; `/etc/hosts` gets one entry for this device per
+mesh, since it has a different address on each. A block written by an older
+build still holding `peer.mesh` names is reported stale by `status`.
+
+`shrooms key show` printed the top-level key, empty on a named mesh; it takes
+`--mesh`, and uses the only mesh when there is one.
+
+### Stages 3 and 4: open, and what was found for them
+
+- **Migration (stage 3).** Existing top-level configs still run as a mesh
+  labelled `default`, which now answers `peer.default.mesh`. `Flatten` plus
+  `mesh rename default <name>` is the manual path; nothing does it
+  automatically or says it is needed.
+- **Short names in docs.** README (~24) and `site/guides.html` (~19) show
+  `peer.mesh` / `peer.internal` forms that no longer resolve.
+- **A false claim, twice.** `site/install.html` and the comment on
+  `cred.Authority` say the address prefix derives from the admin key set, so
+  adding a key would re-address every node. It derives from the network key.
+- **`shrooms key rotate`** still rotates only the top-level key; on a named
+  config it fails in `cfg.Key()`. Needs `--mesh`.
+- **`manage_hosts`** runs per mesh, and each mesh writes the whole managed
+  block with only its own entries, so on several meshes they overwrite each
+  other. Older than this change; `hosts --write` is correct.
+- **Additional meshes** (`join --mesh X` beside an existing one,
+  `JoinAnotherWithInvite`) still require a name rather than taking the
+  suggestion.
+- **`shrooms hosts`** defaults its suffix to `internal`, the daemon's
+  `manage_hosts` to `mesh`.
+- **A prepared machine joined from the command line with no daemon running**
+  goes through the additional-mesh path. Older than this change; the waiting
+  daemon is what normally handles a prepared machine.

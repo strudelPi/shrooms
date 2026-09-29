@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vpavlin/shrooms/internal/mesh"
 	"github.com/vpavlin/shrooms/internal/state"
 )
 
@@ -30,18 +29,20 @@ func fixed(addrs map[string]string) func(string) (netip.Addr, bool) {
 	}
 }
 
-// A node with one mesh must see exactly what it saw before: names resolve
-// unqualified, and nothing else changes.
-func TestOneMeshResolvesTheShortName(t *testing.T) {
+// A node with one mesh answers the qualified name and nothing shorter. It used
+// to answer peer.mesh too, and that is what the decision of 2026-09-29 removed:
+// a tablet whose only mesh was "default" answered peer.mesh while every
+// device on more than one mesh used peer.office.mesh, and neither worked on
+// the other (docs/one-kind-of-mesh.md).
+func TestOneMeshAnswersOnlyTheQualifiedName(t *testing.T) {
 	lookup := resolveAcross([]namedMesh{
-		{label: "default", lookup: fixed(map[string]string{"vps": "fd00::1"})},
-	}, map[string]bool{"default": true})
-	if addr, ok := lookup("vps"); !ok || addr.String() != "fd00::1" {
-		t.Errorf("vps resolved to %v (%v)", addr, ok)
+		{label: "office", lookup: fixed(map[string]string{"vps": "fd00::1"})},
+	})
+	if addr, ok := lookup("vps.office"); !ok || addr.String() != "fd00::1" {
+		t.Errorf("vps.office resolved to %v (%v)", addr, ok)
 	}
-	// And qualified, for anyone who types it.
-	if addr, ok := lookup("vps.default"); !ok || addr.String() != "fd00::1" {
-		t.Errorf("vps.default resolved to %v (%v)", addr, ok)
+	if addr, ok := lookup("vps"); ok {
+		t.Errorf("the short form resolved, to %v", addr)
 	}
 }
 
@@ -50,7 +51,7 @@ func TestQualifiedNamePicksTheMesh(t *testing.T) {
 	lookup := resolveAcross([]namedMesh{
 		{label: "home", lookup: fixed(map[string]string{"vps": "fd00::1", "nas": "fd00::2"})},
 		{label: "shared", lookup: fixed(map[string]string{"vps": "fd11::1"})},
-	}, map[string]bool{"home": true, "shared": true})
+	})
 
 	if addr, ok := lookup("vps.home"); !ok || addr.String() != "fd00::1" {
 		t.Errorf("vps.home resolved to %v (%v)", addr, ok)
@@ -58,21 +59,13 @@ func TestQualifiedNamePicksTheMesh(t *testing.T) {
 	if addr, ok := lookup("vps.shared"); !ok || addr.String() != "fd11::1" {
 		t.Errorf("vps.shared resolved to %v (%v)", addr, ok)
 	}
-
-	// A name on both meshes is answered by the first, in config order — which
-	// is your own mesh, since that is the one a config lists first and the one
-	// a second mesh is added to. Refusing instead took the short name away
-	// from exactly the devices that are on both of your meshes, which are the
-	// ones you reach most often, and looked from the outside like DNS being
-	// broken for one machine.
-	if addr, ok := lookup("vps"); !ok || addr.String() != "fd00::1" {
-		t.Errorf("shared name resolved to %v (%v), wanted the first mesh", addr, ok)
-	}
-
-	// Unambiguous unqualified still works, which is what keeps the short form
-	// useful on a node with more than one mesh.
-	if addr, ok := lookup("nas"); !ok || addr.String() != "fd00::2" {
-		t.Errorf("nas resolved to %v (%v)", addr, ok)
+	// Neither a name on both meshes nor a name on one resolves unqualified.
+	// Both did before: the first mesh in the list answered, which is how the
+	// same name came to mean different machines on different devices.
+	for _, short := range []string{"vps", "nas"} {
+		if addr, ok := lookup(short); ok {
+			t.Errorf("%s resolved unqualified, to %v", short, addr)
+		}
 	}
 }
 
@@ -82,7 +75,7 @@ func TestQualifiedNameDoesNotFallThrough(t *testing.T) {
 	lookup := resolveAcross([]namedMesh{
 		{label: "home", lookup: fixed(map[string]string{"vps": "fd00::1"})},
 		{label: "shared", lookup: fixed(map[string]string{})},
-	}, map[string]bool{"home": true, "shared": true, "work": true})
+	})
 	if addr, ok := lookup("vps.shared"); ok {
 		t.Errorf("vps.shared resolved to %v, but shared has no vps", addr)
 	}
@@ -91,17 +84,19 @@ func TestQualifiedNameDoesNotFallThrough(t *testing.T) {
 		t.Error("resolved a name on a mesh this node is not in")
 	}
 	// The reported case: a mesh the config knows but which is not running,
-	// because it was switched off. It is absent from the slice, so the
-	// qualified branch matches nothing and used to fall through to the loop
-	// below it — which handed the whole host to every mesh and got back "vps"
-	// on home. `ssh vps.work.mesh` then silently reached a different machine.
+	// because it was switched off, so it is absent from the slice. It used to
+	// fall through to a second pass that handed the whole host to every mesh
+	// and got back "vps" on home — `ssh vps.work.mesh` silently reached a
+	// different machine. There is no second pass now.
 	if addr, ok := lookup("vps.work"); ok {
 		t.Errorf("vps.work resolved to %v with the work mesh switched off", addr)
 	}
-	// A service on a device keeps working, which is why an unmatched label
-	// cannot simply be refused: it has the same shape as a qualified name.
-	if addr, ok := lookup("immich.vps"); !ok || addr.String() != "fd00::1" {
-		t.Errorf("immich.vps resolved to %v (%v)", addr, ok)
+	// A service on a device resolves by its mesh, like everything else.
+	if addr, ok := lookup("immich.vps.home"); !ok || addr.String() != "fd00::1" {
+		t.Errorf("immich.vps.home resolved to %v (%v)", addr, ok)
+	}
+	if addr, ok := lookup("immich.vps"); ok {
+		t.Errorf("a service with no mesh resolved, to %v", addr)
 	}
 }
 
@@ -143,30 +138,21 @@ func TestFirstMeshKeepsTheConfiguredInterface(t *testing.T) {
 	}
 }
 
-// A bound port on a second mesh has to be advertised under a name that resolves
-// to *that* mesh's address. The short form is answered by the primary mesh
-// alone, so `shrooms bound` printed a name pointing at an address where nothing
-// was listening — found by binding something to a second mesh and trying the
-// name it told us to use.
+// A bound port is reached as a name qualified by the mesh it is bound on —
+// the only form that resolves. It once printed the short form, which named an
+// address on the first mesh for a port bound on another, where nothing was
+// listening. Driven through boundName, which is what `shrooms bound` prints.
 func TestBoundNameCarriesTheMeshLabel(t *testing.T) {
 	for _, tc := range []struct {
-		name, host, label string
-		several           bool
-		want              string
+		name, host, label, want string
 	}{
-		{"one mesh keeps the short name", "laptop", "default", false, "laptop.mesh"},
-		{"several meshes qualify", "laptop", "test", true, "laptop.test.mesh"},
-		{"the primary qualifies too", "laptop", "default", true, "laptop.default.mesh"},
-		{"a name needing sanitising", "Living Room NAS", "home", true, "living-room-nas.home.mesh"},
+		{"one mesh is still qualified", "laptop", "office", "laptop.office.mesh"},
+		{"a second mesh", "laptop", "test", "laptop.test.mesh"},
+		{"a name needing sanitising", "Living Room NAS", "home", "living-room-nas.home.mesh"},
+		{"no mesh, no name", "laptop", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mesh.DNSName(tc.host, "")
-			if tc.several && tc.label != "" {
-				if h, l := mesh.SanitiseName(tc.host), mesh.SanitiseName(tc.label); h != "" && l != "" {
-					got = h + "." + l + ".mesh"
-				}
-			}
-			if got != tc.want {
+			if got := boundName(tc.host, tc.label); got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})

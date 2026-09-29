@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +28,7 @@ func TestInitMintsAndEnrols(t *testing.T) {
 	withStdin(t, "hunter2 hunter2\nhunter2 hunter2\n")
 	if err := cmdInit([]string{
 		"--name", "laptop",
+		"--mesh", "home",
 		"--config", cfgPath,
 		"--state", stateDir,
 		"--admin-dir", adminDir,
@@ -37,7 +40,15 @@ func TestInitMintsAndEnrols(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth, err := cfg.Authority()
+	// The mesh is named, and its authority lives on its own entry.
+	home, ok := cfg.MeshSet["home"]
+	if !ok {
+		t.Fatalf("init wrote no mesh called home: %+v", cfg.Meshes())
+	}
+	if cfg.NetworkKey != "" {
+		t.Error("init still wrote the old top-level shape")
+	}
+	auth, err := home.Authority()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,10 +65,23 @@ func TestInitMintsAndEnrols(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(st.Credential) == 0 {
+	// Under the base identity: this is the device's first mesh, so it keeps
+	// the keys it was generated with rather than deriving new ones.
+	netID, err := home.NetworkID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms, err := st.MeshState(netID, home.InheritsIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !home.InheritsIdentity || !bytes.Equal(ms.Identity.DevicePub, st.Identity.DevicePub) {
+		t.Fatal("the first mesh does not hold the device's base identity")
+	}
+	if len(ms.Credential) == 0 {
 		t.Fatal("init issued no credential; this device could not join its own mesh")
 	}
-	c, err := cred.UnmarshalCredential(st.Credential)
+	c, err := cred.UnmarshalCredential(ms.Credential)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +96,7 @@ func TestInitMintsAndEnrols(t *testing.T) {
 	}
 
 	// The admin key stays encrypted at rest: init read a passphrase.
-	raw, err := os.ReadFile(filepath.Join(adminDir, "admin.json"))
+	raw, err := os.ReadFile(filepath.Join(adminDir, "admin-home.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +119,7 @@ func TestInitNoAdmin(t *testing.T) {
 	quiet(t)
 	if err := cmdInit([]string{
 		"--name", "laptop",
+		"--mesh", "home",
 		"--config", cfgPath,
 		"--state", filepath.Join(dir, "state"),
 		"--admin-dir", adminDir,
@@ -102,15 +127,45 @@ func TestInitNoAdmin(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(adminDir, "admin.json")); !os.IsNotExist(err) {
-		t.Error("--no-admin minted an authority anyway")
+	if found, _ := filepath.Glob(filepath.Join(adminDir, "admin*.json")); len(found) != 0 {
+		t.Errorf("--no-admin minted an authority anyway: %v", found)
 	}
 	cfg, err := state.LoadConfig(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.AdminKeys) != 0 {
+	if len(cfg.AdminKeys) != 0 || len(cfg.MeshSet["home"].AdminKeys) != 0 {
 		t.Error("--no-admin wrote admin_keys")
+	}
+}
+
+// A first mesh is named, always: names are qualified everywhere, so a mesh
+// without one could be reached by no name at all. Refused before anything is
+// written, and "default" refused with it — it is what the old unlabelled shape
+// was called, not a name (docs/one-kind-of-mesh.md, 2026-09-29).
+func TestInitNeedsAName(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"no name", nil, "name the mesh"},
+		{"default", []string{"--mesh", "default"}, "not a mesh name"},
+		{"not a label", []string{"--mesh", "Home Net"}, "lower-case"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "shrooms.toml")
+			args := append([]string{"--name", "laptop", "--config", cfgPath,
+				"--state", filepath.Join(dir, "state"), "--no-admin"}, tc.args...)
+			err := cmdInit(args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want an error mentioning %q", err, tc.want)
+			}
+			if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
+				t.Error("a refused init wrote a config anyway")
+			}
+		})
 	}
 }
 

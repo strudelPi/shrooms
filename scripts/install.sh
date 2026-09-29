@@ -6,7 +6,7 @@
 # no separate "now run the daemon" step.
 #
 #   sudo ./install.sh prepare --name fedora          # then redeem an invite
-#   sudo ./install.sh init --relay                   # create a new mesh
+#   sudo ./install.sh init --mesh home --relay       # create a new mesh
 #
 # `prepare` is the one to use with invites: it installs and starts the daemon
 # with no mesh, and the daemon waits. Then, on a machine already on the mesh,
@@ -53,7 +53,7 @@ usage() {
     cat <<EOF
 usage: $0 [--image REF] [--force] (init | prepare) [flags...]
 
-  init                 create a new mesh
+  init                 create a new mesh; name it with --mesh <name>
   prepare              install and wait: the config is written with no key,
                        so the machine is set up without the key passing
                        through anybody, and joins later with an invite

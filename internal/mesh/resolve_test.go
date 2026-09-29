@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"net/netip"
 	"testing"
 	"time"
 
@@ -139,7 +140,9 @@ func TestLookupResolvesServiceOnPeer(t *testing.T) {
 // desktop panel and the phone all showed before this existed.
 func TestQualifiedDNSName(t *testing.T) {
 	for _, tc := range []struct{ name, label, suffix, want string }{
-		{"laptop", "", "mesh", "laptop.mesh"},
+		// No mesh, no name: the resolver answers only qualified names, so a
+		// short one printed here would be one that does not resolve.
+		{"laptop", "", "mesh", ""},
 		{"laptop", "test", "mesh", "laptop.test.mesh"},
 		{"laptop", "home", "", "laptop.home.mesh"},
 		{"Living Room NAS", "shared", "mesh", "living-room-nas.shared.mesh"},
@@ -150,5 +153,77 @@ func TestQualifiedDNSName(t *testing.T) {
 			t.Errorf("QualifiedDNSName(%q,%q,%q) = %q, want %q",
 				tc.name, tc.label, tc.suffix, got, tc.want)
 		}
+	}
+}
+
+// The rule of 2026-09-29, against the real Mesh.Lookup: a name resolves on the
+// mesh its last label names, and a name with no mesh resolves nowhere — on a
+// device with one mesh exactly as on a device with several.
+func TestResolveQualifiedOnly(t *testing.T) {
+	now := time.Now()
+	mk := func(names ...string) *Mesh {
+		nk, _ := identity.NewNetworkKey()
+		self, _ := identity.New()
+		m := &Mesh{roster: NewRoster(nk, self.DevicePub)}
+		for _, n := range names {
+			id, _ := identity.New()
+			m.roster.Apply(newAnnounce(t, id, n, nil, 1), now)
+		}
+		return m
+	}
+	office := mk("vps", "atlas")
+	home := mk("vps")
+	meshes := map[string]*Mesh{"office": office, "home": home}
+	find := func(label string) (func(string) (netip.Addr, bool), bool) {
+		m, ok := meshes[label]
+		if !ok {
+			return nil, false
+		}
+		return m.Lookup, true
+	}
+	want := func(m *Mesh, n string) netip.Addr {
+		a, _ := m.Resolve(n)
+		return a
+	}
+
+	for _, tc := range []struct {
+		host string
+		ok   bool
+		addr netip.Addr
+	}{
+		{"atlas.office", true, want(office, "atlas")},
+		{"vps.office", true, want(office, "vps")},
+		{"vps.home", true, want(home, "vps")},        // same name, the other mesh
+		{"immich.vps.home", true, want(home, "vps")}, // a service on a device
+		{"atlas", false, netip.Addr{}},               // the short form
+		{"atlas.home", false, netip.Addr{}},          // not on that mesh
+		{"atlas.work", false, netip.Addr{}},          // a mesh this node is not on
+		{"immich.vps", false, netip.Addr{}},          // a service with no mesh
+		{"", false, netip.Addr{}},
+		{"atlas.", false, netip.Addr{}},
+	} {
+		got, ok := ResolveQualified(tc.host, find)
+		if ok != tc.ok || got != tc.addr {
+			t.Errorf("%q resolved to %v (%v), want %v (%v)", tc.host, got, ok, tc.addr, tc.ok)
+		}
+	}
+	if want(office, "vps") == want(home, "vps") {
+		t.Fatal("the two vps devices share an address, so the test proves nothing")
+	}
+
+	// And with one mesh: still no short form.
+	only := map[string]*Mesh{"office": office}
+	one := func(label string) (func(string) (netip.Addr, bool), bool) {
+		m, ok := only[label]
+		if !ok {
+			return nil, false
+		}
+		return m.Lookup, true
+	}
+	if _, ok := ResolveQualified("atlas", one); ok {
+		t.Error("a device with one mesh answered the short form")
+	}
+	if a, ok := ResolveQualified("atlas.office", one); !ok || a != want(office, "atlas") {
+		t.Errorf("atlas.office on a one-mesh device resolved to %v (%v)", a, ok)
 	}
 }

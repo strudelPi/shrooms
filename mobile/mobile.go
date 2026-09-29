@@ -135,13 +135,24 @@ type meshInstance struct {
 	port uint16
 }
 
-// Init creates a new mesh and returns its network key.
-func Init(name, configDir string) (string, error) {
-	cfg, _, err := setup(configDir, name, "")
+// Init creates a new mesh called meshName and returns its network key.
+//
+// The mesh is named because every first mesh is now: names are qualified
+// everywhere — peer.<mesh>.mesh — so an unnamed mesh would be one nothing
+// could reach by name (docs/one-kind-of-mesh.md). "default" is refused for
+// the same reason: it is what the old unlabelled shape was called, not a name.
+func Init(name, meshName, configDir string) (string, error) {
+	if meshName == state.DefaultLabel {
+		return "", fmt.Errorf("%q is not a mesh name — pick one you will want to type", meshName)
+	}
+	if err := state.ValidMeshLabel(meshName); err != nil {
+		return "", err
+	}
+	cfg, _, err := setup(configDir, name, meshName, "")
 	if err != nil {
 		return "", err
 	}
-	return cfg.NetworkKey, nil
+	return cfg.MeshSet[meshName].NetworkKey, nil
 }
 
 // Join is gone: a raw network key no longer makes this device a member.
@@ -362,8 +373,11 @@ func redeemInvite(token, name, label, configDir string, timeoutSeconds int) erro
 	// both, which is visible to anyone in both and is what per-mesh identities
 	// exist to prevent. The first mesh keeps the base identity, because that is
 	// what the single-mesh config form means.
+	// label is empty for the device's FIRST mesh (JoinWithInvite) and set for an
+	// additional one (JoinAnotherWithInvite). Only an additional mesh derives an
+	// identity; the first keeps the base keys, whatever it ends up called.
 	var resp *invite.Response
-	if label != "" && label != state.DefaultLabel {
+	if label != "" {
 		resp, err = invite.RedeemForMesh(ctx, tr, secret, base,
 			func(r *invite.Response) (*invite.Request, error) {
 				id, err := state.MeshIDFromInvite(r.MeshID, r.NetworkKey)
@@ -393,7 +407,8 @@ func redeemInvite(token, name, label, configDir string, timeoutSeconds int) erro
 		return err
 	}
 	// An additional mesh keeps everything already configured and adds itself;
-	// a first one writes the single-mesh form every config in the field uses.
+	// a first one writes the config.
+	first := label == ""
 	cfg := phoneDefaults()
 	if existing, err := state.LoadConfig(cfgPath); err == nil {
 		cfg = existing
@@ -401,15 +416,8 @@ func redeemInvite(token, name, label, configDir string, timeoutSeconds int) erro
 	// The device name is config-wide, so setting it here would rename this
 	// device on every mesh it is already on — which is what happened: a phone
 	// called "nothing" became "a063" on the mesh it had been using for weeks.
-	if label == "" {
+	if first {
 		cfg.Name = name
-	}
-	if label != "" {
-		if cfg.MeshSet == nil {
-			cfg.MeshSet = map[string]state.Mesh{}
-		}
-	} else {
-		cfg.NetworkKey = nk.String()
 	}
 	var adminKeys []string
 	for _, k := range resp.AdminKeys {
@@ -418,12 +426,24 @@ func redeemInvite(token, name, label, configDir string, timeoutSeconds int) erro
 		}
 		adminKeys = append(adminKeys, b32.EncodeToString(k))
 	}
-	if label != "" {
+	if first {
+		// Named, like every first mesh now: the name the inviting device uses
+		// for it, else one derived from the mesh id. A first mesh used to be
+		// written into the top-level fields and so became "default", which
+		// answers only to peer.mesh — a tablet joined "office" on 2026-09-29
+		// and could reach nothing by the names the rest of the mesh used
+		// (docs/one-kind-of-mesh.md).
+		meshName, from := state.ChooseMeshLabel("", resp.Label, state.NetworkID(nk), nil)
+		appendLog(configDir, "INFO", fmt.Sprintf("calling the mesh %q (%s)", meshName, from))
+		label = meshName
+		cfg = cfg.WithFirstMesh(label, state.Mesh{NetworkKey: nk.String(), AdminKeys: adminKeys})
+	} else {
+		if cfg.MeshSet == nil {
+			cfg.MeshSet = map[string]state.Mesh{}
+		}
 		cfg.MeshSet[label] = state.Mesh{
 			Label: label, NetworkKey: nk.String(), AdminKeys: adminKeys,
 		}
-	} else {
-		cfg.AdminKeys = adminKeys
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -446,12 +466,9 @@ func redeemInvite(token, name, label, configDir string, timeoutSeconds int) erro
 		if err != nil {
 			return fmt.Errorf("the invitation carried a malformed credential: %w", err)
 		}
-		// The authority of the mesh being joined, which on an additional mesh
-		// is not the config's top-level one.
-		auth, err := cfg.Authority()
-		if label != "" {
-			auth, err = cfg.MeshSet[label].Authority()
-		}
+		// The authority of the mesh being joined, which is on its own entry
+		// whether it is the first mesh or an additional one.
+		auth, err := cfg.MeshSet[label].Authority()
 		if err != nil {
 			return err
 		}
@@ -474,8 +491,7 @@ func redeemInvite(token, name, label, configDir string, timeoutSeconds int) erro
 		// credential naming the wrong keys. An orphan credential for a mesh the
 		// config does not list is inert; a config listing a mesh with no
 		// credential is a phone that cannot join and cannot back out.
-		legacy := label == "" || label == state.DefaultLabel
-		if err := st.SetMeshCredentialFor(state.NetworkID(nk), legacy, resp.Credential); err != nil {
+		if err := st.SetMeshCredentialFor(state.NetworkID(nk), first, resp.Credential); err != nil {
 			return err
 		}
 	}
@@ -737,7 +753,7 @@ func MeshesJSON(configDir string) string {
 			continue
 		}
 		networkID := state.NetworkID(nk)
-		ms, err := st.MeshState(networkID, cfg.NetworkKey != "" && m.Label == state.DefaultLabel)
+		ms, err := st.MeshState(networkID, m.InheritsIdentity)
 		if err != nil {
 			continue
 		}
@@ -1071,7 +1087,7 @@ func Start(tunFd int, configDir string, dnsServers string, p Protector, l Logger
 		networkID := state.NetworkID(nk)
 		// The mesh written as network_key keeps the identity this device
 		// already had; anything else derives its own.
-		ms, err := st.MeshState(networkID, cfg.NetworkKey != "" && mc.Label == state.DefaultLabel)
+		ms, err := st.MeshState(networkID, mc.InheritsIdentity)
 		if err != nil {
 			closeAll()
 			return fmt.Errorf("mesh %q: %w", mc.Label, err)
@@ -1146,7 +1162,7 @@ func Start(tunFd int, configDir string, dnsServers string, p Protector, l Logger
 		meshCfg := cfg.ForMesh(mc, in.port)
 
 		nk, _ := mc.Key()
-		ms, err := st.MeshState(state.NetworkID(nk), cfg.NetworkKey != "" && mc.Label == state.DefaultLabel)
+		ms, err := st.MeshState(state.NetworkID(nk), mc.InheritsIdentity)
 		if err != nil {
 			_ = node.Stop()
 			closeAll()
@@ -1359,7 +1375,10 @@ func StatusJSON() string {
 	}
 	snap := snapshotAll(s.instances, s.suffix)
 	snap.Name, snap.Overlay, snap.Prefix = s.name, s.overlay, s.prefix
-	snap.DNSName = mesh.DNSName(s.name, s.suffix)
+	// This device's own name on its first mesh, qualified like every other.
+	if len(s.instances) > 0 {
+		snap.DNSName = mesh.QualifiedDNSName(s.name, s.instances[0].label, s.suffix)
+	}
 	if s.dnsIntercept != nil {
 		handled, failed := s.dnsIntercept.Stats()
 		snap.DNS.Intercepted, snap.DNS.InterceptFailed = handled, failed

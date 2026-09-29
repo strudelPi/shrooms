@@ -64,7 +64,7 @@ sh_() { # sh_ <node> <args...> — the CLI, pointed at that node's files
 
 mint() { # mint <node> <name> <port>
   local n; n=$(node "$1"); mkdir -p "$n"
-  printf 'pw\npw\n' | "$BIN" init --config "$n/config.toml" --state "$n/state" \
+  printf 'pw\npw\n' | "$BIN" init --mesh home --config "$n/config.toml" --state "$n/state" \
       --admin-dir "$n/admin" --name "$2" --port "$3" >"$n/init.log" 2>&1
 }
 
@@ -86,7 +86,9 @@ scenario_admin_show() {
   printf 'pw\npw\n' | "$BIN" admin init --dir "$(node one)/admin" --mesh office >/dev/null 2>&1
 
   local shown; shown=$("$BIN" admin show --dir "$(node one)/admin" 2>&1)
-  expect "lists the default authority"        "default (admin.json)"       "$shown"
+  # The first mesh is named now, so its authority is filed under its name
+  # like any other (docs/one-kind-of-mesh.md, 2026-09-29).
+  expect "lists the first mesh's authority"   "home (admin-home.json)"     "$shown"
   expect "lists a named mesh's authority too" "office (admin-office.json)" "$shown"
   expect "can be asked for one by name" "admin_keys = [" \
     "$("$BIN" admin show --dir "$(node one)/admin" --mesh office 2>&1)"
@@ -217,11 +219,13 @@ scenario_rename_moves_nothing() {
 
   local before after
   before=$("$BIN" mesh list --config "$n/config.toml" 2>&1)
+  # To "garden", which sorts ahead of both the minted mesh (home) and office,
+  # so an unpinned rename would move every mesh after it.
   expect "rename reports what it pinned" "pinned, so the rename moved nothing" \
-    "$("$BIN" mesh rename --config "$n/config.toml" --admin-dir "$n/admin" test home 2>&1)"
+    "$("$BIN" mesh rename --config "$n/config.toml" --admin-dir "$n/admin" test garden 2>&1)"
 
   expect "the renamed mesh has its interface and port written down" "iface" \
-    "$(grep -E 'mesh\.home\.(iface|port)' "$n/config.toml" | tr '\n' ' ')"
+    "$(grep -E 'mesh\.garden\.(iface|port)' "$n/config.toml" | tr '\n' ' ')"
   expect "so does the mesh it would have displaced" "iface" \
     "$(grep -E 'mesh\.office\.(iface|port)' "$n/config.toml" | tr '\n' ' ')"
   refute "the old label is gone" "test" \

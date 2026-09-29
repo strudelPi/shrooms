@@ -382,6 +382,15 @@ type Config struct {
 	// into this — it is the form that bootstraps and recovers a mesh, and the
 	// one the whole install base uses.
 	MeshSet map[string]Mesh
+
+	// MeshLabel is what this device calls the mesh this Config describes, when
+	// it describes one — set by ForMesh, never read from or written to a file.
+	//
+	// The mesh package needed it for exactly one thing: suggesting the name to
+	// a device it invites. Without it a joiner could not know the mesh was
+	// called "office" and fell back to "default", which resolves under no name
+	// the rest of the mesh uses (docs/one-kind-of-mesh.md, 2026-09-29).
+	MeshLabel string
 }
 
 // DefaultConfig returns a config with everything but the network key filled in.

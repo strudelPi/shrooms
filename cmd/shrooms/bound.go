@@ -65,24 +65,11 @@ func cmdBound(args []string) error {
 			if l.Port == 80 || l.Port == 443 || l.Port == 53 {
 				continue
 			}
-			// The name a peer would type — which on a node with more than
-			// one mesh has to carry the label.
-			//
-			// It did not, and the short form is answered by the primary mesh
-			// alone: every row for a second mesh named an address on the
-			// first one, where nothing is listening. A column headed "reached
-			// as" that cannot be reached is worse than no column, and it took
-			// binding something to a second mesh to see it.
-			// Each part sanitised on its own and then joined: sanitising
-			// "laptop.test" as one string turns the separator into a hyphen
-			// and yields laptop-test.mesh, which is a different name and
-			// resolves to nothing at all.
-			name := mesh.DNSName(st.Name, "")
-			if len(mine) > 1 && m.label != "" {
-				if host, label := mesh.SanitiseName(st.Name), mesh.SanitiseName(m.label); host != "" && label != "" {
-					name = host + "." + label + ".mesh"
-				}
-			}
+			// The name a peer would type: qualified by the mesh the port is
+			// bound on, which is the only form that resolves. It once named
+			// an address on the first mesh for a port bound on another, where
+			// nothing was listening.
+			name := boundName(st.Name, m.label)
 			fmt.Fprintf(w, "%s\t%s\t%s:%d\n", m.label, l.Spec(), name, l.Port)
 			found++
 		}
@@ -98,4 +85,9 @@ func cmdBound(args []string) error {
 	fmt.Printf("\n%d would be announced with announce_bound = \"true\".\n", found)
 	fmt.Println("They are already reachable by every member; this is about being told.")
 	return nil
+}
+
+// boundName is the name a port bound on one mesh is reached as.
+func boundName(device, label string) string {
+	return mesh.QualifiedDNSName(device, label, "")
 }

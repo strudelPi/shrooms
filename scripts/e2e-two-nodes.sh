@@ -47,9 +47,13 @@ echo "==> two nodes, local fleet"
 
 # --- node A: mints the mesh, and is the fleet ------------------------------
 mkdir -p "$WORK/a"
-printf 'pw\npw\n' | "$BIN" init --config "$WORK/a/config.toml" --state "$WORK/a/state" \
+# The mesh is named, as every first mesh is (docs/one-kind-of-mesh.md), and
+# its interface is pinned on the mesh itself — so a top-level `interface`
+# appended afterwards would no longer move it. The pin is set instead.
+printf 'pw\npw\n' | "$BIN" init --mesh e2e --config "$WORK/a/config.toml" --state "$WORK/a/state" \
     --admin-dir "$WORK/a/admin" --name alpha --port "$A_WG" >"$WORK/a/init.log" 2>&1
-printf 'delivery_port = %d\ninterface = "%s"\n' "$A_DELIVERY" "$A_IF" >> "$WORK/a/config.toml"
+sed -i 's|^mesh\.e2e\.iface = .*|mesh.e2e.iface = "'"$A_IF"'"|' "$WORK/a/config.toml"
+printf 'delivery_port = %d\n' "$A_DELIVERY" >> "$WORK/a/config.toml"
 
 "$BIN" daemon --config "$WORK/a/config.toml" --state "$WORK/a/state" \
     --socket "$SOCKS/a.sock" >"$WORK/a/daemon.log" 2>&1 &
@@ -80,9 +84,18 @@ mkdir -p "$WORK/b"
 # carries it looks like. `set-key` did this until joining by key was removed
 # (b78fae6); the invite that replaced it is a separate flow, and this suite is
 # about two enrolled nodes finding each other.
+#
+# In the named form a join writes: the mesh called what A calls it, holding B's
+# base identity, with the placeholder `prepare` left removed — a config still
+# carrying it reads as waiting for a mesh, and the daemon would wait forever.
 KEY=$("$BIN" key show --config "$WORK/a/config.toml" 2>/dev/null | tail -1)
-sed -i 's|^network_key = .*|network_key = "'"$KEY"'"|' "$WORK/b/config.toml"
-if [ -n "$KEY" ] && grep -q '^network_key = "'"$KEY"'"' "$WORK/b/config.toml"; then
+sed -i '/^network_key = /d' "$WORK/b/config.toml"
+{
+  printf 'mesh.e2e.key = "%s"\n' "$KEY"
+  printf 'mesh.e2e.inherits_identity = "true"\n'
+  printf 'mesh.e2e.iface = "%s"\nmesh.e2e.port = "%d"\n' "$B_IF" "$B_WG"
+} >> "$WORK/b/config.toml"
+if [ -n "$KEY" ] && grep -q '^mesh.e2e.key = "'"$KEY"'"' "$WORK/b/config.toml"; then
   ok "node B has the mesh key"
 else
   bad "node B never got the mesh key"
@@ -90,9 +103,9 @@ else
   exit 1
 fi
 {
-  printf 'delivery_port = %d\ninterface = "%s"\n' "$B_DELIVERY" "$B_IF"
+  printf 'delivery_port = %d\n' "$B_DELIVERY"
   printf 'entry_nodes = ["/ip4/127.0.0.1/tcp/%d/p2p/%s"]\n' "$A_DELIVERY" "$PEER_A"
-  grep '^admin_keys' "$WORK/a/config.toml"
+  grep '^mesh\.e2e\.admin_keys' "$WORK/a/config.toml"
 } >> "$WORK/b/config.toml"
 ok "node B is pointed at node A as its only bootstrap"
 

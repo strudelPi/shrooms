@@ -246,7 +246,7 @@ nothing to ship:
 $ git clone https://github.com/vpavlin/shrooms && cd shrooms
 $ make deps-release && make shrooms
 $ sudo make install                       # binary, libraries, systemd unit
-$ sudo shrooms init --relay --name vps
+$ sudo shrooms init --mesh home --relay --name vps
 $ sudo systemctl enable --now shrooms
 ```
 
@@ -808,7 +808,7 @@ key is needed only to enrol and revoke — so it can live offline, on a Keycard 
 in a drawer, never on a participating node.
 
 ```console
-$ shrooms init --name laptop               # a mesh: network key, admin keys,
+$ shrooms init --mesh home --name laptop   # a mesh: network key, admin keys,
                                            #   and this device's credential
 $ shrooms invite                           # admit one more device, once
 $ shrooms admin revoke --device <hex>      # withdraw one before it expires
@@ -1281,7 +1281,7 @@ address is settled before the key arrives and does not change when it does.
 Or to create a new mesh, on the first machine:
 
 ```console
-$ sudo bash install.sh init --relay
+$ sudo bash install.sh init --mesh home --relay
 ```
 
 Everything after `init`/`join` goes straight to `shrooms`, so its flags are

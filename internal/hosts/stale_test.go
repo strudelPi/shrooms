@@ -3,6 +3,7 @@ package hosts
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -21,10 +22,10 @@ func write(t *testing.T, body string) string {
 // stale answer won. Nothing anywhere reported it.
 func TestAMovedPeerIsReported(t *testing.T) {
 	p := write(t, Begin+"\n"+
-		"fd3b::old  nothing nothing.mesh\n"+
+		"fd3b::old  nothing.office.mesh\n"+
 		End+"\n")
 
-	bad := Stale(p, []Entry{{Name: "nothing", Addr: "fd3b::new"}}, "mesh")
+	bad := Stale(p, []Entry{{Name: "nothing", Mesh: "office", Addr: "fd3b::new"}}, "mesh")
 	if len(bad) != 1 {
 		t.Fatalf("reported %d disagreements, want 1: %+v", len(bad), bad)
 	}
@@ -33,32 +34,57 @@ func TestAMovedPeerIsReported(t *testing.T) {
 	}
 }
 
-// One device appears under several names. Counting each as its own problem
-// makes a single stale entry read as two or three, which misrepresents how much
-// is wrong.
+// One device appears on several lines — its overlay address and its IPv4
+// alias. Counting each as its own problem makes a single stale entry read as
+// two, which misrepresents how much is wrong.
 func TestNameVariantsCollapseToOneProblem(t *testing.T) {
-	// The four names a labelled entry really renders as, so the test exercises
-	// what the writer produces rather than a shape invented here.
-	was := []Entry{{Name: "nas", Mesh: "default", Addr: "fd3b::old"}}
+	// Written by the real writer, so the test exercises what it produces
+	// rather than a shape invented here.
+	was := []Entry{{Name: "nas", Mesh: "home", Addr: "fd3b::old"}}
 	p := write(t, Render(was, "mesh"))
 
-	bad := Stale(p, []Entry{{Name: "nas", Mesh: "default", Addr: "fd3b::new"}}, "mesh")
+	bad := Stale(p, []Entry{{Name: "nas", Mesh: "home", Addr: "fd3b::new"}}, "mesh")
 	if len(bad) != 1 {
 		t.Fatalf("one moved device produced %d problems: %+v", len(bad), bad)
 	}
-	if bad[0].Name != "nas" {
-		t.Errorf("reported under %q, want the shortest name", bad[0].Name)
+	if bad[0].Name != "nas.home.mesh" {
+		t.Errorf("reported under %q, want its qualified name", bad[0].Name)
+	}
+}
+
+// A block written before names were qualified still answers peer.mesh, which
+// nothing else does any more. It is reported, so `status` says to rewrite it.
+func TestAShortNameFromAnOlderBuildIsReported(t *testing.T) {
+	p := write(t, Begin+"\n"+"fd3b::1  nas nas.mesh\n"+End+"\n")
+	bad := Stale(p, []Entry{{Name: "nas", Mesh: "home", Addr: "fd3b::1"}}, "mesh")
+	if len(bad) != 1 {
+		t.Fatalf("reported %d, want 1: %+v", len(bad), bad)
+	}
+	if bad[0].Wants != "" {
+		t.Errorf("a short name should want nothing, got %q", bad[0].Wants)
 	}
 }
 
 // A block that agrees is silent. This is the common case and a warning that
 // cried wolf would be worse than none.
 func TestAnAgreeingBlockIsSilent(t *testing.T) {
-	entries := []Entry{{Name: "nas", Addr: "fd3b::1", AddrV4: "198.19.0.1"}}
+	entries := []Entry{{Name: "nas", Mesh: "home", Addr: "fd3b::1", AddrV4: "198.19.0.1"}}
 	p := write(t, Render(entries, "mesh"))
+	if !strings.Contains(string(mustRead(t, p)), "nas.home.mesh") {
+		t.Fatal("the writer produced nothing to compare, so this would pass vacuously")
+	}
 	if bad := Stale(p, entries, "mesh"); len(bad) != 0 {
 		t.Errorf("a freshly written block reported as stale: %+v", bad)
 	}
+}
+
+func mustRead(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 // A name the mesh no longer serves at all — a peer that left, or a block
@@ -66,7 +92,7 @@ func TestAnAgreeingBlockIsSilent(t *testing.T) {
 // answering for it.
 func TestANameTheMeshNoLongerServesIsReported(t *testing.T) {
 	p := write(t, Begin+"\n"+"fd3b::1  ghost ghost.mesh\n"+End+"\n")
-	bad := Stale(p, []Entry{{Name: "nas", Addr: "fd3b::2"}}, "mesh")
+	bad := Stale(p, []Entry{{Name: "nas", Mesh: "home", Addr: "fd3b::2"}}, "mesh")
 	if len(bad) != 1 {
 		t.Fatalf("reported %d, want 1: %+v", len(bad), bad)
 	}
@@ -81,7 +107,7 @@ func TestANameTheMeshNoLongerServesIsReported(t *testing.T) {
 // that is worth reporting rather than treating as cosmetic.
 func TestABareSelfNameLeftByAnOlderBuildIsReported(t *testing.T) {
 	p := write(t, Begin+"\n"+"fd3b::1  laptop laptop.mesh\n"+End+"\n")
-	bad := Stale(p, []Entry{{Name: "laptop", Addr: "fd3b::1", Self: true}}, "mesh")
+	bad := Stale(p, []Entry{{Name: "laptop", Mesh: "home", Addr: "fd3b::1", Self: true}}, "mesh")
 	if len(bad) != 1 {
 		t.Fatalf("reported %d, want 1: %+v", len(bad), bad)
 	}

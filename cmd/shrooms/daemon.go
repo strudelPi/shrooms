@@ -288,7 +288,7 @@ func cmdDaemon(args []string) error {
 		resolver := &dnssrv.Server{
 			Suffix: cfg.HostsSuffix,
 			Also:   also,
-			Lookup: resolveAcross(named(instances), knownLabels(cfg)),
+			Lookup: resolveAcross(named(instances)),
 			Alias:  aliasAcross(named(instances)),
 			Log:    func(msg string, args ...any) { log.Debug(msg, args...) },
 		}
@@ -694,7 +694,8 @@ type rendezvousStatus struct {
 }
 
 type peerStatus struct {
-	// Mesh is which mesh this peer is on, empty on a single-mesh node.
+	// Mesh is which mesh this peer is on. Always set now: a peer's name is
+	// qualified by it even on a node with one mesh.
 	Mesh string `json:"mesh,omitempty"`
 
 	Name string `json:"name"`
@@ -1480,10 +1481,10 @@ func serveControl(ctx context.Context, log *slog.Logger, path string, instances 
 			if s, err := in.mesh.PeerStats(); err == nil {
 				stats = s
 			}
-			meshLabel := ""
-			if len(instances) > 1 {
-				meshLabel = in.label
-			}
+			// Every mesh's label, including a device's only one: names are
+			// qualified everywhere, so a peer's name needs its mesh however
+			// many meshes this device is on.
+			meshLabel := in.label
 			svc, bnd := m.Services(now), m.Bound(now)
 			for _, p := range m.Roster().Current(now) {
 				ps := peerStatus{
@@ -1499,10 +1500,7 @@ func serveControl(ctx context.Context, log *slog.Logger, path string, instances 
 					LastSeen:  p.LastSeen.Format(time.RFC3339),
 					Online:    p.Online(now),
 					Relay:     p.Relay,
-					// Qualified when this node has more than one mesh, because
-					// the short form is answered by the first one — so an
-					// unqualified name for a peer on any other mesh points at
-					// an address on a network it is not on.
+					// Qualified: the only form the resolver answers.
 					DNSName: mesh.QualifiedDNSName(p.Name, meshLabel, cfg.HostsSuffix),
 				}
 				if best, ok := m.BestPath(p.ID(), now); ok {
@@ -1568,7 +1566,7 @@ func serveControl(ctx context.Context, log *slog.Logger, path string, instances 
 					Target:    sv.Target,
 					TLS:       sv.TLS,
 					Type:      sv.Type,
-					DNSName:   mesh.DNSName(cfg.Name, cfg.HostsSuffix),
+					DNSName:   mesh.QualifiedDNSName(cfg.Name, primary.label, cfg.HostsSuffix),
 					Listening: sv.Listening,
 					Direct:    sv.Direct,
 					Conns:     sv.Conns,

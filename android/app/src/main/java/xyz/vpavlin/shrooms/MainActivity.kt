@@ -434,18 +434,31 @@ private fun JoinScreen(dir: String, onScan: ((String) -> Unit) -> Unit, onDone: 
             }
         }
 
+        // Creating a mesh names it. Every name is qualified now —
+        // peer.<mesh>.mesh — so a mesh with no name would be reachable by no
+        // name at all, and this is also the name the devices it invites are
+        // offered (docs/one-kind-of-mesh.md, 2026-09-29). Asked only once
+        // somebody chooses to create, so joining is not slowed by it.
         Spacer(Modifier.height(32.dp))
+        var creating by remember { mutableStateOf(false) }
+        var meshName by remember { mutableStateOf("") }
         Text(
-            "no mesh yet? create one",
+            if (creating) "name the new mesh" else "no mesh yet? create one",
             style = MaterialTheme.typography.bodySmall,
             color = Palette.Phosphor,
-            modifier = Modifier.clickable(enabled = !busy) {
+            modifier = Modifier.clickable(enabled = !busy) { creating = true },
+        )
+        if (creating) {
+            Spacer(Modifier.height(8.dp))
+            KeyField(meshName, singleLine = true) { meshName = it.trim().lowercase() }
+            Spacer(Modifier.height(10.dp))
+            Action("CREATE", enabled = meshName.isNotEmpty() && !busy) {
                 busy = true
-                runCatching { Mobile.init(name, dir) }
+                runCatching { Mobile.init(name, meshName, dir) }
                     .onSuccess { onDone() }
                     .onFailure { error = it.message ?: "could not create"; busy = false }
-            },
-        )
+            }
+        }
     }
 }
 

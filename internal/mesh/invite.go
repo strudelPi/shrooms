@@ -197,6 +197,7 @@ func (m *Mesh) ReplyInvite(s invite.Secret, req *invite.Request, credential []by
 func (m *Mesh) inviteResponse() *invite.Response {
 	resp := &invite.Response{
 		MeshID:    state.NetworkID(m.nk),
+		Label:     suggestedLabel(m.cfg.MeshLabel),
 		Timestamp: time.Now().Unix(),
 	}
 	if m.authority != nil {
@@ -205,6 +206,17 @@ func (m *Mesh) inviteResponse() *invite.Response {
 		}
 	}
 	return resp
+}
+
+// suggestedLabel is the name offered to a joiner: this device's own name for
+// the mesh, unless that is "default". That is not a name — it is what the old
+// single-mesh config shape was called — and passing it on would give the joiner
+// the very label that answers to nothing anybody else uses.
+func suggestedLabel(label string) string {
+	if label == state.DefaultLabel {
+		return ""
+	}
+	return label
 }
 
 // replyMeshOnly answers the first round. No network key and no credential: this

@@ -2350,12 +2350,16 @@ func (m *Mesh) hostEntries() []hosts.Entry {
 	// of the mesh resolver — so a block with only overlay addresses hides the
 	// IPv4 aliases (ADR-021) from everything that cannot use IPv6. The resolver
 	// has always served both; nothing was asking it.
+	// Labelled with this mesh: names are qualified, so an entry without its
+	// mesh is not written at all.
 	entries := []hosts.Entry{{
-		Name: m.cfg.Name, Addr: m.self.String(), AddrV4: m.aliasOf(m.self), Self: true,
+		Name: m.cfg.Name, Addr: m.self.String(), AddrV4: m.aliasOf(m.self),
+		Mesh: m.cfg.MeshLabel, Self: true,
 	}}
 	for _, p := range m.roster.Peers() {
 		entries = append(entries, hosts.Entry{
 			Name: p.Name, Addr: p.Overlay.String(), AddrV4: m.aliasOf(p.Overlay),
+			Mesh: m.cfg.MeshLabel,
 		})
 	}
 	return entries

@@ -157,7 +157,7 @@ func startInstance(ctx context.Context, log *slog.Logger, cfg state.Config, st *
 	if specs, err := meshCfg.ServiceSpecs(); err != nil {
 		log.Warn("services not published", "mesh", m.Label, "err", err)
 	} else if len(specs) > 0 {
-		in.services = service.Publish(ctx, self, mesh.DNSName(cfg.Name, cfg.HostsSuffix), specs,
+		in.services = service.Publish(ctx, self, mesh.QualifiedDNSName(cfg.Name, m.Label, cfg.HostsSuffix), specs,
 			func(msg string, args ...any) { log.Info(msg, append(args, "mesh", m.Label)...) })
 	}
 	return in, nil
@@ -186,83 +186,37 @@ type namedMesh struct {
 	alias  func(netip.Addr) (netip.Addr, bool)
 }
 
-// named orders the meshes for the resolver: this device's own mesh first.
+// named is what the resolver needs from each running mesh.
 //
-// The order decides who wins a short name, and it used to be alphabetical —
-// meshes are sorted by label everywhere else so that output does not reshuffle
-// between runs, and the resolver inherited that. So laptop.mesh went to
-// "default" over "home" because d sorts before h, and would have gone to
-// "home" over "work" for the same reason. That is an accident wearing the
-// clothes of a decision.
-//
-// The device's primary mesh wins instead: the one written as network_key,
-// which is the mesh it was built around and the one its own name has always
-// meant. Everything else keeps its stable order behind that, and the qualified
-// form — laptop.home.mesh — remains the way to say which one you mean.
+// Order no longer decides anything. It did while the short form existed — the
+// first mesh with a name answered peer.mesh — and that is exactly why the
+// short form went: the same name meant different machines on different
+// devices (docs/one-kind-of-mesh.md, 2026-09-29).
 func named(instances []*instance) []namedMesh {
 	out := make([]namedMesh, 0, len(instances))
 	for _, in := range instances {
-		if in.primary {
-			out = append(out, namedMesh{label: in.label, lookup: in.mesh.Lookup, alias: in.mesh.LookupV4})
-		}
-	}
-	for _, in := range instances {
-		if !in.primary {
-			out = append(out, namedMesh{label: in.label, lookup: in.mesh.Lookup, alias: in.mesh.LookupV4})
-		}
+		out = append(out, namedMesh{label: in.label, lookup: in.mesh.Lookup, alias: in.mesh.LookupV4})
 	}
 	return out
 }
 
-// resolveAcross answers a name across every mesh (ADR-015).
+// resolveAcross answers a name across every mesh (ADR-015), qualified only.
 //
-// The qualified form wins: vps.home.mesh names one mesh and is unambiguous by
-// construction. For the short form, the first mesh that has the name answers,
-// in config order.
-//
-// This used to refuse a name that more than one mesh answered, on the grounds
-// that picking one silently is a lie. In practice the devices on two of your
-// own meshes are largely the same devices, so the rule removed exactly the
-// names most worth having — a machine on both meshes became the one machine
-// with no short name, while everything on a single mesh resolved fine. That
-// reads as "DNS is broken", and it took a while to find because it is not.
-//
-// Picking the first is honest enough: both addresses reach the same machine,
-// and it is the mesh the config lists first that answers. The qualified form
-// remains the way to say which one you mean.
-func resolveAcross(meshes []namedMesh, known map[string]bool) dnssrv.Lookup {
+// peer.<mesh> resolves on the mesh it names, and nothing else resolves. A mesh
+// the config knows but which is not running answers nothing, because it is
+// not in the slice: the fall-through that once sent `ssh vps.work.mesh` to a
+// vps on another mesh when work was switched off has nowhere left to happen,
+// since there is no second pass at all.
+func resolveAcross(meshes []namedMesh) dnssrv.Lookup {
 	return func(host string) (netip.Addr, bool) {
-		// Qualified: the label to the right of the device is a mesh label.
-		// Tried first, and only against the mesh it names — otherwise
-		// "vps.home" would fall through and match a device called "vps" on
-		// another mesh, which is the one answer that is certainly wrong.
-		if dev, rest, ok := cutLabel(host); ok {
+		return mesh.ResolveQualified(host, func(label string) (func(string) (netip.Addr, bool), bool) {
 			for _, m := range meshes {
-				if m.label == rest {
-					return m.lookup(dev)
+				if m.label == label {
+					return m.lookup, true
 				}
 			}
-			// A configured mesh that is not running — switched off, or not yet
-			// started. Answer nothing rather than falling through: the loop
-			// below hands the WHOLE host to every mesh, and Mesh.Lookup splits
-			// on dots and tries the first label as a device name, so
-			// "vps.work" would quietly return "vps" on the home mesh. That is
-			// the answer this comment calls certainly wrong, and it was
-			// reachable for any mesh that was switched off.
-			//
-			// Only for labels the config knows. "immich.vps" is a service on a
-			// device and has the same shape, so refusing every unmatched label
-			// would take services away instead.
-			if known[rest] {
-				return netip.Addr{}, false
-			}
-		}
-		for _, m := range meshes {
-			if addr, ok := m.lookup(host); ok {
-				return addr, true
-			}
-		}
-		return netip.Addr{}, false
+			return nil, false
+		})
 	}
 }
 
@@ -288,21 +242,6 @@ func cutLabel(host string) (first, rest string, ok bool) {
 		}
 	}
 	return "", "", false
-}
-
-// knownLabels is every mesh label the config names, running or not.
-//
-// The distinction matters to resolveAcross: a label the config knows but which
-// is not running must answer nothing, while an unknown label is probably a
-// service name and has to keep falling through.
-func knownLabels(cfg state.Config) map[string]bool {
-	out := map[string]bool{}
-	for _, m := range cfg.Meshes() {
-		if m.Label != "" {
-			out[m.Label] = true
-		}
-	}
-	return out
 }
 
 // localUnderlay fingerprints the addresses this node has on the real network.

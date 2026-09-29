@@ -40,14 +40,14 @@ type Entry struct {
 	// mangling both.
 	AddrV4 string
 
-	// Mesh is the local label for the mesh this peer belongs to. Empty means
-	// an unlabelled single-mesh node, which renders exactly as before.
+	// Mesh is the local label for the mesh this peer belongs to. Required:
+	// names are qualified, so an entry without one is not written.
 	Mesh string
 
-	// Self marks this device's own entry, which is written differently: the
-	// bare name is omitted and only the qualified form is emitted.
-	//
-	// Writing the bare name here shadows the machine's own hostname. A host
+	// Self marks this device's own entry. It no longer changes what is
+	// written — no name is bare now — but the reason it existed still stands
+	// and is why that must not change: a bare name here would shadow the
+	// machine's own hostname. A host
 	// normally resolves its hostname to 127.0.1.1, and every daemon that looks
 	// itself up — PAM session setup, mail, web servers — expects a local
 	// address. Adding an overlay address under the same name gives them a ULA
@@ -61,27 +61,27 @@ type Entry struct {
 
 // Render builds the managed block.
 //
-// Two kinds of collision have to be survived, and neither may be resolved by
-// last-writer-wins — that silently sends your ssh to the wrong machine.
+// Every name is qualified: <device>.<mesh>.<suffix>, and nothing shorter
+// (docs/one-kind-of-mesh.md, 2026-09-29). The short form used to be written for
+// any name only one mesh claimed, which meant the file answered peer.mesh on
+// one device and not on another depending on which meshes each had joined —
+// the same name meaning different machines, or nothing. An entry with no mesh
+// has no name that resolves anywhere, so it is left out rather than written in
+// a form nothing else agrees with.
 //
 // Within a mesh, device names are self-asserted in the announce, so two devices
 // can claim the same one. Duplicates get a short piece of their overlay address
-// appended; the bare name is left to the first.
-//
-// Across meshes, two meshes can each hold a "vps". Every peer therefore gets a
-// qualified name — vps.home.mesh — which is unambiguous by construction. The
-// short form, vps.mesh, is emitted only when that name occurs in exactly one
-// mesh, so ambiguity removes the short name rather than resolving it to an
-// arbitrary candidate. A single-mesh node has no ambiguity and so keeps every
-// short name it has today.
+// appended, and neither is resolved by last-writer-wins — that silently sends
+// your ssh to the wrong machine. Across meshes there is nothing to resolve:
+// vps.home and vps.work are different names.
 func Render(entries []Entry, suffix string) string {
-	suffix = strings.TrimPrefix(suffix, ".")
+	suffix = strings.Trim(suffix, ".")
 
 	sorted := append([]Entry(nil), entries...)
 	// The address breaks the tie, so the order is total. Two devices in one
 	// mesh both calling themselves "vps" compare equal on (Mesh, Name), and
-	// sort.Slice is not stable — so which of them owned vps.home.mesh was
-	// arbitrary AND free to change between runs, which is the version of
+	// sort.Slice is not stable — so which of them owned vps.home was arbitrary
+	// AND free to change between runs, which is the version of
 	// last-writer-wins this file exists to refuse. Names are self-asserted, so
 	// a peer can contest one deliberately; it should at least not flip.
 	sort.Slice(sorted, func(i, j int) bool {
@@ -94,77 +94,34 @@ func Render(entries []Entry, suffix string) string {
 		return sorted[i].Addr < sorted[j].Addr
 	})
 
-	// Resolve within-mesh duplicates first, so the cross-mesh count below sees
-	// the names that will actually be written.
-	type resolved struct {
-		name, mesh, addr string
-		v4               string
-		self             bool
-	}
-	var out []resolved
+	var b strings.Builder
+	b.WriteString(Begin + "\n")
+	b.WriteString("# Regenerate with: logos-vpn hosts --write\n")
+
 	seen := map[string]bool{} // mesh+name
 	for _, e := range sorted {
-		name := sanitise(e.Name)
-		if name == "" {
+		name, mesh := sanitise(e.Name), sanitise(e.Mesh)
+		if name == "" || mesh == "" {
 			continue
 		}
-		key := e.Mesh + "\x00" + name
+		key := mesh + "\x00" + name
 		if seen[key] {
 			if short := shortAddr(e.Addr); short != "" {
 				name = name + "-" + short
 			}
 		}
 		seen[key] = true
-		out = append(out, resolved{
-			name: name, mesh: sanitise(e.Mesh), addr: e.Addr, v4: e.AddrV4, self: e.Self,
-		})
-	}
 
-	// A bare name is only safe if exactly one entry claims it.
-	claims := map[string]int{}
-	for _, r := range out {
-		claims[r.name]++
-	}
-
-	var b strings.Builder
-	b.WriteString(Begin + "\n")
-	b.WriteString("# Regenerate with: logos-vpn hosts --write\n")
-
-	for _, r := range out {
-		names := make([]string, 0, 3)
-		if r.mesh != "" {
-			names = append(names, r.name+"."+r.mesh)
+		full := name + "." + mesh
+		if suffix != "" {
+			full += "." + suffix
 		}
-		// Never the bare name for ourselves: it would shadow the machine's own
-		// hostname. See Entry.Self.
-		if claims[r.name] == 1 && !r.self {
-			names = append(names, r.name)
-		}
-		fields := make([]string, 0, len(names)*2+1)
-		for _, n := range names {
-			fields = append(fields, n)
-			if suffix != "" {
-				fields = append(fields, n+"."+suffix)
-			}
-		}
-		// Our own entry with no mesh label has no qualified short form above,
-		// so emit name.suffix directly — otherwise a single-mesh node loses its
-		// own name entirely.
-		if r.self && r.mesh == "" && suffix != "" {
-			fields = append(fields, r.name+"."+suffix)
-		}
-		if len(fields) == 0 {
-			// Ambiguous and unlabelled: nothing safe to write.
-			continue
-		}
-		joined := strings.Join(fields, " ")
-		fmt.Fprintf(&b, "%s  %s\n", r.addr, joined)
-		// The same names again on IPv4. Order matters less than it looks —
-		// resolution here is a file, not a resolver, and glibc returns both —
-		// but the overlay address goes first because it is the real one and
-		// the alias is a local convenience.
-		if r.v4 != "" {
-			fmt.Fprintf(&b, "%s  %s\n", r.v4, joined)
+		fmt.Fprintf(&b, "%s  %s\n", e.Addr, full)
+		// The same name again on IPv4. The overlay address goes first because
+		// it is the real one and the alias is a local convenience; glibc
+		// returns both either way.
+		if e.AddrV4 != "" {
+			fmt.Fprintf(&b, "%s  %s\n", e.AddrV4, full)
 		}
 	}
 	b.WriteString(End + "\n")

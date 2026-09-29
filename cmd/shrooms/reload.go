@@ -157,7 +157,7 @@ func (r *reloader) republish(ctx context.Context, in *instance, cfg state.Config
 		in.services = nil
 	}
 	if len(specs) > 0 {
-		in.services = service.Publish(ctx, in.self, mesh.DNSName(cfg.Name, cfg.HostsSuffix), specs,
+		in.services = service.Publish(ctx, in.self, mesh.QualifiedDNSName(cfg.Name, m.Label, cfg.HostsSuffix), specs,
 			func(msg string, args ...any) { r.log.Info(msg, append(args, "mesh", m.Label)...) })
 	}
 	in.specs = append([]string(nil), m.Services...)

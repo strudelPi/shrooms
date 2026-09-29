@@ -34,7 +34,7 @@ func TestInitMintsIntoAPreparedConfig(t *testing.T) {
 
 	// --no-admin so this does not stop for a passphrase; the mesh is minted
 	// either way, which is what this is about.
-	if err := cmdInit([]string{"--config", cfgPath, "--state", stateDir, "--no-admin"}); err != nil {
+	if err := cmdInit([]string{"--config", cfgPath, "--state", stateDir, "--no-admin", "--mesh", "home"}); err != nil {
 		t.Fatalf("init over a prepared config: %v", err)
 	}
 
@@ -42,8 +42,12 @@ func TestInitMintsIntoAPreparedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.NetworkKey == "" || got.NetworkKey == state.KeyPlaceholder {
-		t.Errorf("no network key was minted: %q", got.NetworkKey)
+	home := got.MeshSet["home"]
+	if home.NetworkKey == "" || home.NetworkKey == state.KeyPlaceholder {
+		t.Errorf("no network key was minted: %q", home.NetworkKey)
+	}
+	if got.NetworkKey != "" {
+		t.Errorf("the placeholder or a key was left in the top-level field: %q", got.NetworkKey)
 	}
 	// Everything the prepared config said, kept.
 	if got.Name != "nas" {
@@ -52,15 +56,17 @@ func TestInitMintsIntoAPreparedConfig(t *testing.T) {
 	if got.ListenPort != 51999 {
 		t.Errorf("listen port = %d, want the prepared 51999", got.ListenPort)
 	}
-	if !got.Relay {
+	if !home.Relay {
 		t.Error("relay was on in the prepared config and is off now")
 	}
 	if got.Mode != "Edge" {
 		t.Errorf("mode = %q, want the prepared Edge — init has no flag for it, "+
 			"so rebuilding from the defaults is how it would be lost", got.Mode)
 	}
-	if len(got.Services) != 1 || got.Services[0] != "immich:2283" {
-		t.Errorf("services = %v, want the prepared one", got.Services)
+	// Services belong to a mesh, so they move onto the named mesh — the way
+	// Flatten moves them — rather than being dropped with the top-level field.
+	if svc := home.Services; len(svc) != 1 || svc[0] != "immich:2283" {
+		t.Errorf("services = %v, want the prepared one", home.Services)
 	}
 }
 

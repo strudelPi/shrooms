@@ -30,7 +30,7 @@ func TestTwoMeshesAreIndependent(t *testing.T) {
 	withStdin(t, "first pass\nfirst pass\nsecond pass\nsecond pass\n")
 
 	if err := cmdInit([]string{
-		"--name", "laptop", "--config", cfgPath, "--state", stateDir, "--admin-dir", adminDir,
+		"--name", "laptop", "--mesh", "home", "--config", cfgPath, "--state", stateDir, "--admin-dir", adminDir,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestAddingAMeshLeavesTheFirstAlone(t *testing.T) {
 	quiet(t)
 	withStdin(t, "first pass\nfirst pass\nsecond pass\nsecond pass\n")
 	if err := cmdInit([]string{
-		"--name", "laptop", "--config", cfgPath, "--state", stateDir, "--admin-dir", adminDir,
+		"--name", "laptop", "--mesh", "home", "--config", cfgPath, "--state", stateDir, "--admin-dir", adminDir,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -180,13 +180,17 @@ func TestAddingAMeshLeavesTheFirstAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	stBefore, _ := state.LoadOrCreateState(stateDir)
-	netID, _ := before.Meshes()[0].NetworkID()
+	first := before.Meshes()[0]
+	netID, _ := first.NetworkID()
 	msBefore, _ := stBefore.MeshState(netID, true)
 	credBefore := append([]byte(nil), msBefore.Credential...)
 	idBefore := append([]byte(nil), msBefore.Identity.DevicePub...)
 
+	// "alpha" sorts before "home". An unpinned first mesh would lose its
+	// position, its interface and its port to it — the shuffle that crashed
+	// vps 22 times on 2026-09-16 — so this is the addition that proves the pin.
 	if err := cmdInit([]string{
-		"--mesh", "shared", "--config", cfgPath, "--state", stateDir, "--admin-dir", adminDir,
+		"--mesh", "alpha", "--config", cfgPath, "--state", stateDir, "--admin-dir", adminDir,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -198,8 +202,18 @@ func TestAddingAMeshLeavesTheFirstAlone(t *testing.T) {
 	if after.Name != before.Name {
 		t.Errorf("the device was renamed from %q to %q", before.Name, after.Name)
 	}
-	if after.NetworkKey != before.NetworkKey {
+	var home state.Mesh
+	for _, m := range after.Meshes() {
+		if m.Label == "home" {
+			home = m
+		}
+	}
+	if home.NetworkKey != first.NetworkKey {
 		t.Error("the first mesh's network key changed")
+	}
+	if home.Interface != first.Interface || home.ListenPort != first.ListenPort {
+		t.Errorf("the first mesh moved from %s:%d to %s:%d when a mesh sorting before it was added",
+			first.Interface, first.ListenPort, home.Interface, home.ListenPort)
 	}
 	stAfter, _ := state.LoadOrCreateState(stateDir)
 	msAfter, _ := stAfter.MeshState(netID, true)

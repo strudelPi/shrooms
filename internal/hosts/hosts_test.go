@@ -9,8 +9,8 @@ import (
 
 func sample() []Entry {
 	return []Entry{
-		{Name: "laptop", Addr: "fd3b:ffe9:f81:81a7:18bc:69b1:9bb:7e69"},
-		{Name: "vps", Addr: "fd3b:ffe9:f81:6f18:41e:c574:c529:5bbf"},
+		{Name: "laptop", Addr: "fd3b:ffe9:f81:81a7:18bc:69b1:9bb:7e69", Mesh: "home"},
+		{Name: "vps", Addr: "fd3b:ffe9:f81:6f18:41e:c574:c529:5bbf", Mesh: "home"},
 	}
 }
 
@@ -18,8 +18,8 @@ func TestRenderIncludesSelfAndPeers(t *testing.T) {
 	out := Render(sample(), "mesh")
 
 	for _, want := range []string{
-		"fd3b:ffe9:f81:81a7:18bc:69b1:9bb:7e69  laptop laptop.mesh",
-		"fd3b:ffe9:f81:6f18:41e:c574:c529:5bbf  vps vps.mesh",
+		"fd3b:ffe9:f81:81a7:18bc:69b1:9bb:7e69  laptop.home.mesh",
+		"fd3b:ffe9:f81:6f18:41e:c574:c529:5bbf  vps.home.mesh",
 		Begin, End,
 	} {
 		if !strings.Contains(out, want) {
@@ -31,22 +31,23 @@ func TestRenderIncludesSelfAndPeers(t *testing.T) {
 // Names are self-asserted in the announce, so two devices can claim the same
 // one. Silently letting the last win would point ssh at the wrong machine.
 func TestDuplicateNamesDisambiguated(t *testing.T) {
-	st := append(sample(), Entry{Name: "vps", Addr: "fd3b:ffe9:f81:aaaa:1:2:3:dead"})
+	st := append(sample(), Entry{Name: "vps", Addr: "fd3b:ffe9:f81:aaaa:1:2:3:dead", Mesh: "home"})
 
 	out := Render(st, "mesh")
-	if strings.Count(out, " vps ") > 1 {
-		t.Fatalf("two entries claim the bare name 'vps':\n%s", out)
+	if strings.Count(out, " vps.home.mesh\n") > 1 {
+		t.Fatalf("two entries claim vps.home.mesh:\n%s", out)
 	}
-	if !strings.Contains(out, "dead") {
+	if !strings.Contains(out, "vps-dead.home.mesh") {
 		t.Errorf("duplicate was not disambiguated by address:\n%s", out)
 	}
 }
 
+// Both halves of the name are sanitised on their own: the device and the mesh.
 func TestNamesSanitised(t *testing.T) {
-	st := []Entry{{Name: "My Laptop_2!", Addr: "fd00::1"}}
+	st := []Entry{{Name: "My Laptop_2!", Addr: "fd00::1", Mesh: "Home Net"}}
 
 	out := Render(st, "mesh")
-	if !strings.Contains(out, "my-laptop-2") {
+	if !strings.Contains(out, "my-laptop-2.home-net.mesh") {
 		t.Errorf("name not sanitised into a usable hostname:\n%s", out)
 	}
 	if strings.Contains(out, "!") || strings.Contains(out, "My") {
@@ -54,13 +55,15 @@ func TestNamesSanitised(t *testing.T) {
 	}
 }
 
+// With no suffix the name is still qualified by its mesh; only the suffix is
+// left off.
 func TestSuffixOptional(t *testing.T) {
 	out := Render(sample(), "")
-	if strings.Contains(out, "laptop.") {
+	if strings.Contains(out, "laptop.home.") {
 		t.Errorf("suffix applied when none was asked for:\n%s", out)
 	}
-	if !strings.Contains(out, "  laptop\n") {
-		t.Errorf("bare name missing:\n%s", out)
+	if !strings.Contains(out, "  laptop.home\n") {
+		t.Errorf("qualified name missing:\n%s", out)
 	}
 }
 
@@ -137,7 +140,7 @@ func TestUpdateHostsFileAtomic(t *testing.T) {
 	}
 
 	got, _ := os.ReadFile(path)
-	if !strings.Contains(string(got), "vps.mesh") || !strings.Contains(string(got), "127.0.0.1 localhost") {
+	if !strings.Contains(string(got), "vps.home.mesh") || !strings.Contains(string(got), "127.0.0.1 localhost") {
 		t.Errorf("unexpected result:\n%s", got)
 	}
 
@@ -148,51 +151,50 @@ func TestUpdateHostsFileAtomic(t *testing.T) {
 	}
 }
 
-// A node in one mesh must look exactly as it did before mesh labels existed.
-// This is every node today, so a regression here is a regression for everyone.
-func TestSingleMeshKeepsShortNames(t *testing.T) {
+// No name is written without its mesh, on a node with one mesh or several
+// (docs/one-kind-of-mesh.md, 2026-09-29). The short form used to be written
+// wherever only one mesh claimed a name, so whether peer.mesh existed depended
+// on which meshes a device had joined — and it meant different machines, or
+// nothing, on different devices.
+func TestOnlyQualifiedNamesAreWritten(t *testing.T) {
 	got := Render([]Entry{
 		{Name: "vps", Addr: "fd00::1", Mesh: "home"},
 		{Name: "laptop", Addr: "fd00::2", Mesh: "home"},
 	}, "mesh")
 
-	for _, want := range []string{"vps.mesh", "laptop.mesh", "vps.home.mesh", "laptop.home.mesh"} {
+	for _, want := range []string{"vps.home.mesh", "laptop.home.mesh"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}
 	}
-}
-
-// The collision that motivated qualified names: two meshes, each with a "vps".
-// Neither may claim the bare name.
-func TestCrossMeshCollisionDropsShortName(t *testing.T) {
-	got := Render([]Entry{
-		{Name: "vps", Addr: "fd00::1", Mesh: "home"},
-		{Name: "vps", Addr: "fd11::1", Mesh: "shared"},
-		{Name: "nas", Addr: "fd00::2", Mesh: "home"},
-	}, "mesh")
-
-	for _, want := range []string{"vps.home.mesh", "vps.shared.mesh"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("missing qualified name %q in:\n%s", want, got)
-		}
-	}
-	// The bare name must not appear as a standalone field: resolving it to
-	// either machine would silently send traffic to the wrong one.
 	for _, line := range strings.Split(got, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
 		for _, name := range fields[1:] { // fields[0] is the address
-			if name == "vps" || name == "vps.mesh" {
-				t.Errorf("ambiguous short name %q was emitted: %s", name, line)
+			if name == "vps" || name == "vps.mesh" || name == "laptop" || name == "laptop.mesh" {
+				t.Errorf("short name %q was written: %s", name, line)
 			}
 		}
 	}
-	// An unambiguous name in the same render keeps its short form.
-	if !strings.Contains(got, "nas.mesh") {
-		t.Errorf("unambiguous name lost its short form:\n%s", got)
+}
+
+// Two meshes, each with a "vps": two different names, both written, and the
+// bare name for neither.
+func TestTheSameNameOnTwoMeshesIsTwoNames(t *testing.T) {
+	got := Render([]Entry{
+		{Name: "vps", Addr: "fd00::1", Mesh: "home"},
+		{Name: "vps", Addr: "fd11::1", Mesh: "shared"},
+	}, "mesh")
+
+	for _, want := range []string{"fd00::1  vps.home.mesh", "fd11::1  vps.shared.mesh"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "vps-") {
+		t.Errorf("a name on another mesh was treated as a duplicate:\n%s", got)
 	}
 }
 
@@ -204,7 +206,7 @@ func TestWithinMeshDuplicatesStillDisambiguated(t *testing.T) {
 		{Name: "box", Addr: "fd00::cafe:f00d", Mesh: "home"},
 	}, "mesh")
 
-	if strings.Count(got, "box.home.mesh") != 1 {
+	if strings.Count(got, " box.home.mesh") != 1 {
 		t.Errorf("both devices claimed box.home.mesh:\n%s", got)
 	}
 	if !strings.Contains(got, "box-") {
@@ -212,14 +214,14 @@ func TestWithinMeshDuplicatesStillDisambiguated(t *testing.T) {
 	}
 }
 
-// Entries with no mesh label render as before — the migration path.
-func TestUnlabelledEntriesRenderBare(t *testing.T) {
+// An entry with no mesh has no name that resolves anywhere, so it is left out.
+// This reverses the old rule, which wrote it bare: the resolver answers only
+// qualified names now, and a file answering names nothing else answers is the
+// "works in one place, not in another" this decision exists to end.
+func TestUnlabelledEntriesAreNotWritten(t *testing.T) {
 	got := Render([]Entry{{Name: "vps", Addr: "fd00::1"}}, "mesh")
-	if !strings.Contains(got, "vps.mesh") {
-		t.Errorf("unlabelled entry lost its name:\n%s", got)
-	}
-	if strings.Contains(got, "vps..mesh") {
-		t.Errorf("empty mesh label leaked into the name:\n%s", got)
+	if strings.Contains(got, "fd00::1") {
+		t.Errorf("an entry with no mesh was written:\n%s", got)
 	}
 }
 
@@ -229,11 +231,12 @@ func TestUnlabelledEntriesRenderBare(t *testing.T) {
 // themselves up — PAM session setup, web servers, mail — expect a local
 // address. An overlay address under the same name gives them a ULA that RFC
 // 6724 will often prefer, and that is unroutable entirely until shrooms0 exists,
-// which is the state every boot starts in.
+// which is the state every boot starts in. No name is bare any more, but this
+// is the case where that matters most, so it keeps its own test.
 func TestSelfDoesNotShadowTheHostname(t *testing.T) {
 	block := Render([]Entry{
-		{Name: "jimmy-crib", Addr: "fd3b:ffe9:f81:891a::1", Self: true},
-		{Name: "vps", Addr: "fd3b:ffe9:f81:6f18::1"},
+		{Name: "jimmy-crib", Addr: "fd3b:ffe9:f81:891a::1", Mesh: "office", Self: true},
+		{Name: "vps", Addr: "fd3b:ffe9:f81:6f18::1", Mesh: "office"},
 	}, "mesh")
 
 	for _, line := range strings.Split(block, "\n") {
@@ -245,16 +248,8 @@ func TestSelfDoesNotShadowTheHostname(t *testing.T) {
 				t.Errorf("own bare hostname written to /etc/hosts:\n%s", block)
 			}
 		}
-		// The qualified name is still useful and shadows nothing.
-		if !strings.Contains(line, "jimmy-crib.mesh") {
+		if !strings.Contains(line, "jimmy-crib.office.mesh") {
 			t.Errorf("own qualified name is missing:\n%s", block)
-		}
-	}
-
-	// A peer's bare name is fine: it does not collide with the local hostname.
-	if !strings.Contains(block, " vps ") && !strings.HasSuffix(strings.TrimSpace(block), " vps") {
-		if !strings.Contains(block, "vps vps.mesh") {
-			t.Errorf("peer lost its short name:\n%s", block)
 		}
 	}
 }
@@ -264,12 +259,12 @@ func TestSelfDoesNotShadowTheHostname(t *testing.T) {
 // an IPv4-only program work by name with no resolver in the picture at all.
 func TestBothFamiliesUnderTheSameNames(t *testing.T) {
 	block := Render([]Entry{
-		{Name: "nas", Addr: "fd3b::1", AddrV4: "198.19.224.254"},
+		{Name: "nas", Addr: "fd3b::1", AddrV4: "198.19.224.254", Mesh: "home"},
 	}, "mesh")
 
 	for _, want := range []string{
-		"fd3b::1  nas nas.mesh",
-		"198.19.224.254  nas nas.mesh",
+		"fd3b::1  nas.home.mesh",
+		"198.19.224.254  nas.home.mesh",
 	} {
 		if !strings.Contains(block, want) {
 			t.Errorf("missing %q in:\n%s", want, block)
@@ -277,11 +272,11 @@ func TestBothFamiliesUnderTheSameNames(t *testing.T) {
 	}
 }
 
-// A device with no alias must render exactly as it did before, since a peer on
-// an older build announces nothing to make one from.
+// A device with no alias renders one line, since a peer on an older build
+// announces nothing to make one from.
 func TestNoAliasRendersOneLine(t *testing.T) {
-	block := Render([]Entry{{Name: "nas", Addr: "fd3b::1"}}, "mesh")
-	if n := strings.Count(block, "nas.mesh"); n != 1 {
+	block := Render([]Entry{{Name: "nas", Addr: "fd3b::1", Mesh: "home"}}, "mesh")
+	if n := strings.Count(block, "nas.home.mesh"); n != 1 {
 		t.Errorf("a peer with no alias produced %d lines:\n%s", n, block)
 	}
 }
@@ -292,22 +287,21 @@ func TestNoAliasRendersOneLine(t *testing.T) {
 // silently, which is the whole reason the duplicate logic exists.
 func TestDuplicateNamesKeepTheirOwnAliases(t *testing.T) {
 	block := Render([]Entry{
-		{Name: "nas", Addr: "fd3b::aaaa", AddrV4: "198.19.0.1"},
-		{Name: "nas", Addr: "fd3b::bbbb", AddrV4: "198.19.0.2"},
+		{Name: "nas", Addr: "fd3b::aaaa", AddrV4: "198.19.0.1", Mesh: "home"},
+		{Name: "nas", Addr: "fd3b::bbbb", AddrV4: "198.19.0.2", Mesh: "home"},
 	}, "mesh")
 
 	for _, line := range []string{
-		"fd3b::aaaa  nas nas.mesh",
-		"198.19.0.1  nas nas.mesh",
-		"fd3b::bbbb  nas-bbbb nas-bbbb.mesh",
-		"198.19.0.2  nas-bbbb nas-bbbb.mesh",
+		"fd3b::aaaa  nas.home.mesh",
+		"198.19.0.1  nas.home.mesh",
+		"fd3b::bbbb  nas-bbbb.home.mesh",
+		"198.19.0.2  nas-bbbb.home.mesh",
 	} {
 		if !strings.Contains(block, line) {
 			t.Errorf("missing %q in:\n%s", line, block)
 		}
 	}
-	// And neither alias may appear against the other's name.
-	for _, wrong := range []string{"198.19.0.2  nas nas.mesh", "198.19.0.1  nas-bbbb"} {
+	for _, wrong := range []string{"198.19.0.2  nas.home.mesh", "198.19.0.1  nas-bbbb"} {
 		if strings.Contains(block, wrong) {
 			t.Errorf("an alias landed on the wrong device: %q in:\n%s", wrong, block)
 		}

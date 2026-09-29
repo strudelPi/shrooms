@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/netip"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -67,7 +66,7 @@ func phoneDefaults() state.Config {
 // The device identity is created by LoadOrCreateState and never replaced here:
 // losing it means a new overlay address and looking like a different device to
 // every peer, which on a phone would silently happen on every reconfigure.
-func setup(configDir, name, key string) (state.Config, *state.State, error) {
+func setup(configDir, name, meshName, key string) (state.Config, *state.State, error) {
 	cfgPath, stateDir := paths(configDir)
 
 	cfg := phoneDefaults()
@@ -79,13 +78,12 @@ func setup(configDir, name, key string) (state.Config, *state.State, error) {
 		if err != nil {
 			return state.Config{}, nil, fmt.Errorf("generate network key: %w", err)
 		}
-		cfg.NetworkKey = nk.String()
-	} else {
-		if _, err := identity.ParseNetworkKey(key); err != nil {
-			return state.Config{}, nil, fmt.Errorf("network key: %w", err)
-		}
-		cfg.NetworkKey = key
+		key = nk.String()
+	} else if _, err := identity.ParseNetworkKey(key); err != nil {
+		return state.Config{}, nil, fmt.Errorf("network key: %w", err)
 	}
+	// Named, with the base identity, like every first mesh.
+	cfg = cfg.WithFirstMesh(meshName, state.Mesh{NetworkKey: key})
 	if err := cfg.Validate(); err != nil {
 		return state.Config{}, nil, err
 	}
@@ -228,8 +226,10 @@ type statusPayload struct {
 // top-level fields, so an app build that knows nothing about several meshes
 // shows exactly what it always did.
 func snapshotAll(instances []*meshInstance, suffix string) statusPayload {
-	// One mesh: no label, so names stay short.
-	out := snapshot(instances[0].mesh, suffix, "")
+	// Labelled even with one mesh: names are qualified everywhere, and an
+	// empty label here now yields no name rather than a short one that the
+	// resolver no longer answers.
+	out := snapshot(instances[0].mesh, suffix, instances[0].label)
 	if len(instances) == 1 {
 		return out
 	}
@@ -254,8 +254,8 @@ func snapshotAll(instances []*meshInstance, suffix string) statusPayload {
 	return out
 }
 
-// label names the mesh for the names built here, and is empty on a device with
-// one mesh — where the short form is correct and is what every reader expects.
+// label names the mesh for the names built here. Always set: a name without its
+// mesh is one the resolver does not answer.
 func snapshot(m *mesh.Mesh, suffix, label string) statusPayload {
 	now := time.Now()
 	var out statusPayload
@@ -460,11 +460,16 @@ func (t tapTransport) Messages() <-chan invite.Message { return t.msgs }
 // took the short name away from precisely the devices on both of your meshes,
 // which are the ones you reach most.
 func resolveAll(instances []*meshInstance, configDir string) dnssrv.Lookup {
+	// Qualified only, the same rule as the daemon (mesh.ResolveQualified): the
+	// name's last label is the mesh, and a name with no mesh answers nothing.
+	// The fallthrough that tried every mesh for an unqualified name is what
+	// let a phone answer peer.mesh while the rest of the mesh used
+	// peer.office.mesh (docs/one-kind-of-mesh.md, 2026-09-29).
 	return func(host string) (netip.Addr, bool) {
-		if dev, rest, ok := strings.Cut(host, "."); ok {
+		return mesh.ResolveQualified(host, func(label string) (func(string) (netip.Addr, bool), bool) {
 			for _, in := range instances {
-				if in.label == rest {
-					return in.mesh.Lookup(dev)
+				if in.label == label {
+					return in.mesh.Lookup, true
 				}
 			}
 			// Not a label this session was built with. It may still be a mesh
@@ -474,16 +479,11 @@ func resolveAll(instances []*meshInstance, configDir string) dnssrv.Lookup {
 			// after a reconnect, while the app already displayed it.
 			//
 			// Only on a miss, so the ordinary path never reads a file.
-			if in, ok := byCurrentLabel(instances, configDir, rest); ok {
-				return in.mesh.Lookup(dev)
+			if in, ok := byCurrentLabel(instances, configDir, label); ok {
+				return in.mesh.Lookup, true
 			}
-		}
-		for _, in := range instances {
-			if addr, ok := in.mesh.Lookup(host); ok {
-				return addr, true
-			}
-		}
-		return netip.Addr{}, false
+			return nil, false
+		})
 	}
 }
 

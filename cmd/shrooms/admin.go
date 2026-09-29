@@ -68,7 +68,7 @@ type adminFile struct {
 // accountFor is which key on the card a mesh signs with. Zero when the file
 // says nothing, which is every authority minted before there was a choice.
 func accountFor(dir, label string) uint32 {
-	raw, err := os.ReadFile(adminPathFor(dir, label))
+	raw, err := os.ReadFile(adminPathToRead(dir, label))
 	if err != nil {
 		return 0
 	}
@@ -140,6 +140,32 @@ func adminPathFor(dir, label string) string {
 		return adminPath(dir)
 	}
 	return filepath.Join(dir, "admin-"+label+".json")
+}
+
+// adminPathToRead is adminPathFor for code that READS an authority.
+//
+// With no mesh named it is admin.json, which is what every single-mesh device
+// had. A first mesh is named now, so a device set up since keeps its only
+// authority as admin-<name>.json — and `shrooms admin renew`, with no --mesh
+// because the device has one mesh, would look for admin.json and report no
+// admin key at all. So when admin.json is absent and exactly one labelled
+// authority is in the directory, that one is meant.
+//
+// Readers only. A writer given no name must not pick an existing file for
+// it: minting takes the exact path, so it refuses rather than overwrites.
+func adminPathToRead(dir, label string) string {
+	path := adminPathFor(dir, label)
+	if label != "" {
+		return path
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		return path
+	}
+	found, _ := filepath.Glob(filepath.Join(dir, "admin-*.json"))
+	if len(found) == 1 {
+		return found[0]
+	}
+	return path
 }
 
 func cmdAdmin(args []string) error {
@@ -506,7 +532,7 @@ func cardSignerFor(dir, label string, auth *cred.Authority) (cred.Signer, *cred.
 // authorityFor reads the public half of an admin file: the keys this mesh
 // trusts, and nothing that needs unlocking.
 func authorityFor(dir, label string) (*cred.Authority, error) {
-	path := adminPathFor(dir, label)
+	path := adminPathToRead(dir, label)
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("no admin file at %s: %w", path, err)
@@ -534,7 +560,7 @@ func authorityOf(printed []string) (*cred.Authority, error) {
 
 // loadAdminFor opens one mesh's admin key.
 func loadAdminFor(dir, label string) (*cred.Admin, *cred.Authority, error) {
-	path := adminPathFor(dir, label)
+	path := adminPathToRead(dir, label)
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("no admin key at %s.\n"+

@@ -45,12 +45,6 @@ func cmdInit(args []string) error {
 		return err
 	}
 
-	// A second mesh on a machine that already has one. Everything else about
-	// the config stays as it is: this adds a network, it does not replace one.
-	if *label != "" {
-		return addMeshWith(*cfgPath, *stateDir, *adminDir, *label, *relay, *noAdmin, *sock, *card, *reader)
-	}
-
 	// A config that `prepare` wrote is adopted rather than refused.
 	//
 	// `prepare` installs a device with its keys, its name and no mesh, so the
@@ -67,6 +61,12 @@ func cmdInit(args []string) error {
 	if _, err := os.Stat(*cfgPath); err == nil {
 		prep, err := preparedConfig(*cfgPath)
 		if err != nil {
+			// Already on a mesh. With a name this adds a second one beside it
+			// and leaves everything else as it is; without one there is
+			// nothing to do that would not replace the mesh it is on.
+			if *label != "" {
+				return addMeshWith(*cfgPath, *stateDir, *adminDir, *label, *relay, *noAdmin, *sock, *card, *reader)
+			}
 			return err
 		}
 		base = prep
@@ -83,6 +83,19 @@ func cmdInit(args []string) error {
 		fmt.Printf("Minting a mesh into the prepared config at %s.\n\n", *cfgPath)
 	}
 
+	// A first mesh is named, always. Names are qualified everywhere —
+	// peer.<name>.mesh — so a mesh with no name would be one nobody could
+	// reach by name at all; and the name is what `shrooms invite` offers the
+	// devices it admits, so they call it the same thing (docs/one-kind-of-mesh.md).
+	if *label == "" {
+		return errors.New("name the mesh: shrooms init --mesh <name>\n\n" +
+			"It is how every device addresses it — laptop.<name>.mesh — and the " +
+			"name invited devices are offered, so pick what you will want to type")
+	}
+	if err := checkNewMeshLabel(*label); err != nil {
+		return err
+	}
+
 	// Same for a first mesh: nothing is written until the card answers.
 	if *card && !*noAdmin {
 		if err := cardIsReachable(*reader); err != nil {
@@ -94,7 +107,7 @@ func cmdInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := setupFrom(base, *cfgPath, *stateDir, nk, *name, uint16(*port), *advertise, *relay, true); err != nil {
+	if err := setupMeshFrom(base, *cfgPath, *stateDir, nk, *name, *label, uint16(*port), *advertise, *relay, true, nil); err != nil {
 		return err
 	}
 	if *noAdmin {
@@ -105,14 +118,18 @@ func cmdInit(args []string) error {
 	// Minting the authority here rather than in a second command. Creating a
 	// mesh is one act, and asking for two was the first half of why enrolling a
 	// device had grown to six steps.
+	//
+	// For the mesh by name: admin-<name>.json and mesh.<name>.admin_keys, the
+	// same files a second mesh gets, because there is no longer a first mesh
+	// that is shaped differently from the rest.
 	if *card {
-		if err := mintCardAuthorityFull(*adminDir, *cfgPath, *stateDir, *name, "", *reader, *sock); err != nil {
+		if err := mintCardAuthorityFull(*adminDir, *cfgPath, *stateDir, *name, *label, *reader, *sock); err != nil {
 			return err
 		}
 		reportNext(*sock)
 		return nil
 	}
-	if err := mintAuthority(*adminDir, *cfgPath, *stateDir, *name); err != nil {
+	if err := mintAuthorityFor(*adminDir, *cfgPath, *stateDir, *label, *name); err != nil {
 		return err
 	}
 	reportNext(*sock)
@@ -298,15 +315,6 @@ func setup(cfgPath, stateDir string, nk identity.NetworkKey, name string, port u
 	return setupMesh(cfgPath, stateDir, nk, name, "", port, advertise, relay, fresh)
 }
 
-// setupFrom is setup starting from an existing config rather than the defaults,
-// so a mesh minted into a prepared config keeps everything else that config
-// says — the mode, the interface, published services, a pinned delivery port.
-// Rebuilding from DefaultConfig would silently drop all of it.
-func setupFrom(base *state.Config, cfgPath, stateDir string, nk identity.NetworkKey,
-	name string, port uint16, advertise string, relay, fresh bool) error {
-	return setupMeshFrom(base, cfgPath, stateDir, nk, name, "", port, advertise, relay, fresh, nil)
-}
-
 // preparedConfig returns the config at path when it is one `prepare` wrote:
 // the key placeholder and no meshes. Anything else is a config already on a
 // mesh, and the error says what it used to say.
@@ -324,6 +332,52 @@ func preparedConfig(path string) (*state.Config, error) {
 		return nil, inUse
 	}
 	return &cfg, nil
+}
+
+// checkNewMeshLabel refuses a name a new mesh cannot have.
+//
+// "default" is refused on top of the label rules: it is not a name, only what
+// the old single-mesh config shape was called, and a mesh called that answers
+// to nothing the rest of the mesh uses.
+func checkNewMeshLabel(label string) error {
+	if label == state.DefaultLabel {
+		return fmt.Errorf("%q is not a mesh name — it is what the old single-mesh "+
+			"config was called. Give the mesh a real one: --mesh <name>", label)
+	}
+	return state.ValidMeshLabel(label)
+}
+
+// meshKeyFor is the network key `key show` means.
+//
+// It printed cfg.NetworkKey, which is the top-level field — empty on every
+// device whose first mesh is named, as every first mesh now is, so it printed a
+// blank line. The named mesh, else the only one, else an old config's
+// top-level mesh as before; a device on several has to say which.
+func meshKeyFor(cfg state.Config, label string) (string, error) {
+	meshes := cfg.Meshes()
+	if label != "" {
+		for _, m := range meshes {
+			if m.Label == label {
+				return m.NetworkKey, nil
+			}
+		}
+		return "", fmt.Errorf("no mesh called %q on this device", label)
+	}
+	if cfg.NetworkKey != "" && cfg.NetworkKey != state.KeyPlaceholder {
+		return cfg.NetworkKey, nil
+	}
+	switch len(meshes) {
+	case 0:
+		return "", errors.New("this device is not on a mesh yet")
+	case 1:
+		return meshes[0].NetworkKey, nil
+	}
+	names := make([]string, 0, len(meshes))
+	for _, m := range meshes {
+		names = append(names, m.Label)
+	}
+	return "", fmt.Errorf("this device is on %d meshes (%s); name one: --mesh <label>",
+		len(meshes), strings.Join(names, ", "))
 }
 
 // flagGiven reports whether a flag was set on the command line, as opposed to
@@ -374,11 +428,12 @@ func setupMeshFrom(base *state.Config, cfgPath, stateDir string, nk identity.Net
 		cfg.Advertise = []string{advertise}
 	}
 	cfg.Relay = relay
+	// Named, always, when a name is given — which every first mesh now has.
+	// The unlabelled top-level shape is what made a device's only mesh
+	// "default", answering to peer.mesh and to nothing the rest of the mesh
+	// used (docs/one-kind-of-mesh.md, 2026-09-29).
 	if label != "" && label != state.DefaultLabel {
-		cfg.NetworkKey, cfg.Relay = "", false
-		cfg.MeshSet = map[string]state.Mesh{label: {
-			Label: label, NetworkKey: nk.String(), Relay: relay,
-		}}
+		cfg = cfg.WithFirstMesh(label, state.Mesh{NetworkKey: nk.String(), Relay: relay})
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -692,6 +747,7 @@ func cmdKey(args []string) error {
 	cfgPath, stateDir := commonFlags(fs)
 	yes := fs.Bool("yes", false, "skip the confirmation prompt (rotate only)")
 	asQR := fs.Bool("qr", false, "show the key as a QR code, for scanning from a phone")
+	label := fs.String("mesh", "", "which mesh's key, when this device is on several")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -703,10 +759,16 @@ func cmdKey(args []string) error {
 
 	switch sub {
 	case "show":
-		if *asQR {
-			return showKeyQR(cfg)
+		key, err := meshKeyFor(cfg, *label)
+		if err != nil {
+			return err
 		}
-		fmt.Println(cfg.NetworkKey)
+		if *asQR {
+			shown := cfg
+			shown.NetworkKey = key
+			return showKeyQR(shown)
+		}
+		fmt.Println(key)
 		return nil
 	case "rotate":
 		return rotateKey(*cfgPath, *stateDir, cfg, *yes)

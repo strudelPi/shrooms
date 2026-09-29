@@ -721,10 +721,7 @@ func dnsRegisterFix(st statusPayload, containerised bool) string {
 // what the file claims against what this node currently believes rather than
 // against a second source that could itself be wrong.
 func staleHosts(st statusPayload) []hosts.Disagreement {
-	entries := []hosts.Entry{{Name: st.Name, Addr: st.Overlay, AddrV4: st.OverlayV4, Self: true}}
-	for _, p := range st.Peers {
-		entries = append(entries, hosts.Entry{Name: p.Name, Addr: p.Overlay, AddrV4: p.OverlayV4})
-	}
+	entries := hostsEntriesFrom(st)
 	// The suffix the daemon would use. A block written under a different one
 	// shows up as unknown names, which is still worth reporting: it is the same
 	// file answering for names this mesh does not serve.

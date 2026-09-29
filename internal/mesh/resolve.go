@@ -114,21 +114,45 @@ func DNSName(name, suffix string) string {
 // "laptop.test" as one string turns the separator into a hyphen and yields
 // laptop-test.mesh, which resolves to nothing at all.
 //
-// An empty label gives the short form, which is what a single-mesh node wants
-// and what every older payload meant.
+// Every name is qualified, including on a device with a single mesh
+// (docs/one-kind-of-mesh.md, 2026-09-29). An empty label therefore has no name:
+// the resolver answers nothing without a mesh, so printing the short form
+// would hand somebody a name that does not resolve.
 func QualifiedDNSName(name, label, suffix string) string {
 	host := sanitiseName(name)
-	if host == "" {
+	l := sanitiseName(label)
+	if host == "" || l == "" {
 		return ""
 	}
 	if suffix == "" {
 		suffix = "mesh"
 	}
-	suffix = strings.Trim(suffix, ".")
-	if l := sanitiseName(label); l != "" {
-		return host + "." + l + "." + suffix
+	return host + "." + l + "." + strings.Trim(suffix, ".")
+}
+
+// ResolveQualified answers a name by the mesh it names, and only then.
+//
+// The name arrives with the suffix stripped: <device>.<mesh>, or
+// <service>.<device>.<mesh>. The LAST label is the mesh; meshFor finds its
+// lookup, which then answers the rest as a device or a service on a device.
+//
+// A name with no mesh in it answers nothing. That is the decision of
+// 2026-09-29: the short form, peer.mesh, was answered by whichever mesh this
+// device happened to list first, so the same name meant different machines on
+// different devices — a tablet whose only mesh was "default" answered
+// peer.mesh while every multi-mesh device used peer.office.mesh, and neither
+// name worked on the other. Qualified only, the name means one thing
+// everywhere.
+func ResolveQualified(host string, meshFor func(label string) (func(string) (netip.Addr, bool), bool)) (netip.Addr, bool) {
+	i := strings.LastIndexByte(host, '.')
+	if i <= 0 || i == len(host)-1 {
+		return netip.Addr{}, false
 	}
-	return host + "." + suffix
+	lookup, ok := meshFor(host[i+1:])
+	if !ok {
+		return netip.Addr{}, false
+	}
+	return lookup(host[:i])
 }
 
 // Lookup is the resolver handed to the DNS server: this device first, then

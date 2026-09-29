@@ -262,7 +262,7 @@ $ sudo ./scripts/uninstall.sh --purge --yes
 The other half of T11, and the one nothing else covers: the machine that
 *creates* the mesh when the binary is in an image rather than on the host.
 
-**Do:** on a clean host, `sudo bash install.sh init --name a`. Write down the
+**Do:** on a clean host, `sudo bash install.sh init --mesh home --name a`. Write down the
 recovery key. Then `sudo systemctl restart shrooms`, `sudo shrooms invite`, and
 redeem the token on a second host prepared with `install.sh prepare --name b`.
 
@@ -279,7 +279,7 @@ reason, so `shrooms invite` — through the wrapper, not `docker exec` by hand �
 is what this test has to use.
 
 **Then:** on that same prepared-but-not-yet-joined machine, check the other
-order too. `sudo bash install.sh init --name a` — no `--force` — must mint a
+order too. `sudo bash install.sh init --mesh home --name a` — no `--force` — must mint a
 mesh into the config `prepare` wrote, and the name, port and relay setting from
 that config must survive it: set `--relay` during `prepare`, leave it off during
 `init`, and check it is still on afterwards. On a host that is already *in* a

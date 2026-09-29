@@ -683,10 +683,19 @@ private fun MeshScreen(
                                     },
                             )
                         }
-                        // The way back from a join that went wrong. Only the
-                        // added meshes: leaving the original one is "forget
-                        // everything", which is what clearing app data is for.
-                        if (cm.label != "default") {
+                        // The way back from a join that went wrong — and from
+                        // a mesh you no longer want, whichever one it is.
+                        //
+                        // This used to be hidden for `default`, on the grounds
+                        // that leaving the original mesh meant "forget
+                        // everything". True only while it was the only mesh.
+                        // A phone on default, office and home asked to drop
+                        // default on 2026-09-29 and had no way to: the backend
+                        // could (Mobile.leaveMesh flattens the old shape and
+                        // refuses only the last mesh), the screen would not
+                        // offer it. Now offered whenever it is not the last
+                        // mesh, which is the backend's own rule.
+                        if (allMeshes.size > 1) {
                             val armed = confirmLeave == cm.label
                             // Armed, the row offers both answers. A confirm
                             // with no way back is a trap, and tapping

@@ -1,9 +1,12 @@
 package rendezvous
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"time"
 
+	"github.com/vpavlin/shrooms/internal/invite"
 	"github.com/vpavlin/shrooms/internal/waku"
 )
 
@@ -86,4 +89,40 @@ func TestFedCloseStopsAnExchange(t *testing.T) {
 	// Twice, because the daemon's fan-out defers it and a caller may also do
 	// it: closing a closed channel panics.
 	tr.Close()
+}
+
+// A node started for the exchange is waited on until it reports a fleet
+// connection, because the answer is ephemeral and only a live subscription can
+// receive it. The blind three-second sleep this replaced lost the answer on
+// three devices in a row on 2026-09-29.
+func TestAColdNodeIsReadyOnlyOnceConnected(t *testing.T) {
+	cold := &Transport{msgs: make(chan invite.Message, 4), cold: true, connected: make(chan struct{})}
+
+	if cold.WaitReady(context.Background(), 30*time.Millisecond) {
+		t.Fatal("ready before the node reported any connection")
+	}
+	// Not every status means connected.
+	cold.Deliver(waku.Event{JSON: `{"eventType":"connection_status_change","connectionStatus":"Disconnected"}`})
+	if cold.WaitReady(context.Background(), 30*time.Millisecond) {
+		t.Fatal("Disconnected was taken as ready")
+	}
+	cold.Deliver(waku.Event{JSON: `{"eventType":"connection_status_change","connectionStatus":"PartiallyConnected"}`})
+	if !cold.WaitReady(context.Background(), time.Second) {
+		t.Fatal("a node with fleet peers was not ready")
+	}
+	// And a second status event after that is harmless.
+	cold.Deliver(waku.Event{JSON: `{"eventType":"connection_status_change","connectionStatus":"Connected"}`})
+}
+
+// A daemon's node has been connected for hours and may never announce it again,
+// so the transport it feeds does not wait at all.
+func TestAFedTransportDoesNotWait(t *testing.T) {
+	fed := Fed(nil)
+	start := time.Now()
+	if !fed.WaitReady(context.Background(), time.Minute) {
+		t.Fatal("a fed transport claimed not to be ready")
+	}
+	if time.Since(start) > 100*time.Millisecond {
+		t.Fatal("a fed transport waited")
+	}
 }

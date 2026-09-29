@@ -8,8 +8,11 @@
 package rendezvous
 
 import (
+	"context"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/vpavlin/shrooms/internal/invite"
 	"github.com/vpavlin/shrooms/internal/waku"
@@ -34,6 +37,15 @@ type Transport struct {
 	msgs    chan invite.Message
 	dropped atomic.Uint64
 	once    sync.Once
+
+	// cold marks a node started for the exchange alone, which is the only kind
+	// worth waiting on: a daemon's node has been connected for hours and may
+	// have announced so long before this transport existed, so waiting for an
+	// event it will not repeat would only cost the bound.
+	cold bool
+	// connected closes the first time the node reports a fleet connection.
+	connected     chan struct{}
+	connectedOnce sync.Once
 }
 
 // buffered generously. The exchange reads promptly, but a Core node carries
@@ -50,7 +62,8 @@ const buffered = 512
 // then discards everything that arrives — including the response the exchange
 // is waiting for. That cost a working invite exchange once already.
 func InviteTransport(node *waku.Node) invite.Transport {
-	t := &Transport{node: node, msgs: make(chan invite.Message, buffered)}
+	t := &Transport{node: node, msgs: make(chan invite.Message, buffered),
+		cold: true, connected: make(chan struct{})}
 	go func() {
 		defer t.Close()
 		for ev := range t.node.Events() {
@@ -80,8 +93,15 @@ func InviteTransport(node *waku.Node) invite.Transport {
 // Meshes were given a single reader when the same channel semantics were found
 // making a two-mesh node see half its peers (daemon.go, "One reader, every
 // mesh"). That fix stopped one reader short. This is the rest of it.
+//
+// The "exactly once" is history since 2026-09-29: the inviter now keeps the
+// answer until the invite's deadline and re-sends it to the device that asked
+// (internal/mesh, answerAgain), so a lost answer is recovered by the joiner's
+// ordinary retries. One reader is still right; it is no longer the only thing
+// standing between a lost message and a spent invite.
 func Fed(node *waku.Node) *Transport {
-	return &Transport{node: node, msgs: make(chan invite.Message, buffered)}
+	return &Transport{node: node, msgs: make(chan invite.Message, buffered),
+		connected: make(chan struct{})}
 }
 
 // Deliver offers one event to the exchange. Safe to call for every event on the
@@ -89,6 +109,7 @@ func Fed(node *waku.Node) *Transport {
 func (t *Transport) Deliver(ev waku.Event) {
 	msg, _, ok := waku.ParseMessage(ev.JSON)
 	if !ok {
+		t.noteStatus(ev.JSON)
 		return
 	}
 	select {
@@ -99,6 +120,43 @@ func (t *Transport) Deliver(ev waku.Event) {
 		// and for a Fed transport it would stall every mesh in the process.
 		// Counted so it is not.
 		t.dropped.Add(1)
+	}
+}
+
+// noteStatus records a fleet connection from a status event.
+//
+// "Connected" or "PartiallyConnected": either means the node has fleet peers it
+// can subscribe through, which is what receiving the answer needs.
+func (t *Transport) noteStatus(raw string) {
+	if t.connected == nil || waku.EventType(raw) != waku.EventConnectionStatus {
+		return
+	}
+	var e struct {
+		ConnectionStatus string `json:"connectionStatus"`
+	}
+	if json.Unmarshal([]byte(raw), &e) != nil {
+		return
+	}
+	if e.ConnectionStatus == "Connected" || e.ConnectionStatus == "PartiallyConnected" {
+		t.connectedOnce.Do(func() { close(t.connected) })
+	}
+}
+
+// WaitReady implements invite.ReadyWaiter. A node that is not cold is assumed
+// ready, for the reason on the field.
+func (t *Transport) WaitReady(ctx context.Context, max time.Duration) bool {
+	if !t.cold {
+		return true
+	}
+	timer := time.NewTimer(max)
+	defer timer.Stop()
+	select {
+	case <-t.connected:
+		return true
+	case <-timer.C:
+		return false
+	case <-ctx.Done():
+		return false
 	}
 }
 

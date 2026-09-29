@@ -43,6 +43,44 @@ invite to whatever mesh it should be on, since it was revoked while testing.
 
 **Round two of an enrolment is published once and cannot be asked for again.**
 
+> **Decided 2026-09-29 (Vaclav), and built.** Three devices in a row — the x6
+> tablet, then a Pocophone F1 on APK 70 and on 71 — sent their request, were
+> logged by the inviter as `admitted a device … credential=true`, and never
+> heard the answer. Worse than the note below assumed: the inviter also
+> *unsubscribed* from the invite topic the moment `HoldInvite` returned, before
+> the admin had even signed, so every retry went to a topic nobody listened to.
+>
+> Vaclav asked the right question first — *"does it introduce a QR re-use
+> risk?"* — and the answer is no, because the stored answer is keyed by both
+> keys the consuming request carried:
+>
+> - **The inviter keeps listening** until the invite's own deadline, and keeps
+>   the exact sealed answer it published.
+> - **A request with the same ephemeral key and the same device key** — the
+>   joiner's own retries, which are byte-identical within one attempt — gets
+>   those same bytes again. Never re-sealed, never a second credential.
+> - **Anything else gets nothing**: another holder of the token, or the same
+>   device starting a fresh attempt (a new ephemeral key). The stored answer
+>   only opens under the ephemeral private key, which never leaves the joiner,
+>   so a replayed request buys an eavesdropper a ciphertext it already had.
+> - **Bounded**: one copy per two seconds, thirty in all, forgotten at the
+>   deadline — a captured request cannot make the node chatter.
+>
+> The joiner no longer sleeps a blind three seconds before asking: a node
+> started for the exchange waits until it reports a fleet connection (bounded at
+> ten seconds), because receiving needs a live filter subscription while sending
+> only needs lightpush. And the app no longer offers RESTART THE APP while an
+> attempt is running, since a restart draws a new ephemeral key and forfeits the
+> re-send.
+>
+> Tests drive the real `HoldInvite`/`ReplyInvite`/`handleInvite` against the real
+> `invite.Redeem` over a bus that drops the answer
+> (`internal/mesh/inviteresend_test.go`); breaking the key match in either
+> direction, or dropping the ephemeral half of it, fails them.
+>
+> **It needs the inviter updated.** An inviter on an older build still publishes
+> once and unsubscribes.
+
 The daemon's second reader on `node.Events()` is fixed (2026-09-07), and that
 was the cause of enrolments failing about half the time with
 

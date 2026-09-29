@@ -37,8 +37,35 @@ type Transport interface {
 //
 // The joining device is usually the one on the worse network, and the first
 // publish often lands before its subscription has propagated. Repeating is
-// safe: the inviter answers at most once however many requests it sees.
-const RetryEvery = 5 * time.Second
+// safe, and since 2026-09-29 it is also how a lost answer is recovered: every
+// retry within one Redeem is the identical sealed request — same ephemeral key,
+// same device key, same timestamp — and the inviter re-sends the answer it
+// stored for exactly that pair (internal/mesh, handleInvite). Anyone else
+// presenting the token gets nothing.
+//
+// A variable only so tests can run the exchange at millisecond scale.
+var RetryEvery = 5 * time.Second
+
+// ReadyWaiter is a transport that can tell when its node is able to receive.
+//
+// Optional. A node started for the exchange alone is cold: it can publish
+// through lightpush almost at once, but receiving needs a filter subscription,
+// and the answer is ephemeral — never stored — so one that arrives before the
+// subscription is live is gone. This used to be a blind three-second sleep in
+// each caller; three devices in a row on 2026-09-29 sent their request, were
+// admitted, and never heard the answer.
+type ReadyWaiter interface {
+	// WaitReady blocks until the node reports a fleet connection, for at most
+	// max, and says whether it saw one. Asking anyway after the bound is the
+	// caller's decision; Redeem does.
+	WaitReady(ctx context.Context, max time.Duration) bool
+}
+
+// ReadyWait bounds how long Redeem waits for a cold node before asking anyway.
+// Long enough for a phone on mobile data to find its first fleet peer; short
+// enough that a node that never reports a status costs a pause, not the
+// invite's fifteen minutes.
+var ReadyWait = 10 * time.Second
 
 // Redeem performs the joining side: publish a request, wait for the response
 // meant for this device.
@@ -120,6 +147,12 @@ func Redeem(ctx context.Context, t Transport, s Secret, req *Request) (*Response
 		return nil, fmt.Errorf("subscribe to the invite topic: %w", err)
 	}
 	defer t.Unsubscribe(name)
+
+	// Subscribed first, then waited on, then asked: the answer comes back fast,
+	// and it can only be received by a subscription that already exists.
+	if rw, ok := t.(ReadyWaiter); ok {
+		rw.WaitReady(ctx, ReadyWait)
+	}
 
 	send := func() error {
 		if _, err := t.Send(name, blob, true); err != nil {

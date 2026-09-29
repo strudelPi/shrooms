@@ -729,9 +729,11 @@ func startNode(cfg waku.Config) (*waku.Node, error) {
 		node.Close()
 		return nil, fmt.Errorf("start rendezvous plane: %w", err)
 	}
-	// Nothing arrives until the node has peers, and a token that expires while
-	// the node is still dialling wastes the human's fifteen minutes.
-	time.Sleep(3 * time.Second)
+	// No blind wait here any more. Every caller wraps this node in
+	// rendezvous.InviteTransport, and invite.Redeem waits until the node reports
+	// a fleet connection before asking — bounded by invite.ReadyWait. A fixed
+	// three seconds was either too long on a good network or too short on a
+	// cold phone, and too short is the case that loses the answer for good.
 	return node, nil
 }
 

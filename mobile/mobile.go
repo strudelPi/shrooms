@@ -353,10 +353,11 @@ func redeemInvite(token, name, label, configDir string, timeoutSeconds int) erro
 		}()
 		tr = rendezvous.InviteTransport(n)
 	}
-	// Nothing arrives until the node has peers. The inviter is waiting at a
-	// prompt, so a few seconds here costs nothing and asking too early costs a
-	// retry interval.
-	time.Sleep(3 * time.Second)
+	// No blind wait: on a cold node, rendezvous.InviteTransport tells
+	// invite.Redeem when the node is connected, and Redeem waits for that before
+	// asking. A running session's node (tapTransport) is already connected.
+	// The fixed three seconds that was here is what three devices lost the
+	// answer to on 2026-09-29.
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()

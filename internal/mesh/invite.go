@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -33,7 +34,62 @@ type invites struct {
 	// HoldInvite has returned so a credential offered later can be checked
 	// against it. See rememberAdmitting.
 	admitting map[string]admitting
+
+	// answered is the admission answer for each consumed invite, kept until
+	// the invite's own deadline so a device that missed it can be given the
+	// same bytes again. See handleInvite.
+	answered map[string]*answeredInvite
+
+	// bus is where invite traffic goes. The node, except in tests: the
+	// exchange's whole point is what arrives and what is lost on the way, and
+	// the real node cannot be told to lose a message.
+	bus inviteBus
 }
+
+// inviteBus is the part of the rendezvous node an invite needs to hold a topic
+// and answer on it. *waku.Node has exactly these.
+type inviteBus interface {
+	Subscribe(contentTopic string) error
+	Unsubscribe(contentTopic string) error
+	Send(contentTopic string, payload []byte, ephemeral bool) (string, error)
+}
+
+func (m *Mesh) invBus() inviteBus {
+	if m.inv.bus != nil {
+		return m.inv.bus
+	}
+	return m.node
+}
+
+// answeredInvite is one admission answer, and who may have it again.
+//
+// Keyed by BOTH keys the consuming request carried — the ephemeral key the
+// answer is sealed to, and the device key the credential names. A request that
+// matches both is the device that was admitted, asking again because it did not
+// hear the answer; it gets the identical sealed bytes, which only its ephemeral
+// private key opens. Anything else presenting the token gets nothing, which is
+// what "an invite admits one device" has always meant.
+type answeredInvite struct {
+	secret    invite.Secret
+	name      string
+	ephPub    []byte
+	devicePub []byte
+	until     time.Time
+
+	// blob is set by ReplyInvite. Until then the exchange is between the
+	// request and the admin's signature, and repeats are dropped.
+	blob     []byte
+	lastSent time.Time
+	resent   int
+}
+
+// inviteResendEvery and inviteResendCap bound what a replayed request can make
+// this node publish: at most one copy per interval and a handful in all, for
+// the invite's remaining life. Variables so tests can run at millisecond scale.
+var (
+	inviteResendEvery = 2 * time.Second
+	inviteResendCap   = 30
+)
 
 // admitting is the device keys one exchange handed out, and when to forget them.
 type admitting struct {
@@ -68,19 +124,37 @@ func (m *Mesh) HoldInvite(ctx context.Context, s invite.Secret) (*invite.Request
 	m.inv.by[name] = held
 	m.inv.mu.Unlock()
 
+	// How long this invite lives: its holder's deadline, or the default.
+	until := time.Now().Add(invite.DefaultTTL)
+	if d, ok := ctx.Deadline(); ok {
+		until = d
+	}
+
+	// Stay subscribed after a request is taken, unless nothing was.
+	//
+	// This used to unsubscribe the moment HoldInvite returned — before the
+	// admin had even signed — so a device that missed the one answer was
+	// asking again into a topic nobody listened to. Three devices in a row on
+	// 2026-09-29: the inviter logged "admitted a device" every time and none of
+	// them heard it. Now the topic stays open until the invite's deadline,
+	// which is what lets handleInvite give the admitted device its answer again.
+	kept := false
 	defer func() {
 		m.inv.mu.Lock()
 		delete(m.inv.by, name)
 		m.inv.mu.Unlock()
+		if kept {
+			return
+		}
 		// Unsubscribing is best-effort: a stale subscription costs a little
 		// traffic on one topic, where failing here would abort a completed
 		// enrolment.
-		if err := m.node.Unsubscribe(name); err != nil {
+		if err := m.invBus().Unsubscribe(name); err != nil {
 			m.log.Debug("could not unsubscribe from an invite topic", "err", err)
 		}
 	}()
 
-	if err := m.node.Subscribe(name); err != nil {
+	if err := m.invBus().Subscribe(name); err != nil {
 		return nil, fmt.Errorf("subscribe to the invite topic: %w", err)
 	}
 	// The fleet is logged on both ends deliberately: if they differ, both sides
@@ -91,7 +165,9 @@ func (m *Mesh) HoldInvite(ctx context.Context, s invite.Secret) (*invite.Request
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case req := <-held.reqs:
-		m.rememberAdmitting(name, req)
+		m.rememberAdmitting(name, req, until)
+		m.keepAnswering(name, s, req, until)
+		kept = true
 		return req, nil
 	}
 }
@@ -110,7 +186,7 @@ func (m *Mesh) HoldInvite(ctx context.Context, s invite.Secret) (*invite.Request
 //
 // Kept for the token's remaining life, keyed by topic because the token is what
 // names the exchange and both ends already derive it.
-func (m *Mesh) rememberAdmitting(topic string, req *invite.Request) {
+func (m *Mesh) rememberAdmitting(topic string, req *invite.Request, until time.Time) {
 	if req == nil {
 		return
 	}
@@ -130,7 +206,7 @@ func (m *Mesh) rememberAdmitting(topic string, req *invite.Request) {
 	m.inv.admitting[topic] = admitting{
 		devicePub: append([]byte(nil), req.DevicePub...),
 		wgPub:     append([]byte(nil), req.WGPub...),
-		until:     now.Add(invite.DefaultTTL),
+		until:     until,
 	}
 }
 
@@ -185,11 +261,60 @@ func (m *Mesh) ReplyInvite(s invite.Secret, req *invite.Request, credential []by
 	if err != nil {
 		return err
 	}
-	if _, err := m.node.Send(s.Topic(), blob, true); err != nil {
+	if _, err := m.invBus().Send(s.Topic(), blob, true); err != nil {
 		return fmt.Errorf("publish the invite response: %w", err)
 	}
+	m.storeAnswer(s.Topic(), req.EphPub, blob, time.Now())
 	m.log.Info("admitted a device", "name", req.Name, "credential", len(credential) > 0)
 	return nil
+}
+
+// keepAnswering records that an invite has been consumed by this request, and
+// arranges to stop listening when the invite's life is over.
+func (m *Mesh) keepAnswering(topic string, s invite.Secret, req *invite.Request, until time.Time) {
+	m.inv.mu.Lock()
+	if m.inv.answered == nil {
+		m.inv.answered = map[string]*answeredInvite{}
+	}
+	m.inv.answered[topic] = &answeredInvite{
+		secret:    s,
+		name:      req.Name,
+		ephPub:    append([]byte(nil), req.EphPub...),
+		devicePub: append([]byte(nil), req.DevicePub...),
+		until:     until,
+	}
+	m.inv.mu.Unlock()
+	time.AfterFunc(time.Until(until), func() { m.forgetAnswered(topic) })
+}
+
+// storeAnswer keeps the exact sealed answer, but only for the request that
+// consumed the invite. The ephemeral key the reply was sealed to must be the
+// one that request carried, or the stored bytes would be an answer to somebody
+// else — and would never open for the device asking again anyway.
+func (m *Mesh) storeAnswer(topic string, ephPub, blob []byte, now time.Time) {
+	m.inv.mu.Lock()
+	defer m.inv.mu.Unlock()
+	a := m.inv.answered[topic]
+	if a == nil || !bytes.Equal(a.ephPub, ephPub) {
+		return
+	}
+	a.blob = append([]byte(nil), blob...)
+	a.lastSent = now
+}
+
+// forgetAnswered drops a consumed invite once its life is over and stops
+// listening on its topic, unless somebody is holding it again.
+func (m *Mesh) forgetAnswered(topic string) {
+	m.inv.mu.Lock()
+	delete(m.inv.answered, topic)
+	_, held := m.inv.by[topic]
+	m.inv.mu.Unlock()
+	if held {
+		return
+	}
+	if err := m.invBus().Unsubscribe(topic); err != nil {
+		m.log.Debug("could not unsubscribe from an invite topic", "err", err)
+	}
 }
 
 // inviteResponse is everything an invite answer carries that is not a secret:
@@ -230,7 +355,7 @@ func (m *Mesh) replyMeshOnly(s invite.Secret, req *invite.Request) error {
 	if err != nil {
 		return err
 	}
-	if _, err := m.node.Send(s.Topic(), blob, true); err != nil {
+	if _, err := m.invBus().Send(s.Topic(), blob, true); err != nil {
 		return fmt.Errorf("publish the invite response: %w", err)
 	}
 	return nil
@@ -243,7 +368,7 @@ func (m *Mesh) handleInvite(contentTopic string, payload []byte, now time.Time) 
 	held, ok := m.inv.by[contentTopic]
 	m.inv.mu.Unlock()
 	if !ok {
-		return false
+		return m.answerAgain(contentTopic, payload, now)
 	}
 
 	// The token is what opens it. Our own response comes back to us on the same
@@ -267,6 +392,91 @@ func (m *Mesh) handleInvite(contentTopic string, payload []byte, now time.Time) 
 	select {
 	case held.reqs <- req:
 	default: // already answered; an invite admits one device
+	}
+	return true
+}
+
+// answerAgain gives an admitted device its answer again, and nobody else
+// anything.
+//
+// The answer to a consuming request is published once and ephemerally: the
+// fleet does not store it, so a joiner whose filter subscription was not yet
+// live when it went out never sees it, and every retry used to be dropped
+// because the invite was spent. That is not rare. A cold phone publishes
+// through lightpush within a second or two but receives through a filter
+// subscription that takes longer, and on 2026-09-29 three devices in a row were
+// "admitted" and heard nothing.
+//
+// What makes this safe to repeat, and not a way to reuse a QR code:
+//
+//   - only a request carrying the SAME ephemeral key and the SAME device key as
+//     the one that consumed the invite matches. Within one attempt the joiner
+//     re-sends the identical sealed request, so this is the device that asked.
+//     A second holder of the token has neither key, and gets nothing;
+//   - what is sent is the stored sealed blob, byte for byte — never re-sealed,
+//     never a fresh credential. It opens only under the ephemeral private key,
+//     which never left the joiner, so a replayed request buys an eavesdropper
+//     a ciphertext it already had;
+//   - it is rate-limited and capped, and forgotten at the invite's deadline, so
+//     replaying a captured request cannot make this node chatter.
+//
+// Reports whether the message belonged to an invite this node knows.
+func (m *Mesh) answerAgain(topic string, payload []byte, now time.Time) bool {
+	m.inv.mu.Lock()
+	a, ok := m.inv.answered[topic]
+	if !ok {
+		m.inv.mu.Unlock()
+		return false
+	}
+	if now.After(a.until) {
+		delete(m.inv.answered, topic)
+		m.inv.mu.Unlock()
+		return true
+	}
+	secret := a.secret
+	m.inv.mu.Unlock()
+
+	req, err := invite.OpenRequest(secret, payload, now)
+	if err != nil {
+		return true // our topic, not a request: our own answer coming back
+	}
+
+	m.inv.mu.Lock()
+	if !a.mayResend(req, now) {
+		m.inv.mu.Unlock()
+		return true
+	}
+	a.resent++
+	a.lastSent = now
+	blob, name := a.blob, a.name
+	m.inv.mu.Unlock()
+
+	// Off the reader: a publish can block, and this runs on the node's event
+	// path, which every mesh in the process shares.
+	go func() {
+		if _, err := m.invBus().Send(topic, blob, true); err != nil {
+			m.log.Warn("could not re-send an invite answer", "name", name, "err", err)
+			return
+		}
+		m.log.Info("re-sent the invite answer to the device that asked", "name", name)
+	}()
+	return true
+}
+
+// mayResend decides whether a request gets the stored answer again. Called
+// under m.inv.mu.
+func (a *answeredInvite) mayResend(req *invite.Request, now time.Time) bool {
+	switch {
+	case a.blob == nil:
+		return false // the admin has not signed yet; the joiner will ask again
+	case req.Deferred:
+		return false // a first-round request for a spent invite: nothing to add
+	case !bytes.Equal(req.EphPub, a.ephPub), !bytes.Equal(req.DevicePub, a.devicePub):
+		return false // somebody else holding the token: they get nothing
+	case a.resent >= inviteResendCap:
+		return false
+	case now.Sub(a.lastSent) < inviteResendEvery:
+		return false
 	}
 	return true
 }

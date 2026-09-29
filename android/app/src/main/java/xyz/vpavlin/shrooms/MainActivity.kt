@@ -311,7 +311,14 @@ private fun JoinScreen(dir: String, onScan: ((String) -> Unit) -> Unit, onDone: 
         // A tablet hit it on 2026-09-25: two invites went nowhere, the inviter
         // heard nothing, and what fixed it was force-stopping the app from
         // Android's settings. This is that, one tap away and said out loud.
-        if (failed) {
+        //
+        // Never while an attempt is running. The inviter now re-sends a lost
+        // answer to the device that asked, recognising it by the ephemeral key
+        // this attempt drew; a restart draws a new one, the stored answer no
+        // longer matches, and the invite stays spent. So a restart mid-attempt
+        // turns a recoverable exchange into a lost invite — which is how three
+        // devices in a row were stuck on 2026-09-29.
+        if (failed && !waiting) {
             Spacer(Modifier.height(12.dp))
             Text(
                 "If it keeps failing, the connection to the fleet may be stuck. " +
@@ -367,6 +374,17 @@ private fun JoinScreen(dir: String, onScan: ((String) -> Unit) -> Unit, onDone: 
                     "`shrooms invite`."
                 busy = false
             }
+        }
+
+        if (waiting) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "Keep this screen open until it finishes. If the answer is lost " +
+                    "on the way, the other device sends it again — but only to " +
+                    "this attempt, so closing or restarting the app now would " +
+                    "use up the invite.",
+                style = MaterialTheme.typography.bodySmall, color = Palette.Amber,
+            )
         }
 
         Spacer(Modifier.height(14.dp))

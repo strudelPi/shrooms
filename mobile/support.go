@@ -101,7 +101,7 @@ func setup(configDir, name, meshName, key string) (state.Config, *state.State, e
 // nodeConfig mirrors the daemon's, including the rule that clusterId is only
 // passed when explicitly set — sending it activates a legacy
 // cluster-to-network mapping that overrides the preset.
-func nodeConfig(cfg state.Config) waku.Config {
+func nodeConfig(cfg state.Config, learned ...string) waku.Config {
 	c := waku.Config{"mode": cfg.Mode}
 	if cfg.ClusterID != 0 {
 		c["clusterId"] = cfg.ClusterID
@@ -109,10 +109,32 @@ func nodeConfig(cfg state.Config) waku.Config {
 	if cfg.Preset != "" {
 		c["preset"] = cfg.Preset
 	}
-	if len(cfg.EntryNodes) > 0 {
-		c["entryNodes"] = cfg.EntryNodes
+	// Configured first, then what peers published (ADR-031), in the same
+	// order as the daemon (cmd/shrooms/daemon.go). The library merges these
+	// with the preset's own fleet nodes rather than replacing them — a daemon
+	// with one learned address logs "Dialing multiple peers numOfPeers=7",
+	// one learned plus the preset's six — so adding ours cannot cut a phone
+	// off from the public fleet; it only gives it somewhere else to start.
+	entry := append(append([]string(nil), cfg.EntryNodes...), learned...)
+	if len(entry) > 0 {
+		c["entryNodes"] = entry
 	}
 	return c
+}
+
+// learnedBootPeers is what this device has been told it can bootstrap from:
+// the delivery addresses mesh Core nodes publish in their announces, kept on
+// disk because a running node cannot take new ones (internal/state/bootpeers.go).
+//
+// The phone never read them. The daemon has since ADR-031, which is why on
+// 2026-10-01, with five of six public fleet nodes down after the v0.39 rollout,
+// desktops got back in through the VPS's own delivery node while a phone that
+// knew the same address kept dialling only the dead public list.
+func learnedBootPeers(st *state.State) []string {
+	if st == nil {
+		return nil
+	}
+	return st.BootPeers(time.Now())
 }
 
 // dupFd copies a descriptor so Go's os.File can own its copy. Without this,

@@ -325,7 +325,10 @@ func redeemInvite(token, name, label, configDir string, timeoutSeconds int) erro
 		// because the node deliberately outlives a disconnect and `running` is
 		// nil by then. The old condition required both, so the second case fell
 		// through to creating one anyway.
-		n, err := sharedNode(cfgPath)
+		// The invite may name somewhere to start (ADR-031): a mesh Core node,
+		// so a new phone does not depend on the public fleet to hear its own
+		// invite answered. The CLI has always read it; the phone did not.
+		n, err := sharedNode(cfgPath, invite.BootFromToken(token))
 		if err != nil {
 			return err
 		}
@@ -1171,7 +1174,11 @@ func Start(tunFd int, configDir string, dnsServers string, p Protector, l Logger
 	// Reuse the node across reconnects; see the comment on the package
 	// variable. Only the first connect creates one.
 	if node == nil {
-		n, err := waku.New(nodeConfig(cfg))
+		learned := learnedBootPeers(st)
+		if len(learned) > 0 {
+			log.Info("bootstrapping from addresses peers published", "learned", len(learned))
+		}
+		n, err := waku.New(nodeConfig(cfg, learned...))
 		if err != nil {
 			closeAll()
 			return fmt.Errorf("rendezvous plane: %w", err)
@@ -1479,14 +1486,34 @@ func startNode(n *waku.Node) error {
 // rebuild it in place. The defaults match the fleet every mesh currently uses,
 // so this is latent rather than live — and the fix, if it ever bites, is for
 // the app to restart its service after a join that changes those settings.
-func sharedNode(cfgPath string) (*waku.Node, error) {
+// sharedNodeConfig is what sharedNode builds a node from: this device's fleet
+// settings, the addresses it learned from peers, then any the caller was
+// handed (an invite's boot address). Separate so the composition can be
+// checked without starting a delivery node.
+func sharedNodeConfig(cfgPath string, hints ...string) waku.Config {
+	var learned []string
+	_, stateDir := paths(filepath.Dir(cfgPath))
+	if st, err := state.LoadOrCreateState(stateDir); err == nil {
+		learned = learnedBootPeers(st)
+	}
+	for _, h := range hints {
+		if h != "" {
+			learned = append(learned, h)
+		}
+	}
+	return nodeConfig(fleetFor(cfgPath), learned...)
+}
+
+func sharedNode(cfgPath string, hints ...string) (*waku.Node, error) {
 	mu.Lock()
 	defer mu.Unlock()
 	if node != nil {
+		// Built already, and the library takes entry nodes only at
+		// construction, so a hint arriving now cannot be used. Saying so beats
+		// pretending: it is the one way an invite's boot address is ignored.
 		return node, nil
 	}
-	fleet := fleetFor(cfgPath)
-	n, err := waku.New(nodeConfig(fleet))
+	n, err := waku.New(sharedNodeConfig(cfgPath, hints...))
 	if err != nil {
 		return nil, fmt.Errorf("rendezvous plane: %w", err)
 	}

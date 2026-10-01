@@ -238,11 +238,27 @@ jobs:
   #   - a missing arch is an error, so the run is never quietly green.
   image-manifest:
     name: publish image manifest
-    needs: image
+    # The tests too, not only the images. :latest is what nodes deploy — four of
+    # them pull it every night with podman auto-update since 2026-10-01 — and it
+    # used to move as soon as the images were built, in parallel with the tests,
+    # so a commit whose tests were still running (or failing) was already what
+    # every auto-updating node would run next.
+    #
+    # The per-commit <sha>-<arch> images still publish early, for anyone who
+    # wants to try a build before it is green; only the names that deploy wait.
+    # build-from-source and basecamp are not here: neither tests the node.
+    needs: [image, test, test-cgo, e2e, e2e-two-nodes]
     runs-on: ubuntu-latest
     # !cancelled() rather than always(): a cancelled workflow stays cancelled, but
-    # a *failed* sibling must not hide this job.
-    if: ${{ !cancelled() && github.event_name == 'push' }}
+    # a *failed* image job must not hide this one (it reports which arch is
+    # missing, see below). A failed TEST must stop it, which plain !cancelled()
+    # would not, hence the explicit results.
+    if: >-
+      ${{ !cancelled() && github.event_name == 'push'
+          && needs.test.result == 'success'
+          && needs.test-cgo.result == 'success'
+          && needs.e2e.result == 'success'
+          && needs.e2e-two-nodes.result == 'success' }}
     permissions:
       contents: read
       packages: write

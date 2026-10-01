@@ -60,8 +60,34 @@ library's code mapped from the file, which iOS does not count.
 
 ## Next measurements, in order
 
-1. The Android app's real footprint (`dumpsys meminfo` on a phone running it),
-   which is the closest thing to the extension we can run today.
-2. Where the laptop daemon's 130 MB goes, by Go heap profile and the library's
-   share, so the unaccounted part has a name.
+Both are now reported by shrooms itself, split into Go's share, the Android
+runtime's (phones only — the screens share the tunnel's process there, and an
+extension would not carry them), and the rest, which is mostly the delivery
+library:
+
+- **laptop and servers:** `shrooms memory` (the daemon runs as root, so its
+  `/proc` entries are closed to the user; it reports this about itself);
+- **phones:** the "memory" section of the app's shared diagnostics, so no adb.
+
+1. The Android app's footprint, from a phone that has been connected for a
+   while: the `without UI` line is the closest thing to the extension we can
+   run today.
+2. Where the laptop daemon's 130 MB goes: Go's share against native.
 3. A lean phone config (discovery off) shipped and measured on Android.
+
+## Building it without a Mac
+
+Only Apple's toolchain builds and signs iOS apps, but GitHub's macOS runners
+have it and are free for public repositories. So the path is CI-only:
+
+- the Go core as an iOS framework (`gomobile bind -target=ios`, the same
+  package the Android app binds);
+- liblogosdelivery built for iOS (upstream says v0.39 builds it; our bindings
+  need the v0.39 interface first);
+- a Swift app and packet tunnel extension, signed in CI and uploaded to
+  TestFlight, which installs it on a phone.
+
+What cannot be avoided: a paid Apple Developer account (packet tunnel
+extensions need an entitlement free accounts do not get, and so does
+TestFlight), and a real iPhone — the Simulator runs no packet tunnel
+extensions, and the 50 MiB limit exists only on a device.

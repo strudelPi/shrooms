@@ -27,6 +27,7 @@ import (
 	"github.com/vpavlin/shrooms/internal/identity"
 	"github.com/vpavlin/shrooms/internal/invite"
 	"github.com/vpavlin/shrooms/internal/logtail"
+	"github.com/vpavlin/shrooms/internal/memstat"
 	"github.com/vpavlin/shrooms/internal/mesh"
 	"github.com/vpavlin/shrooms/internal/rendezvous"
 	"github.com/vpavlin/shrooms/internal/state"
@@ -598,6 +599,13 @@ type statusPayload struct {
 	// module's, which is a different thing and the wrong one — "is the daemon
 	// new enough for this?" is the question actually being asked.
 	Version string `json:"version,omitempty"`
+
+	// Memory is where this process's memory goes, Go's share split from the
+	// rest — mostly the native delivery library. The daemon runs as root, so
+	// nothing else lets its user see this; `shrooms memory` prints it. Asked
+	// for to decide whether shrooms could fit an iOS packet tunnel extension
+	// (docs/shrooms-on-ios.md).
+	Memory *memstat.Snapshot `json:"memory,omitempty"`
 
 	// DNS is whether mesh names resolve on this device, and where. Reported
 	// because it fails on its own and quietly: port 53 needs a capability, the
@@ -1337,6 +1345,8 @@ type runtimeBits struct {
 	cfgPath string
 }
 
+func memPtr(s memstat.Snapshot) *memstat.Snapshot { return &s }
+
 // primaryKey is the network key of the mesh with this label, whichever shape
 // the config describes it in.
 func primaryKey(cfg state.Config, label string) identity.NetworkKey {
@@ -1378,6 +1388,7 @@ func serveControl(ctx context.Context, log *slog.Logger, path string, instances 
 			Overlay: self.String(),
 			Prefix:  nk.Prefix().String(),
 			Version: version,
+			Memory:  memPtr(memstat.Read()),
 		}
 		if rt != nil {
 			if d := rt.dns.Load(); d != nil {

@@ -150,3 +150,20 @@ func TestDiagnosticsSurviveNoConfigDir(t *testing.T) {
 	}
 	_ = Diagnostics("")
 }
+
+// Diagnostics carry the process's memory, so a phone's footprint can be read
+// without adb — asked for to decide whether shrooms could fit an iOS packet
+// tunnel extension (docs/shrooms-on-ios.md).
+func TestDiagnosticsIncludeMemory(t *testing.T) {
+	d := Diagnostics(t.TempDir())
+	i := strings.Index(d, "== memory ==")
+	if i < 0 {
+		t.Fatalf("no memory section in:\n%s", d)
+	}
+	if !strings.Contains(d[i:], "heap") {
+		t.Errorf("memory section has no figures:\n%s", d[i:])
+	}
+	if j := strings.Index(d, "== recent log =="); j < i {
+		t.Errorf("memory should come before the log, which nobody reads first")
+	}
+}

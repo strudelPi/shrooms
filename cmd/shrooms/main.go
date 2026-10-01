@@ -59,6 +59,8 @@ func main() {
 		err = cmdBound(os.Args[2:])
 	case "paths":
 		err = cmdPaths(os.Args[2:])
+	case "memory":
+		err = cmdMemory(os.Args[2:])
 	case "services":
 		err = cmdServices(os.Args[2:])
 	case "hosts":
@@ -137,6 +139,7 @@ Usage:
   shrooms reload                     re-read the config; applies services
   shrooms bound                      what announce_bound would tell peers
   shrooms paths [NAME]               show probed candidates and which won
+  shrooms memory                     where the daemon's memory goes
   shrooms hosts [--write]            /etc/hosts entries, so you can use names
   shrooms key show                   print the network key
   shrooms key rotate                 replace it — a new key is a NEW mesh, and

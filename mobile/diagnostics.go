@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/vpavlin/shrooms/internal/memstat"
 )
 
 // Evidence that outlives the process.
@@ -177,6 +179,13 @@ func Diagnostics(configDir string) string {
 		b.WriteString("(none recorded — a kill by Android leaves no panic)\n")
 	}
 	fmt.Fprintf(&b, "panics swallowed this run: %d\n", PanicsSwallowed())
+
+	// Of this process, so of the app as a whole: the tunnel and the screens
+	// share it. Asked for to decide whether shrooms could fit an iOS packet
+	// tunnel extension (docs/shrooms-on-ios.md); the app runtime's line is
+	// what such an extension would not carry.
+	fmt.Fprintf(&b, "\n== memory ==\n")
+	b.WriteString(memstat.Format(memstat.Read()))
 
 	fmt.Fprintf(&b, "\n== recent log ==\n")
 	if l := tail(logPath(configDir), 200); l != "" {

@@ -50,6 +50,14 @@ func TestGoMemoryIsNotCountedAsNative(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("needs /proc/self/status")
 	}
+	// The race detector keeps shadow memory for every Go allocation — several
+	// times its size — and allocates it outside Go's accounting. It really is
+	// memory Go's runtime does not report, so native grows (by about 70 MB for
+	// these 32 MB, found when `make test`, which runs -race, failed in CI).
+	// The claim here holds only for the binaries shrooms ships, built without it.
+	if raceDetector {
+		t.Skip("-race: the detector's shadow memory is native, by design")
+	}
 	before := Read().Native
 	buf := make([]byte, 32<<20)
 	for i := range buf {

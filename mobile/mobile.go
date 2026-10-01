@@ -1174,11 +1174,10 @@ func Start(tunFd int, configDir string, dnsServers string, p Protector, l Logger
 	// Reuse the node across reconnects; see the comment on the package
 	// variable. Only the first connect creates one.
 	if node == nil {
-		learned := learnedBootPeers(st)
-		if len(learned) > 0 {
+		if learned := learnedBootPeers(st); len(learned) > 0 {
 			log.Info("bootstrapping from addresses peers published", "learned", len(learned))
 		}
-		n, err := waku.New(nodeConfig(cfg, learned...))
+		n, err := waku.New(sessionNodeConfig(cfg, st))
 		if err != nil {
 			closeAll()
 			return fmt.Errorf("rendezvous plane: %w", err)
@@ -1501,7 +1500,7 @@ func sharedNodeConfig(cfgPath string, hints ...string) waku.Config {
 			learned = append(learned, h)
 		}
 	}
-	return nodeConfig(fleetFor(cfgPath), learned...)
+	return withFreePorts(nodeConfig(fleetFor(cfgPath), learned...))
 }
 
 func sharedNode(cfgPath string, hints ...string) (*waku.Node, error) {

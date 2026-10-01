@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"net"
 	"sync"
 
 	"context"
@@ -120,6 +121,66 @@ func nodeConfig(cfg state.Config, learned ...string) waku.Config {
 		c["entryNodes"] = entry
 	}
 	return c
+}
+
+// withFreePorts gives a phone's delivery node ports nobody else is holding.
+//
+// The Android library is v0.38.1 (vendored, revision e91aaa), and v0.38.1
+// binds FIXED defaults: TCP 60000 and discovery on UDP 9000
+// (tools/confutils/cli_args.nim at that tag). Every app embedding it does the
+// same, so whichever starts second fails — "failed to start waku discovery:
+// Address already in use". On 2026-10-01 a phone could not connect until the
+// Loam app, which embeds the same library, was force-stopped. The desktop
+// library (our July pin) picks random ports, which is why this never showed
+// there and could not be reproduced on a laptop.
+//
+// A phone publishes no delivery address (it is an Edge node; ADR-031's boot
+// addresses come only from Core relays), so its ports need not be stable, only
+// free. So: ask the OS for one of each and hand them over. A moment passes
+// between closing the probe sockets and the library binding them, in which
+// another process could take one — far smaller than a default every embedder
+// shares, and a collision still fails the start loudly.
+func withFreePorts(c waku.Config) waku.Config {
+	if _, set := c["tcpPort"]; !set {
+		if p := freePort("tcp"); p != 0 {
+			c["tcpPort"] = p
+		}
+	}
+	if _, set := c["discv5UdpPort"]; !set {
+		if p := freePort("udp"); p != 0 {
+			c["discv5UdpPort"] = p
+		}
+	}
+	return c
+}
+
+// freePort returns a port the OS just confirmed was free, or 0 to leave the
+// choice to the library.
+func freePort(network string) int {
+	switch network {
+	case "tcp":
+		l, err := net.Listen("tcp", ":0")
+		if err != nil {
+			return 0
+		}
+		defer l.Close()
+		return l.Addr().(*net.TCPAddr).Port
+	case "udp":
+		pc, err := net.ListenPacket("udp", ":0")
+		if err != nil {
+			return 0
+		}
+		defer pc.Close()
+		return pc.LocalAddr().(*net.UDPAddr).Port
+	}
+	return 0
+}
+
+// sessionNodeConfig is what Start builds its node from: the device's fleet
+// settings, the addresses it learned, and ports of its own. The counterpart of
+// sharedNodeConfig, so both constructions are built — and tested — the same way.
+func sessionNodeConfig(cfg state.Config, st *state.State) waku.Config {
+	return withFreePorts(nodeConfig(cfg, learnedBootPeers(st)...))
 }
 
 // learnedBootPeers is what this device has been told it can bootstrap from:

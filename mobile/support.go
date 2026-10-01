@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 
@@ -186,12 +187,26 @@ type statusPayload struct {
 	// to announce until some peer reaches it and reports back. A device in that
 	// state looks perfectly healthy from every other screen while being
 	// undialable by everybody.
-	Announced  []string `json:"announced"`
+	Announced []string `json:"announced"`
+
+	// Due is every member of every mesh on this phone — the phone included —
+	// whose credential runs out within mesh.DueWithin, or has. The same list
+	// the desktop's status shows (mesh/due.go). The app shows it on the mesh
+	// screen and notifies when the phone's own entry appears.
+	Due []mesh.Due `json:"due,omitempty"`
+
 	Rendezvous struct {
 		Status  string `json:"status"`
 		OK      bool   `json:"ok"`
 		Problem string `json:"problem,omitempty"`
 		Detail  string `json:"detail,omitempty"`
+		// LibraryDead is the waku package's verdict that the delivery library
+		// itself is refusing requests (waku.Liveness): the one fault the app's
+		// watchdog could not see, because the library goes on reporting
+		// Connected while it happens. The app acts on it through hardRestart,
+		// with that path's own cooldowns.
+		LibraryDead     bool   `json:"library_dead,omitempty"`
+		LibraryEvidence string `json:"library_evidence,omitempty"`
 	} `json:"rendezvous"`
 
 	// DNS counts what each layer of name resolution actually saw.
@@ -230,10 +245,12 @@ func snapshotAll(instances []*meshInstance, suffix string) statusPayload {
 	// empty label here now yields no name rather than a short one that the
 	// resolver no longer answers.
 	out := snapshot(instances[0].mesh, suffix, instances[0].label)
+	now := time.Now()
+	// Before the single-mesh return, so a phone on one mesh is told too.
+	out.Due = dueAcross(instances, now)
 	if len(instances) == 1 {
 		return out
 	}
-	now := time.Now()
 	out.Peers = nil
 	for _, in := range instances {
 		part := snapshot(in.mesh, suffix, in.label)
@@ -250,8 +267,17 @@ func snapshotAll(instances []*meshInstance, suffix string) statusPayload {
 			Peers:   len(in.mesh.Roster().Current(now)),
 		})
 	}
-	_ = now
 	return out
+}
+
+// dueAcross is mesh.DueAmong over every mesh on this phone, soonest first.
+func dueAcross(instances []*meshInstance, now time.Time) []mesh.Due {
+	var due []mesh.Due
+	for _, in := range instances {
+		due = append(due, mesh.DueAmong(in.label, in.mesh.Members(), now)...)
+	}
+	sort.SliceStable(due, func(i, j int) bool { return due[i].NotAfter.Before(due[j].NotAfter) })
+	return due
 }
 
 // label names the mesh for the names built here. Always set: a name without its
@@ -265,6 +291,7 @@ func snapshot(m *mesh.Mesh, suffix, label string) statusPayload {
 	out.Rendezvous.OK = h.OK(now)
 	out.Rendezvous.Problem = h.Problem(now)
 	out.Rendezvous.Detail = h.Detail(now)
+	out.Rendezvous.LibraryDead, out.Rendezvous.LibraryEvidence = waku.LibraryVerdict(now)
 
 	// Never nil: the app distinguishes "none" from "this build does not report
 	// it", and a nil slice marshals to null, which is the same ambiguity the

@@ -124,23 +124,29 @@ type Node struct {
 // eventSink is the handle target for the global event callback.
 type eventSink struct{ node *Node }
 
-// call performs a request-style FFI call and waits for its callback.
-func call(fn func(ud unsafe.Pointer) C.int) (string, error) {
+// call performs a request-style FFI call and waits for its callback, for no
+// longer than callTimeout in total.
+//
+// The C call itself runs on its own goroutine. It used to run inline, and the
+// timeout only started once it had returned — so a call that never returned
+// hung its caller forever, with the timeout never reached. On 2026-10-01 the
+// daemon's rendezvous watchdog logged nothing for over two hours on a node
+// whose library had died — no repair, no restart, no backoff line — and a
+// library call in its repair step that never returned is the explanation this
+// code allowed.
+//
+// On a timeout the handle is deliberately not deleted. The library may still
+// call back with it later, and looking up a deleted handle is a panic — which
+// the old code risked on every timeout. A leaked handle per hung call is the
+// cheaper failure; a process in that state is about to be replaced anyway.
+func call(op string, fn func(ud unsafe.Pointer) C.int) (string, error) {
 	ch := make(chan result, 1)
 	h := cgo.NewHandle(ch)
-	defer h.Delete()
-
-	rc := fn(unsafe.Pointer(h))
-
-	select {
-	case r := <-ch:
-		if int(rc) != 0 || r.ret != 0 {
-			return r.msg, fmt.Errorf("ffi call failed (rc=%d ret=%d): %s", int(rc), r.ret, r.msg)
-		}
-		return r.msg, nil
-	case <-time.After(callTimeout):
-		return "", errors.New("ffi callback timed out")
+	msg, err, settled := await(op, func() int { return int(fn(unsafe.Pointer(h))) }, ch, callTimeout)
+	if settled {
+		h.Delete()
 	}
+	return msg, err
 }
 
 // New creates a node. It is not started yet.
@@ -183,13 +189,13 @@ func New(cfg Config) (*Node, error) {
 
 // Start starts the node.
 func (n *Node) Start() error {
-	_, err := call(func(ud unsafe.Pointer) C.int { return C.bridge_start(n.ctx, ud) })
+	_, err := call("start", func(ud unsafe.Pointer) C.int { return C.bridge_start(n.ctx, ud) })
 	return err
 }
 
 // Stop stops the node without destroying it.
 func (n *Node) Stop() error {
-	_, err := call(func(ud unsafe.Pointer) C.int { return C.bridge_stop(n.ctx, ud) })
+	_, err := call("stop", func(ud unsafe.Pointer) C.int { return C.bridge_stop(n.ctx, ud) })
 	return err
 }
 
@@ -205,7 +211,7 @@ func (n *Node) Close() error {
 	n.evHandle = nil
 	n.mu.Unlock()
 
-	_, err := call(func(ud unsafe.Pointer) C.int { return C.bridge_destroy(n.ctx, ud) })
+	_, err := call("destroy", func(ud unsafe.Pointer) C.int { return C.bridge_destroy(n.ctx, ud) })
 
 	// Only safe once the C side can no longer invoke the callback.
 	if eh != nil {
@@ -218,7 +224,7 @@ func (n *Node) Close() error {
 func (n *Node) Subscribe(contentTopic string) error {
 	ct := C.CString(contentTopic)
 	defer C.free(unsafe.Pointer(ct))
-	_, err := call(func(ud unsafe.Pointer) C.int { return C.bridge_subscribe(n.ctx, ud, ct) })
+	_, err := call("subscribe", func(ud unsafe.Pointer) C.int { return C.bridge_subscribe(n.ctx, ud, ct) })
 	return err
 }
 
@@ -226,7 +232,7 @@ func (n *Node) Subscribe(contentTopic string) error {
 func (n *Node) Unsubscribe(contentTopic string) error {
 	ct := C.CString(contentTopic)
 	defer C.free(unsafe.Pointer(ct))
-	_, err := call(func(ud unsafe.Pointer) C.int { return C.bridge_unsubscribe(n.ctx, ud, ct) })
+	_, err := call("unsubscribe", func(ud unsafe.Pointer) C.int { return C.bridge_unsubscribe(n.ctx, ud, ct) })
 	return err
 }
 
@@ -249,25 +255,25 @@ func (n *Node) Send(contentTopic string, payload []byte, ephemeral bool) (string
 	cMsg := C.CString(string(raw))
 	defer C.free(unsafe.Pointer(cMsg))
 
-	return call(func(ud unsafe.Pointer) C.int { return C.bridge_send(n.ctx, ud, cMsg) })
+	return call("send", func(ud unsafe.Pointer) C.int { return C.bridge_send(n.ctx, ud, cMsg) })
 }
 
 // NodeInfo returns the node info blob for the given id.
 func (n *Node) NodeInfo(id string) (string, error) {
 	cID := C.CString(id)
 	defer C.free(unsafe.Pointer(cID))
-	return call(func(ud unsafe.Pointer) C.int { return C.bridge_node_info(n.ctx, ud, cID) })
+	return call("node_info", func(ud unsafe.Pointer) C.int { return C.bridge_node_info(n.ctx, ud, cID) })
 }
 
 // NodeInfoIDs lists the available node-info ids.
 func (n *Node) NodeInfoIDs() (string, error) {
-	return call(func(ud unsafe.Pointer) C.int { return C.bridge_node_info_ids(n.ctx, ud) })
+	return call("node_info_ids", func(ud unsafe.Pointer) C.int { return C.bridge_node_info_ids(n.ctx, ud) })
 }
 
 // AvailableConfigs asks the library which config fields it accepts. Useful for
 // discovering the real config surface instead of guessing.
 func (n *Node) AvailableConfigs() (string, error) {
-	return call(func(ud unsafe.Pointer) C.int { return C.bridge_available_configs(n.ctx, ud) })
+	return call("available_configs", func(ud unsafe.Pointer) C.int { return C.bridge_available_configs(n.ctx, ud) })
 }
 
 // NamedPubsubTopic formats a *named* (static-sharding) pubsub topic as
@@ -279,7 +285,7 @@ func (n *Node) AvailableConfigs() (string, error) {
 func (n *Node) NamedPubsubTopic(contentTopic string) (string, error) {
 	ct := C.CString(contentTopic)
 	defer C.free(unsafe.Pointer(ct))
-	return call(func(ud unsafe.Pointer) C.int { return C.bridge_pubsub_topic(n.ctx, ud, ct) })
+	return call("pubsub_topic", func(ud unsafe.Pointer) C.int { return C.bridge_pubsub_topic(n.ctx, ud, ct) })
 }
 
 // PeersInMesh reports how many gossipsub mesh peers we have for a pubsub topic.
@@ -287,12 +293,12 @@ func (n *Node) NamedPubsubTopic(contentTopic string) (string, error) {
 func (n *Node) PeersInMesh(pubsubTopic string) (string, error) {
 	pt := C.CString(pubsubTopic)
 	defer C.free(unsafe.Pointer(pt))
-	return call(func(ud unsafe.Pointer) C.int { return C.bridge_peers_in_mesh(n.ctx, ud, pt) })
+	return call("peers_in_mesh", func(ud unsafe.Pointer) C.int { return C.bridge_peers_in_mesh(n.ctx, ud, pt) })
 }
 
 // PeerID returns this node's libp2p peer id.
 func (n *Node) PeerID() (string, error) {
-	return call(func(ud unsafe.Pointer) C.int { return C.bridge_my_peerid(n.ctx, ud) })
+	return call("peer_id", func(ud unsafe.Pointer) C.int { return C.bridge_my_peerid(n.ctx, ud) })
 }
 
 // Events returns the channel asynchronous events are delivered on.

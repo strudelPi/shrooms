@@ -733,6 +733,8 @@ $ ssh user@vps 'sudo bash -s -- --purge --yes' < scripts/uninstall.sh
 | `!! rendezvous:` warning in `status` | the fleet is unreachable. Discovery is stalled; established tunnels keep working. Confirm with `make s1` |
 | `!! rendezvous: peers connect and are dropped immediately` | preset or `cluster_id` mismatch — you are on a different cluster than the fleet. Confirm with `different clusterId reported: N vs M` in the daemon log |
 | peer shows `stale 12m` | the tunnel is dead — the peer has not rekeyed within WireGuard's 180 s session lifetime |
+| `!! delivery library unreachable for …` in `status` | the delivery library has stopped taking requests while reporting itself connected. The daemon restarts itself once this has lasted five minutes and a repair has failed the same way; `sudo systemctl restart shrooms` fixes it now |
+| `!! credentials due for renewal` in `status` | listed devices' memberships end within ten days, or have. Run the printed `shrooms admin renew --mesh <name>` on the machine holding that mesh's admin key |
 | no peers at all after 60 s | the daemon is not reaching the fleet; check outbound connectivity |
 | `missing liblogosdelivery.h` | run `make deps-basecamp` |
 | the daemon exits immediately | `libpq` missing — deploy the container rather than a bare binary |
@@ -910,7 +912,17 @@ a file you keep on an encrypted volume.
 Renewal is a sweep rather than a ceremony per device: `shrooms admin renew`
 asks a running node who is on the mesh, signs a fresh credential for everyone
 inside ten days of expiry, and hands them back to be delivered over the control
-plane. What is deliberately not built is renewal with nobody present, which
+plane. `--dry-run` lists who it would renew without signing anything.
+
+**You do not have to visit a device to know it is due.** Every node knows every
+member's expiry — it checks it on each announce — so `shrooms status` on any one
+of them lists every device on every mesh it is in whose membership ends within
+those same ten days, or has, with the renew command for each mesh. The window
+matches the sweep's on purpose: whatever status calls due is exactly what
+`admin renew` renews. The app shows the same list on its mesh screen and posts
+a notification, at most once a day, when the phone's own membership is due.
+Two outages came from not knowing: k11's lapsed on 2026-09-25 and took immich,
+jellyfin and Home Assistant with it. What is deliberately not built is renewal with nobody present, which
 would need a signing key that is online — a different posture from an admin key
 used a handful of times a year.
 
@@ -1392,6 +1404,39 @@ rekeying, which proves its daemon is running and therefore announcing, while its
 announces have been missing for twelve minutes. Recovery is a restart in both
 places, because the delivery library keeps process-global state and has never
 survived being restarted inside a live process.
+
+**The library itself can die while saying it is connected**, and the
+outage of 2026-10-01 found two gaps that let it last for hours:
+
+- *A dead library.* The VPS refused every request — `Couldn't send a request
+  to the ffi thread` on subscribe and publish alike — while reporting
+  `Connected`. The rendezvous watchdog logged nothing at all for over two hours
+  — no repair, no restart, no backoff line — and the explanation the code
+  allows is a library call inside its repair step that never returned: the old
+  timeout only started once the C call had returned, so such a call hung its
+  caller for good. Library calls are now bounded end to end (the C call runs on
+  its own goroutine, so a call that never returns times out like one that
+  never calls back), and a separate watcher that makes no library calls
+  restarts the process once the library has refused requests for five
+  minutes, across at least ten calls of at least two kinds, with nothing
+  succeeding and a repair having failed the same way. `status` shows the
+  evidence as it accumulates. The app acts on the same verdict.
+- *A backoff that outlasted the outage.* pi5 and proteus restarted themselves
+  while every fleet node they knew was down, which could not help, and each
+  restart doubled the next wait towards two hours. When the fleet came back
+  they sat out the wait. The wait is now capped at half an hour when the plane
+  is down outright and the machine can prove its own network works — a
+  WireGuard handshake within the last three minutes over a public or relayed
+  endpoint. A LAN peer does not count, and offline the full backoff stands.
+
+All of these restarts draw on one persisted history
+(`rendezvous-restarts.json`), so none can bypass another's limits, and a crash
+loop cannot reset them. The library watcher waits at least half an hour after
+any previous self-restart, doubling to two hours for consecutive ones; the
+rendezvous watchdog keeps its own backoff, from ten minutes up to the same two
+hours, and the override above never brings a wait below half an hour. A daemon
+run by hand in a terminal is never restarted — it says what is wrong and keeps
+running.
 
 **Renewal has now been run against a real mesh.** On 2026-08-13 a sweep
 reissued credentials on a three-member mesh: the admin key signed, the daemon

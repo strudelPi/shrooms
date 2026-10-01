@@ -902,6 +902,21 @@ private fun MeshScreen(
             )
         }
 
+        // Memberships about to run out, this phone's and every peer's — the
+        // list the desktop's `shrooms status` shows. Two outages came from a
+        // lapse nobody saw coming (mesh/due.go); a phone is the device most
+        // often looked at, so this is where it should be impossible to miss.
+        if (snap.due.isNotEmpty()) {
+            val now = System.currentTimeMillis()
+            val lines = snap.due.joinToString("\n") { d ->
+                val days = kotlin.math.abs(d.notAfterMs - now) / 86_400_000L
+                val who = if (d.self) "this device" else "${d.name}.${d.mesh}"
+                if (d.expired) "$who: expired ${days}d ago" else "$who: ends in ${days}d"
+            }
+            val fixes = snap.due.map { it.fix }.distinct().joinToString("\n")
+            Banner("memberships due for renewal\n$lines\nrenew where the admin key is:\n$fixes", Palette.Amber)
+        }
+
         // A device with no address to give is undialable, and that is invisible
         // from everything else on this screen: peers appear, discovery looks
         // healthy, and every handshake fails.

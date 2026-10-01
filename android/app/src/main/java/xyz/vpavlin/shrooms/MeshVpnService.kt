@@ -112,6 +112,13 @@ class MeshVpnService : VpnService() {
          */
         const val ACTION_RECONNECT = "xyz.vpavlin.shrooms.RECONNECT"
 
+        /**
+         * The least time between two restarts for a dead delivery library.
+         * Wall-clock and persisted (see noteLibraryRestart), unlike the
+         * cooldowns below, because the restart ends the process.
+         */
+        private const val LIBRARY_RESTART_FLOOR = 30 * 60_000L
+
         /** How long the rendezvous plane may be down before rebuilding it. */
         private const val STALL_BEFORE_RECONNECT = 5 * 60_000L
 
@@ -147,6 +154,12 @@ class MeshVpnService : VpnService() {
          * when somebody most needs to be told something.
          */
         private const val GONE_NOTIFICATION_ID = 2
+
+        /** This phone's membership running out. Its own id, so it outlives the service's. */
+        private const val DUE_NOTIFICATION_ID = 3
+
+        /** At most one due notification a day, persisted across process restarts. */
+        private const val DUE_NOTIFY_EVERY = 24 * 60 * 60_000L
         private const val TAG = "shrooms"
 
         /** MTU 1280: the IPv6 minimum, which no path may fragment below. */
@@ -454,6 +467,7 @@ class MeshVpnService : VpnService() {
             while (Mobile.running()) {
                 MeshState.update(Mobile.statusJSON())
                 val s = MeshState.snapshot.value
+                maybeNotifyDue(s)
                 if (s.connected) notify(s.notificationLine())
 
                 // Only when the line changes. A widget redraw is cheap and a
@@ -480,6 +494,26 @@ class MeshVpnService : VpnService() {
                 // genuinely gone will not be fixed by another one.
                 val now = SystemClock.elapsedRealtime()
                 when {
+                    // The delivery library itself has stopped taking requests
+                    // — the one fault the branches below cannot see, because
+                    // the library goes on reporting Connected while it
+                    // happens, and a reported-OK plane counts as healthy. The
+                    // core only says so after five minutes of the dead-thread
+                    // signature across calls of two kinds, with a repair
+                    // having failed the same way (waku.Liveness). Seen on the
+                    // VPS on 2026-10-01; a phone has the same library.
+                    //
+                    // Only with a usable network, and at most once per
+                    // LIBRARY_RESTART_FLOOR — persisted, because hardRestart
+                    // ends the process and would take an in-memory cooldown
+                    // with it, letting a library that dies on every start
+                    // restart the app in a loop.
+                    s.connected && s.rendezvous.libraryDead && hasUsableNetwork() &&
+                        libraryRestartAllowed() -> {
+                        noteLibraryRestart()
+                        hardRestart("delivery library unreachable: ${s.rendezvous.libraryEvidence}")
+                    }
+
                     !s.connected || s.rendezvous.ok -> healthy = now
 
                     // Offline is not a fault, and the cure for a fault makes it
@@ -603,6 +637,59 @@ class MeshVpnService : VpnService() {
      * Deliberately not stopSelf() first: that would tell Android the service
      * is finished and no restart is wanted, which is the opposite of this.
      */
+    /**
+     * Tells the person holding the phone that its own membership is about to
+     * end, or has — once a day at most.
+     *
+     * The phone cannot renew itself: renewal is signed by the mesh's admin key,
+     * which is elsewhere. What it can do is make sure the lapse is not a
+     * surprise, which is what took k11's services down on 2026-09-25.
+     */
+    private fun maybeNotifyDue(s: Snapshot) {
+        val mine = s.due.filter { it.self }
+        if (mine.isEmpty()) return
+        val prefs = getSharedPreferences("watchdog", MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        if (now - prefs.getLong("due_notified_at", 0L) < DUE_NOTIFY_EVERY) return
+        prefs.edit().putLong("due_notified_at", now).apply()
+
+        val text = mine.joinToString("; ") { d ->
+            val days = kotlin.math.abs(d.notAfterMs - now) / 86_400_000L
+            if (d.expired) "${d.mesh}: expired ${days}d ago" else "${d.mesh}: ends in ${days}d"
+        }
+        val open = PendingIntent.getActivity(
+            this, 3, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val n = Notification.Builder(this, CHANNEL)
+            .setContentTitle("Shrooms membership ending")
+            .setContentText(text)
+            .setStyle(
+                Notification.BigTextStyle().bigText(
+                    "$text\n\nAsk the mesh's admin to renew it: " +
+                        mine.map { it.fix }.distinct().joinToString(", "),
+                ),
+            )
+            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        runCatching { mgr.notify(DUE_NOTIFICATION_ID, n) }
+    }
+
+    private fun libraryRestartAllowed(): Boolean {
+        val last = getSharedPreferences("watchdog", MODE_PRIVATE).getLong("library_restart_at", 0L)
+        return System.currentTimeMillis() - last >= LIBRARY_RESTART_FLOOR
+    }
+
+    private fun noteLibraryRestart() {
+        // commit, not apply: the process is about to end, and apply writes
+        // asynchronously — the floor would be lost with it.
+        getSharedPreferences("watchdog", MODE_PRIVATE).edit()
+            .putLong("library_restart_at", System.currentTimeMillis()).commit()
+    }
+
     private fun hardRestart(why: String) {
         Log.w(TAG, "delivery node is gone ($why) — restarting the process")
         MeshState.log("WARN", "delivery node gone, restarting the app")

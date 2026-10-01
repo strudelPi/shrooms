@@ -253,9 +253,10 @@ func cmdDaemon(args []string) error {
 	// How anything inside this process asks for a restart: the rendezvous
 	// watchdog below, and the control socket. One channel, one exit path — the
 	// alternative is two ways to end a daemon that behave differently on the
-	// day one of them is wrong. Buffered for every mesh plus the socket, so a
-	// send never blocks a caller that is holding a lock.
-	errs := make(chan error, len(instances)+1)
+	// day one of them is wrong. Buffered for every mesh, the socket and both
+	// watchdogs (rendezvous and library), so a send never blocks a caller that
+	// is holding a lock.
+	errs := make(chan error, len(instances)+3)
 	// Fed, not reading: see the fan-out below and rendezvous.Fed.
 	invites := rendezvous.Fed(node)
 	rt := &runtimeBits{
@@ -373,6 +374,10 @@ func cmdDaemon(args []string) error {
 	}
 
 	go watchRendezvous(ctx, log, instances, *stateDir, errs)
+	// And the library itself, which watchRendezvous cannot judge: it reasons
+	// from connection state and traffic, and once hung inside a library call
+	// for hours on a node whose library had died. See libwatch.go.
+	go watchLibrary(ctx, log, *stateDir, errs)
 
 	// Ask the router for a way in, per mesh, unless told not to. Best effort
 	// by construction: a router that refuses leaves the node exactly where it
@@ -554,6 +559,12 @@ type statusPayload struct {
 	// until someone tells it which one it belongs to.
 	Waiting bool `json:"waiting,omitempty"`
 
+	// Due lists every member of every mesh here — this device included — whose
+	// credential runs out within mesh.DueWithin, or has, soonest first. Each
+	// peer's expiry was already in Peers; nothing put the ones that matter in
+	// front of anybody, and two outages came of that (see mesh/due.go).
+	Due []mesh.Due `json:"due,omitempty"`
+
 	// OverlayV4 is this device's synthetic IPv4 address (ADR-021). Reported
 	// because two addresses now name the same machine, and an address nothing
 	// explains gets reported as a bug.
@@ -692,6 +703,11 @@ type rendezvousStatus struct {
 	Topics      int    `json:"topics"`
 	LastMessage string `json:"last_message,omitempty"`
 	LastMsgAgeS int64  `json:"last_message_age_s,omitempty"`
+	// LibraryEvidence is non-empty while calls into the delivery library are
+	// being refused or never returning, and LibraryDead says the evidence has
+	// crossed every threshold for a restart (waku.Liveness, libwatch.go).
+	LibraryDead     bool   `json:"library_dead,omitempty"`
+	LibraryEvidence string `json:"library_evidence,omitempty"`
 }
 
 type peerStatus struct {
@@ -1187,6 +1203,9 @@ func watchRendezvous(ctx context.Context, log *slog.Logger, instances []*instanc
 					if err := in.mesh.Regraft(now); err != nil {
 						log.Warn("could not rejoin the gossip mesh",
 							"mesh", in.label, "err", err)
+						if errors.Is(err, waku.ErrLibraryUnreachable) {
+							waku.LibraryRepairFailed(now)
+						}
 					}
 				}
 				// Give it a chance before deciding it failed: the timers below
@@ -1196,6 +1215,10 @@ func watchRendezvous(ctx context.Context, log *slog.Logger, instances []*instanc
 			}
 
 			var problem string
+			// Whether the problem is the plane being down outright, which is
+			// the one case the backoff may be shortened for. See
+			// rendezvousBackoffOverride.
+			stalled := false
 			switch {
 			case !netChanged.IsZero() && now.Sub(netChanged) >= netSettle &&
 				now.Sub(healthy) >= netSettle:
@@ -1206,6 +1229,7 @@ func watchRendezvous(ctx context.Context, log *slog.Logger, instances []*instanc
 				netChanged = time.Time{}
 				problem = "the network changed and the rendezvous connection did not come back"
 			case now.Sub(healthy) >= rendezvousStall:
+				stalled = true
 				problem = fmt.Sprintf("no rendezvous connection for %s (%s)",
 					now.Sub(healthy).Round(time.Second),
 					instances[0].mesh.Health().Problem(now))
@@ -1245,12 +1269,17 @@ func watchRendezvous(ctx context.Context, log *slog.Logger, instances []*instanc
 			// Backed off, because the last restart may not have worked and
 			// repeating it costs every tunnel on every mesh. See restartlog.go.
 			if ok, left := restarts.ready(now, rendezvousStall); !ok {
-				log.Warn("the rendezvous plane needs a restart, but the last one did not help",
-					"problem", problem,
-					"history", restarts.String(),
-					"retry_in", left.Round(time.Second),
-					"note", "established tunnels keep working while this waits")
-				continue
+				over, evidence := rendezvousBackoffOverride(restarts, now, stalled, onlineEvidence(instances, now))
+				if !over {
+					log.Warn("the rendezvous plane needs a restart, but the last one did not help",
+						"problem", problem,
+						"history", restarts.String(),
+						"retry_in", left.Round(time.Second),
+						"note", "established tunnels keep working while this waits")
+					continue
+				}
+				log.Warn("restarting before the backoff ends: this machine's network is up and the rendezvous plane is not",
+					"problem", problem, "evidence", evidence, "history", restarts.String())
 			}
 			restarts.note(now)
 			log.Error("restarting to rebuild the rendezvous connection",
@@ -1485,6 +1514,11 @@ func serveControl(ctx context.Context, log *slog.Logger, path string, instances 
 			Detail:  h.Detail(now),
 			Topics:  h.Topics,
 		}
+		out.Rendezvous.LibraryDead, out.Rendezvous.LibraryEvidence = waku.LibraryVerdict(now)
+		for _, in := range instances {
+			out.Due = append(out.Due, mesh.DueAmong(in.label, in.mesh.Members(), now)...)
+		}
+		sort.SliceStable(out.Due, func(i, j int) bool { return out.Due[i].NotAfter.Before(out.Due[j].NotAfter) })
 		if !h.LastMessage.IsZero() {
 			out.Rendezvous.LastMessage = h.LastMessage.Format(time.RFC3339)
 			out.Rendezvous.LastMsgAgeS = int64(now.Sub(h.LastMessage).Seconds())

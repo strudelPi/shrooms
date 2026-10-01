@@ -106,7 +106,29 @@ data class Dns(
     }
 }
 
-data class Rendezvous(val status: String, val ok: Boolean, val problem: String, val detail: String)
+data class Rendezvous(
+    val status: String,
+    val ok: Boolean,
+    val problem: String,
+    val detail: String,
+    // The core's verdict that the delivery library itself refuses requests,
+    // while still reporting Connected. See MeshVpnService.poll.
+    val libraryDead: Boolean = false,
+    val libraryEvidence: String = "",
+)
+
+/**
+ * A credential about to run out, or that has (mesh/due.go): the same list the
+ * desktop's status shows. [self] is this phone's own membership.
+ */
+data class Due(
+    val mesh: String,
+    val name: String,
+    val self: Boolean,
+    val notAfterMs: Long,
+    val expired: Boolean,
+    val fix: String,
+)
 
 data class Snapshot(
     val connected: Boolean = false,
@@ -116,6 +138,7 @@ data class Snapshot(
     val prefix: String = "",
     val peers: List<Peer> = emptyList(),
     val rendezvous: Rendezvous = Rendezvous("unknown", true, "", ""),
+    val due: List<Due> = emptyList(),
     val error: String = "",
     /**
      * Where this device tells peers to reach it.
@@ -263,8 +286,27 @@ object MeshState {
                 ok = r?.optBoolean("ok") ?: true,
                 problem = r?.optString("problem") ?: "",
                 detail = r?.optString("detail") ?: "",
+                libraryDead = r?.optBoolean("library_dead") ?: false,
+                libraryEvidence = r?.optString("library_evidence") ?: "",
             ),
             announced = announced,
+            due = o.optJSONArray("due")?.let { arr ->
+                (0 until arr.length()).mapNotNull { i ->
+                    val d = arr.optJSONObject(i) ?: return@mapNotNull null
+                    // RFC 3339 from Go; java.time is available at minSdk 26.
+                    val at = runCatching {
+                        java.time.OffsetDateTime.parse(d.optString("not_after")).toInstant().toEpochMilli()
+                    }.getOrNull() ?: return@mapNotNull null
+                    Due(
+                        mesh = d.optString("mesh"),
+                        name = d.optString("name"),
+                        self = d.optBoolean("self"),
+                        notAfterMs = at,
+                        expired = d.optBoolean("expired"),
+                        fix = d.optString("fix"),
+                    )
+                }
+            } ?: emptyList(),
             meshes = o.optJSONArray("meshes")?.let { arr ->
                 (0 until arr.length()).map { i ->
                     val m = arr.getJSONObject(i)

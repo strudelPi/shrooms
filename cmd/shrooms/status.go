@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/vpavlin/shrooms/internal/hosts"
+	"github.com/vpavlin/shrooms/internal/mesh"
 	"io"
 	"io/fs"
 	"net"
@@ -265,6 +266,22 @@ func cmdStatus(args []string) error {
 		}
 		fmt.Println()
 		fmt.Println("   Peer discovery is stalled; established tunnels are unaffected.")
+	}
+	// Separate from the line above, because the cause is not the network: the
+	// library this daemon talks to the fleet through has stopped taking
+	// requests, while still reporting itself connected. Nothing but a new
+	// process fixes that, and the daemon makes one itself once the evidence is
+	// sustained (libwatch.go) — this says so in the meantime, and says it while
+	// the status line above may still read healthy.
+	printDue(os.Stdout, st.Due, st.DNS.Suffix, time.Now())
+
+	if st.Rendezvous.LibraryEvidence != "" {
+		fmt.Printf("\n!! %s\n", st.Rendezvous.LibraryEvidence)
+		if st.Rendezvous.LibraryDead {
+			fmt.Println("   The daemon restarts itself for this; a restart by hand fixes it now.")
+		} else {
+			fmt.Println("   Watching: a restart follows only if it lasts and a repair fails the same way.")
+		}
 	}
 	fmt.Println()
 
@@ -733,4 +750,57 @@ func plural(n int, one, many string) string {
 		return one
 	}
 	return many
+}
+
+// printDue lists the credentials that are about to run out, or have, with the
+// command that renews them. Quiet when nothing is due.
+//
+// Every node knows every member's expiry, so any one node's status is enough
+// to see the whole mesh's — which is the point: k11's lapsed on 2026-09-25
+// because nobody had looked at k11.
+func printDue(w io.Writer, due []mesh.Due, suffix string, now time.Time) {
+	if len(due) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\n!! credentials due for renewal")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fixes := map[string]bool{}
+	var order []string
+	for _, d := range due {
+		name := mesh.QualifiedDNSName(d.Name, d.Mesh, suffix)
+		if name == "" {
+			name = d.Name
+		}
+		if d.Self {
+			name += " (this device)"
+		}
+		left := d.NotAfter.Sub(now)
+		when := "ends in " + roundDays(left)
+		if d.Expired {
+			when = "EXPIRED " + roundDays(-left) + " ago"
+		}
+		fmt.Fprintf(tw, "   %s\t%s\t%s\n", name, when, d.NotAfter.Format("2006-01-02"))
+		if !fixes[d.Fix] {
+			fixes[d.Fix] = true
+			order = append(order, d.Fix)
+		}
+	}
+	tw.Flush()
+	// One line per mesh rather than per device: renew sweeps the whole mesh.
+	fmt.Fprintln(w, "   renew, on the machine with that mesh's admin key:")
+	for _, f := range order {
+		fmt.Fprintf(w, "     %s\n", f)
+	}
+}
+
+// roundDays says a duration the way a person would plan around it.
+func roundDays(d time.Duration) string {
+	switch {
+	case d < time.Hour:
+		return "under an hour"
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%d hours", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%d days", int(d.Hours()/24))
+	}
 }

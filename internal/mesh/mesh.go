@@ -732,6 +732,12 @@ func (m *Mesh) repairRendezvous(now time.Time) {
 
 	if err := m.resubscribe(now); err != nil {
 		m.log.Warn("resubscribe after repair failed", "err", err)
+		// A repair that failed because the library would not take the request
+		// is the evidence the daemon's library monitor waits for before it may
+		// restart the process. See waku.Liveness.
+		if errors.Is(err, waku.ErrLibraryUnreachable) {
+			waku.LibraryRepairFailed(now)
+		}
 		// Left cleared deliberately: a failed resubscribe must be retried on
 		// the next tick, and remembering topics we do not hold would prevent
 		// exactly that.

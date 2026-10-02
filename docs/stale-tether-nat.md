@@ -1,6 +1,8 @@
 # A phone's tethering NAT can strand a WireGuard port
 
-**Status:** cause confirmed 2026-10-02; fix needs a decision (below).
+**Status:** cause confirmed 2026-10-02; fixed for the desktop daemon by role
+(below). Phones not yet: their sockets must be re-protected from the VPN after a
+rebind.
 
 ## What happens
 
@@ -50,7 +52,7 @@ itself; leave pinned ones alone. Two things sink it:
   daemon restarted itself after a network change and came back on its
   configured ports — the very ones the phone had stranded.
 
-### Proposed instead: decide by role
+### Built: decide by role
 
 The ports that must not move are the ones other machines are told to reach:
 a Core node or relay, or anything with `advertise` set (a static public
@@ -65,10 +67,16 @@ contract.
 - **Core nodes, relays, and anything with `advertise`:** never move.
 - **Phones:** Edge, so the same rule — a phone hops networks more than anything.
 
-Things to verify while building, since code compares against our own port:
-same-host neighbour detection (`bootstrapFrom`), the "allow inbound UDP <port>"
-hint, port mappings (PCP/UPnP are already re-requested on a network change),
-and the relay registration.
+How it is built (`state.Config.EphemeralPort`, `moveEphemeralPorts`): an Edge
+mesh without `relay` or `advertise` binds port 0 at start, and on every network
+change the daemon rebinds it in place (`listen_port` through wireguard-go, so
+peers and sessions survive). The mesh then forgets what peers observed of the
+old port and announces at once; the router mapping follows the new port. Every
+reader of the mesh's own port — local candidates, the same-host check, the
+firewall hint — goes through `Mesh.ListenPort`.
+
+Not covered by a unit test: binding at start needs a real TUN device, and the
+end-to-end runs use Core. The laptop, an Edge node, is the live check.
 
 Peers lose nothing they had: after a network change our address changed
 anyway, so cached endpoints for us were already useless; tunnels we start are

@@ -438,6 +438,17 @@ type reflexObs struct {
 // reflexiveTTL is how long a peer's observation of our address counts.
 const reflexiveTTL = 10 * time.Minute
 
+// ForgetReflexive drops every address peers have reported for us.
+//
+// For when our own socket moved to a new port: what peers observed was the
+// old one, and announcing it would send them to a translation that no longer
+// leads here. They report the new one at their next probe.
+func (p *Prober) ForgetReflexive() {
+	p.mu.Lock()
+	p.reflexive = map[netip.AddrPort]*reflexObs{}
+	p.mu.Unlock()
+}
+
 // Reflexive returns the self-addresses peers have reported, best corroborated
 // first, and drops addresses that peers disagree about.
 //

@@ -2,8 +2,10 @@ package wg
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -87,6 +89,38 @@ func NewDevice(t tun.Device, priv identity.WGKey, listenPort uint16, logger *dev
 		return nil, fmt.Errorf("bring device up: %w", err)
 	}
 	return &Device{Device: dev, Bind: b, tun: t}, nil
+}
+
+// SetListenPort moves the device to another UDP port, keeping its peers and
+// sessions. Zero asks the OS for any free port. Returns the port now bound.
+//
+// wireguard-go closes the old socket and opens the new one in place; peers
+// keep their keys and endpoints, and the next packet each side sends comes
+// from — and is answered to — the new port.
+func (d *Device) SetListenPort(port uint16) (uint16, error) {
+	if err := d.IpcSet(fmt.Sprintf("listen_port=%d\n", port)); err != nil {
+		return 0, fmt.Errorf("move to port %d: %w", port, err)
+	}
+	return d.ListenPort()
+}
+
+// ListenPort is the UDP port the device is bound to, as the device itself
+// reports it — the only answer that is right after binding port 0.
+func (d *Device) ListenPort() (uint16, error) {
+	cfg, err := d.IpcGet()
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(cfg, "\n") {
+		if v, ok := strings.CutPrefix(line, "listen_port="); ok {
+			n, err := strconv.ParseUint(v, 10, 16)
+			if err != nil {
+				return 0, fmt.Errorf("device reports port %q: %w", v, err)
+			}
+			return uint16(n), nil
+		}
+	}
+	return 0, errors.New("device reports no listen port")
 }
 
 // SetPeers reconciles the peer set.

@@ -72,12 +72,18 @@ const Keepalive = 25
 
 // Mesh is the running node.
 type Mesh struct {
-	log    *slog.Logger
-	cfg    state.Config
-	st     *state.State
-	nk     identity.NetworkKey
-	node   *waku.Node
-	dev    *wg.Device
+	log  *slog.Logger
+	cfg  state.Config
+	st   *state.State
+	nk   identity.NetworkKey
+	node *waku.Node
+	dev  *wg.Device
+
+	// port is where the daemon moved this mesh's WireGuard socket, when it
+	// rebinds an ephemeral port (state.Config.EphemeralPort); zero until then,
+	// meaning cfg.ListenPort. Read through ListenPort, never directly.
+	port atomic.Uint32
+
 	roster *Roster
 	guard  *control.ReplayGuard
 
@@ -424,6 +430,30 @@ func (m *Mesh) Reflexive() []netip.AddrPort { return m.prober.Reflexive(time.Now
 // everybody. Diagnosing that took three rounds of asking somebody to read a
 // journal, which is three rounds too many for a question the daemon can answer.
 func (m *Mesh) Announced() []string { return m.candidates() }
+
+// ListenPort is the WireGuard port this mesh is bound to now.
+func (m *Mesh) ListenPort() uint16 {
+	if p := m.port.Load(); p != 0 {
+		return uint16(p)
+	}
+	return m.cfg.ListenPort
+}
+
+// SetListenPort records that the device moved to another port, after the
+// daemon rebound it (docs/stale-tether-nat.md).
+//
+// What peers observed of us was the old port, so those observations go: an
+// announce naming the old translation sends peers to the one path known not to
+// work. Announced at once rather than at the next tick, because until peers
+// hear the new port, the only tunnels that work are the ones we start.
+func (m *Mesh) SetListenPort(p uint16) {
+	if m.ListenPort() == p {
+		return
+	}
+	m.port.Store(uint32(p))
+	m.prober.ForgetReflexive()
+	m.requestAnnounce()
+}
 
 // requestResync asks the main loop to reconfigure the data plane.
 //
@@ -1418,7 +1448,7 @@ func (m *Mesh) reportUnreachable(now time.Time) {
 		"we_announce", m.candidates(),
 		"means", "peers can see this device and no packet from any of them arrives",
 		"likely", "a host firewall, or a network that blocks client-to-client traffic",
-		"fix", "allow inbound UDP "+strconv.Itoa(int(m.cfg.ListenPort)))
+		"fix", "allow inbound UDP "+strconv.Itoa(int(m.ListenPort())))
 }
 
 func (m *Mesh) reportUnknown() {
@@ -2212,11 +2242,11 @@ func (m *Mesh) syncPeers() error {
 			// endpoint that has not answered a probe; this case is where that
 			// rule was being broken.
 			peer.KeepEndpoint = true
-		case bootstrapEndpoint(p.Endpoints, m.cfg.ListenPort) != "":
+		case bootstrapEndpoint(p.Endpoints, m.ListenPort()) != "":
 			// Never reached this peer and have no relay: try what was announced.
 			// This is a bootstrap guess, so prefer an address that could
 			// plausibly work from here over one that certainly cannot.
-			peer.Endpoint = bootstrapEndpoint(p.Endpoints, m.cfg.ListenPort)
+			peer.Endpoint = bootstrapEndpoint(p.Endpoints, m.ListenPort())
 		}
 		// Has the device drifted away from what we last asked for? WireGuard
 		// roams a peer's endpoint to wherever its packets arrive from, so a

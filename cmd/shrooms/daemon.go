@@ -1194,6 +1194,9 @@ func watchRendezvous(ctx context.Context, log *slog.Logger, instances []*instanc
 					"was", underlay, "now", cur)
 				underlay = cur
 				netChanged = now
+				// Fresh ports first, so the mapping asked for below is for the
+				// port we are actually on.
+				moveEphemeralPorts(log, instances)
 				// And the port mappings describe the router we just left.
 				// Nothing used to be told, so each mesh went on announcing the
 				// old external address until its next renewal — up to an hour
@@ -1422,7 +1425,7 @@ func serveControl(ctx context.Context, log *slog.Logger, path string, instances 
 				Overlay: in.self.String(),
 				Prefix:  in.prefix.String(),
 				Iface:   in.iface,
-				Port:    in.port,
+				Port:    in.listenPort(),
 				Peers:   len(in.mesh.Roster().Current(now)),
 			}
 			if in.relay {

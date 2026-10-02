@@ -84,9 +84,17 @@ func keepMapped(ctx context.Context, log *slog.Logger, in *instance) {
 	// The external port to ask for. Starts as our own, which routers usually
 	// honour, and moves only when the one we were given turns out to belong to
 	// somebody else as well.
-	want := in.port
+	port := in.listenPort()
+	want := port
 
 	for {
+		// The port can move under us (moveEphemeralPorts), and a mapping for
+		// the old one forwards to a socket that no longer exists. Start over
+		// for the new one, and say what we get, since it will be new.
+		if now := in.listenPort(); now != port {
+			port, want, announced = now, now, false
+		}
+
 		// A mapping a peer also claims is not a mapping. The router gave the
 		// same external port to two machines — which it is entitled to get
 		// wrong, and neither node can tell from its side — so ask for a
@@ -98,8 +106,8 @@ func keepMapped(ctx context.Context, log *slog.Logger, in *instance) {
 		// urgent: until it clears, both nodes relay, which works.
 		if in.mesh.MappedIsContested() {
 			next := want + 1
-			if next < in.port || next == 0 {
-				next = in.port + 1
+			if next < port || next == 0 {
+				next = port + 1
 			}
 			log.Info("the router gave us a port a peer also claims; asking for another",
 				"mesh", in.label, "contested", want, "asking", next)
@@ -107,7 +115,7 @@ func keepMapped(ctx context.Context, log *slog.Logger, in *instance) {
 			announced = false // say what we get, since it will be new
 		}
 
-		m, err := c.MapTo(ctx, in.port, want, portmap.DefaultLifetime)
+		m, err := c.MapTo(ctx, port, want, portmap.DefaultLifetime)
 		wait := mapRetry
 		switch {
 		case err != nil:
@@ -117,7 +125,7 @@ func keepMapped(ctx context.Context, log *slog.Logger, in *instance) {
 				// their node is unreachable needs to be able to find out that
 				// the router was asked and declined.
 				log.Info("no port mapping from the router",
-					"mesh", in.label, "port", in.port, "err", err)
+					"mesh", in.label, "port", port, "err", err)
 				announced = true
 			}
 			in.mesh.SetMapped(netip.AddrPort{})
@@ -187,7 +195,8 @@ func keepMapped(ctx context.Context, log *slog.Logger, in *instance) {
 			announced = false
 			// And ask for our own port again. `want` holds whatever the last
 			// router assigned, which means nothing to this one.
-			want = in.port
+			port = in.listenPort()
+			want = port
 		}
 	}
 }

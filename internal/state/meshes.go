@@ -296,6 +296,33 @@ func (c Config) Meshes() []Mesh {
 	return out
 }
 
+// EphemeralPort reports whether this mesh's WireGuard port is nobody's
+// contract, so the daemon may bind a fresh one at every start and after every
+// network change (docs/stale-tether-nat.md).
+//
+// Why move at all: a phone's tethering NAT kept a stale translation for a
+// laptop's WireGuard ports after the tether link renewed, on 2026-10-01 over
+// Wi-Fi and 2026-10-02 over USB. Every handshake reached the VPS and every
+// answer was lost; restarting on the same ports, and minutes of silence, did
+// not clear it. Ports the phone had never seen fixed it within a minute.
+//
+// Which ports must not move is a question of role, not of the config: joining
+// a mesh writes its port into the config so that renames cannot reshuffle
+// ports, so a pinned port usually means nothing more than that. The ports
+// other machines are told to reach are a relay's, an advertised endpoint's
+// (usually behind a port-forward), and — conservatively — any delivery Core
+// node's, since those are the servers people forward ports to. Mode is
+// compared exactly: unset means Core, so a config that never chose stays put.
+func (c Config) EphemeralPort(m Mesh) bool {
+	if c.Mode != "Edge" || m.Relay {
+		return false
+	}
+	// ForMesh decides which advertise entries belong to this mesh — the
+	// device-wide one goes to the mesh on the device's base port — so it is
+	// asked rather than re-derived.
+	return len(c.ForMesh(m, m.ListenPort).Advertise) == 0
+}
+
 // freeIface is the interface name for the mesh at index i, skipping any a
 // pinned mesh already holds.
 //

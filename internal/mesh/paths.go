@@ -712,7 +712,7 @@ func (m *Mesh) candidates() []string {
 		add(a)
 	}
 	for _, ip := range localAddrs() {
-		add(net.JoinHostPort(ip.String(), strconv.Itoa(int(m.cfg.ListenPort))))
+		add(net.JoinHostPort(ip.String(), strconv.Itoa(int(m.ListenPort()))))
 	}
 
 	// Keep the announce inside its fixed padding. Four is the real ceiling for

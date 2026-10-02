@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"golang.zx2c4.com/wireguard/device"
 
@@ -36,7 +37,14 @@ type instance struct {
 	self    netip.Addr
 	prefix  netip.Prefix
 	iface   string
-	port    uint16
+
+	// port is the WireGuard port bound now; read it with listenPort. It moves
+	// when ephemeral is set (state.Config.EphemeralPort): a fresh port at start
+	// and after every network change, because a phone's tethering NAT can
+	// strand a port for good (docs/stale-tether-nat.md). keepMapped reads it
+	// from its own goroutine, hence atomic.
+	port      atomic.Uint32
+	ephemeral bool
 
 	// mapped is the external address the router gave us for this mesh's port,
 	// if it gave one (ADR-024).
@@ -102,12 +110,14 @@ func startInstance(ctx context.Context, log *slog.Logger, cfg state.Config, st *
 	}
 
 	self := identity.OverlayAddr(nk, ms.Identity.DevicePub)
+	ephemeral := cfg.EphemeralPort(m)
 	log.Info("mesh starting", "mesh", m.Label, "overlay", self,
-		"prefix", nk.Prefix(), "interface", iface, "port", port)
+		"prefix", nk.Prefix(), "interface", iface, "port", port, "ephemeral_port", ephemeral)
 
 	in := &instance{
-		label: m.Label, self: self, prefix: nk.Prefix(), iface: iface, port: port,
+		label: m.Label, self: self, prefix: nk.Prefix(), iface: iface, ephemeral: ephemeral,
 	}
+	in.port.Store(uint32(port))
 
 	// Synthetic IPv4 (ADR-021), per mesh: with per-mesh identities the aliases
 	// cannot collide by construction, but the table must still be per mesh or
@@ -131,10 +141,26 @@ func startInstance(ctx context.Context, log *slog.Logger, cfg state.Config, st *
 	if verbose {
 		wgLevel = device.LogLevelVerbose
 	}
-	in.dev, err = wg.NewDevice(translated, ms.Identity.WGPriv, port,
+	// An ephemeral port is whatever the OS hands out, never the configured
+	// one: a restart on the configured port is exactly what failed to clear a
+	// stranded translation on 2026-10-02, so the fresh port has to start here
+	// and not only at the next network change.
+	bind := port
+	if ephemeral {
+		bind = 0
+	}
+	in.dev, err = wg.NewDevice(translated, ms.Identity.WGPriv, bind,
 		device.NewLogger(wgLevel, "[wg "+m.Label+"] "))
 	if err != nil {
 		return in, fmt.Errorf("mesh %q: wireguard: %w", m.Label, err)
+	}
+	if ephemeral {
+		if port, err = in.dev.ListenPort(); err != nil {
+			return in, fmt.Errorf("mesh %q: which port did wireguard bind: %w", m.Label, err)
+		}
+		in.port.Store(uint32(port))
+		log.Info("bound a fresh port", "mesh", m.Label, "port", port,
+			"why", "an Edge node's port is nobody's contract, and a fresh one cannot be stranded by a NAT")
 	}
 
 	// The mesh's own view of the config: its key, its relay setting, its admin
@@ -161,6 +187,39 @@ func startInstance(ctx context.Context, log *slog.Logger, cfg state.Config, st *
 			func(msg string, args ...any) { log.Info(msg, append(args, "mesh", m.Label)...) })
 	}
 	return in, nil
+}
+
+// listenPort is the WireGuard port this mesh is bound to now.
+func (in *instance) listenPort() uint16 { return uint16(in.port.Load()) }
+
+// moveEphemeralPorts rebinds every mesh whose port is ephemeral to a fresh
+// one, after the network changed.
+//
+// A tethering phone kept a stale translation for a laptop's WireGuard ports
+// after the tether link renewed (docs/stale-tether-nat.md): every handshake
+// reached its peer and every answer was lost, until the ports changed. Moving
+// on every change rather than on detecting it costs one announce — and after
+// a network change our address changed anyway, so peers' cached endpoints for
+// us were already useless.
+func moveEphemeralPorts(log *slog.Logger, instances []*instance) {
+	for _, in := range instances {
+		if in == nil || !in.ephemeral || in.dev == nil {
+			continue
+		}
+		was := in.listenPort()
+		now, err := in.dev.SetListenPort(0)
+		if err != nil {
+			log.Warn("could not move to a fresh port after the network changed",
+				"mesh", in.label, "port", was, "err", err)
+			continue
+		}
+		in.port.Store(uint32(now))
+		if in.mesh != nil {
+			in.mesh.SetListenPort(now)
+		}
+		log.Info("moved to a fresh port after the network changed",
+			"mesh", in.label, "was", was, "now", now)
+	}
 }
 
 // stateFor presents one mesh's state as the single-mesh State the mesh package

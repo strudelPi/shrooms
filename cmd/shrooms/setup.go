@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -111,7 +112,7 @@ func cmdInit(args []string) error {
 		return err
 	}
 	if *noAdmin {
-		reportNext(*sock)
+		reportNext(*sock, *cfgPath)
 		return nil
 	}
 
@@ -126,13 +127,13 @@ func cmdInit(args []string) error {
 		if err := mintCardAuthorityFull(*adminDir, *cfgPath, *stateDir, *name, *label, *reader, *sock); err != nil {
 			return err
 		}
-		reportNext(*sock)
+		reportNext(*sock, *cfgPath)
 		return nil
 	}
 	if err := mintAuthorityFor(*adminDir, *cfgPath, *stateDir, *label, *name); err != nil {
 		return err
 	}
-	reportNext(*sock)
+	reportNext(*sock, *cfgPath)
 	return nil
 }
 
@@ -259,7 +260,7 @@ func addMeshWith(cfgPath, stateDir, adminDir, label string, relay, noAdmin bool,
 		if err := mintCardAuthorityFull(adminDir, cfgPath, stateDir, cfg.Name, label, reader, sock); err != nil {
 			return err
 		}
-		reportNext(sock)
+		reportNext(sock, cfgPath)
 		return nil
 	}
 	if !noAdmin {
@@ -496,8 +497,8 @@ func setupMeshFrom(base *state.Config, cfgPath, stateDir string, nk identity.Net
 //     and no sign of which of the two is wrong. That is what happened to the
 //     first person outside this project to try it.
 //   - No daemon. Start one, which is the only case the old message fitted.
-func reportNext(sock string) {
-	if nudgeDaemon(sock) {
+func reportNext(sock, cfgPath string) {
+	if nudgeDaemon(sock, cfgPath) {
 		fmt.Printf("\nThe daemon was waiting for this and is bringing the mesh up now.\n")
 		fmt.Printf("Check it with:\n  shrooms status\n")
 		return
@@ -527,7 +528,7 @@ func reportNext(sock string) {
 		// The endpoint refuses if nothing would start the daemon again, so this
 		// cannot leave a mesh down by exiting; and it validates the config
 		// first, so it cannot restart into one that will not load.
-		if askRestart(sock) {
+		if restartIfOurs(sock, cfgPath) {
 			fmt.Printf("\nThe daemon is restarting to bring it up — a new mesh is a new\n")
 			fmt.Printf("interface, and those are created at startup. The other meshes\n")
 			fmt.Printf("reconnect in a few seconds.\n\n")
@@ -606,9 +607,9 @@ func cmdPrepare(args []string) error {
 	return nil
 }
 
-func nudgeDaemon(sock string) bool {
+func nudgeDaemon(sock, cfgPath string) bool {
 	st, err := fetchStatus(sock)
-	if err != nil || !st.Waiting {
+	if err != nil || !st.Waiting || !runsConfig(st, cfgPath) {
 		return false
 	}
 	resp, err := socketClient(sock, 10*time.Second).Post("http://unix/reload", "application/json", nil)
@@ -617,6 +618,42 @@ func nudgeDaemon(sock string) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode/100 == 2
+}
+
+// restartIfOurs asks the daemon on sock to restart, but only if it runs the
+// config at cfgPath — the one the caller just changed. Any other daemon has
+// nothing to pick up, and restarting it drops every tunnel it carries for no
+// reason. That happened: the test suite's `init --config <temp> --mesh x`
+// restarted the system daemon on every run (2026-10-02).
+func restartIfOurs(sock, cfgPath string) bool {
+	st, err := fetchStatus(sock)
+	if err != nil || !runsConfig(st, cfgPath) {
+		return false
+	}
+	return askRestart(sock)
+}
+
+// runsConfig reports whether a daemon's status says it runs the config at
+// path. A daemon too old to say is not assumed to: the cost of a missed
+// restart is a printed instruction, the cost of a wrong one is a dropped mesh.
+func runsConfig(st statusPayload, path string) bool {
+	if st.Config == "" || path == "" {
+		return false
+	}
+	if absPath(path) == st.Config {
+		return true
+	}
+	a, errA := os.Stat(path)
+	b, errB := os.Stat(st.Config)
+	return errA == nil && errB == nil && os.SameFile(a, b)
+}
+
+// absPath is path made absolute, or path itself if that fails.
+func absPath(path string) string {
+	if a, err := filepath.Abs(path); err == nil {
+		return a
+	}
+	return path
 }
 
 // askRestart asks a running daemon to restart itself, and reports whether it

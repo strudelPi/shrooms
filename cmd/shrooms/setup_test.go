@@ -220,14 +220,14 @@ func withStdin(t *testing.T, script string) {
 func TestNudgeOutcomesAreDistinguished(t *testing.T) {
 	t.Run("waiting daemon accepts the reload", func(t *testing.T) {
 		sock := serveWaiting(t, true)
-		if !nudgeDaemon(sock) {
+		if !nudgeDaemon(sock, waitingConfig) {
 			t.Error("a daemon that accepted /reload was not treated as nudged")
 		}
 	})
 
 	t.Run("waiting daemon refuses the reload", func(t *testing.T) {
 		sock := serveWaiting(t, false)
-		if nudgeDaemon(sock) {
+		if nudgeDaemon(sock, waitingConfig) {
 			t.Error("a daemon that refused /reload was reported as nudged")
 		}
 		// And it is still reachable and still waiting, which is what tells
@@ -239,11 +239,21 @@ func TestNudgeOutcomesAreDistinguished(t *testing.T) {
 	})
 
 	t.Run("no daemon", func(t *testing.T) {
-		if nudgeDaemon(filepath.Join(t.TempDir(), "absent.sock")) {
+		if nudgeDaemon(filepath.Join(t.TempDir(), "absent.sock"), waitingConfig) {
 			t.Error("an absent daemon was reported as nudged")
 		}
 	})
+
+	t.Run("a daemon running another config is left alone", func(t *testing.T) {
+		sock := serveWaiting(t, true)
+		if nudgeDaemon(sock, filepath.Join(t.TempDir(), "config.toml")) {
+			t.Error("a daemon that never read this config was nudged to reload it")
+		}
+	})
 }
+
+// waitingConfig is the config the fake daemons below say they run.
+const waitingConfig = "/etc/shrooms/config.toml"
 
 // serveWaiting runs a daemon with no mesh on a unix socket and returns its path.
 func serveWaiting(t *testing.T, acceptReload bool) string {
@@ -255,7 +265,7 @@ func serveWaiting(t *testing.T, acceptReload bool) string {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(statusPayload{Waiting: true})
+		json.NewEncoder(w).Encode(statusPayload{Waiting: true, Config: waitingConfig})
 	})
 	mux.HandleFunc("/reload", func(w http.ResponseWriter, _ *http.Request) {
 		if !acceptReload {

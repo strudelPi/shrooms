@@ -472,7 +472,7 @@ func cmdJoinInvite(token string, args []string) error {
 			return err
 		}
 		printJoinedAnother(res)
-		if askRestart(*sock) {
+		if restartIfOurs(*sock, *cfgPath) {
 			fmt.Println("\nThe daemon is restarting into it now.")
 		} else {
 			fmt.Println("\nRestart the daemon to bring it up:\n  sudo systemctl restart shrooms")
@@ -502,7 +502,7 @@ func cmdJoinInvite(token string, args []string) error {
 	// A daemon that was waiting has just had its mesh written out from under
 	// it. Telling it is the difference between a node that is up and a node
 	// that reports "waiting for a mesh" after a join that plainly worked.
-	if nudgeDaemon(*sock) {
+	if nudgeDaemon(*sock, *cfgPath) {
 		fmt.Println("\nThe daemon was waiting for this and is bringing the mesh up now.")
 	}
 	return nil

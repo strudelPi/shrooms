@@ -90,7 +90,7 @@ func runWaiting(ctx context.Context, log *slog.Logger, cfgPath, stateDir, sock s
 
 	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(statusPayload{Name: "", Waiting: true})
+		json.NewEncoder(w).Encode(statusPayload{Name: "", Waiting: true, Config: absPath(cfgPath)})
 	})
 
 	mux.HandleFunc("/join", requireRoot(func(w http.ResponseWriter, r *http.Request) {

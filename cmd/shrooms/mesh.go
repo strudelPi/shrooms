@@ -424,7 +424,7 @@ func cmdMeshRemove(args []string) error {
 	// Only when one is actually running — writing a config on a machine with no
 	// daemon is normal, and this is a convenience rather than a step.
 	if _, err := fetchStatus(*sock); err == nil {
-		if askRestart(*sock) {
+		if restartIfOurs(*sock, *cfgPath) {
 			fmt.Printf("\nRemoved, and the daemon is restarting to drop %s.\n", ifaceName(iface))
 			fmt.Printf("The other meshes reconnect in a few seconds.\n")
 			return nil

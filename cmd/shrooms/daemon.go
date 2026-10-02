@@ -600,6 +600,12 @@ type statusPayload struct {
 	// new enough for this?" is the question actually being asked.
 	Version string `json:"version,omitempty"`
 
+	// Config is the absolute path of the config this daemon runs. Commands
+	// that change a config restart or reload the daemon only when it is this
+	// one: `init --config /tmp/x.toml` once restarted the system daemon, which
+	// had never read that file — and the test suite did it on every run.
+	Config string `json:"config,omitempty"`
+
 	// Memory is where this process's memory goes, Go's share split from the
 	// rest — mostly the native delivery library. The daemon runs as root, so
 	// nothing else lets its user see this; `shrooms memory` prints it. Asked
@@ -1388,6 +1394,7 @@ func serveControl(ctx context.Context, log *slog.Logger, path string, instances 
 			Overlay: self.String(),
 			Prefix:  nk.Prefix().String(),
 			Version: version,
+			Config:  absPath(rt.cfgPath),
 			Memory:  memPtr(memstat.Read()),
 		}
 		if rt != nil {

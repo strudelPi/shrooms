@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net"
 	"net/http"
 	"os"
@@ -19,8 +20,9 @@ import (
 // to restart by hand is what made that possible.
 
 // fakeDaemon serves /status and /restart on a unix socket, and reports whether
-// a restart was ever asked for.
-func fakeDaemon(t *testing.T, restartOK bool) (sock string, restarted *atomic.Bool) {
+// a restart was ever asked for. It says it runs the config at runs: a command
+// restarts only the daemon running the config it changed.
+func fakeDaemon(t *testing.T, runs string, restartOK bool) (sock string, restarted *atomic.Bool) {
 	t.Helper()
 	restarted = &atomic.Bool{}
 
@@ -42,7 +44,7 @@ func fakeDaemon(t *testing.T, restartOK bool) (sock string, restarted *atomic.Bo
 		w.Header().Set("Content-Type", "application/json")
 		// Not waiting: this daemon is already carrying meshes, which is the
 		// case where a reload cannot help and only a restart will.
-		w.Write([]byte(`{"waiting":false,"meshes":[]}`))
+		json.NewEncoder(w).Encode(statusPayload{Config: runs})
 	})
 	mux.HandleFunc("/restart", func(w http.ResponseWriter, r *http.Request) {
 		restarted.Store(true)
@@ -62,7 +64,7 @@ func fakeDaemon(t *testing.T, restartOK bool) (sock string, restarted *atomic.Bo
 func TestRemovingAMeshRestartsARunningDaemon(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := aConfig(t, dir)
-	sock, restarted := fakeDaemon(t, true)
+	sock, restarted := fakeDaemon(t, cfgPath, true)
 
 	out := captureStdout(t, func() {
 		if err := cmdMeshRemove([]string{
@@ -89,7 +91,7 @@ func TestRemovingAMeshRestartsARunningDaemon(t *testing.T) {
 func TestRemovingAMeshSaysSoWhenTheDaemonRefuses(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := aConfig(t, dir)
-	sock, restarted := fakeDaemon(t, false)
+	sock, restarted := fakeDaemon(t, cfgPath, false)
 
 	out := captureStdout(t, func() {
 		if err := cmdMeshRemove([]string{

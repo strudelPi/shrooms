@@ -36,28 +36,40 @@ long-flow theories were tested and are wrong.
 
 ## The fix, and the decision it needs
 
-Detect it, then move: when a mesh has had **no completed handshake with any
-peer** for a few minutes after a network change, while delivery works and
-handshakes are being sent, rebind that mesh's WireGuard socket to a new port
-and announce it. Peers follow the announce, as they do after any endpoint
-change.
+### What was agreed first, and why it does not work
 
-What the detection must not do is fire on its own failures (a mesh whose peers
-are all genuinely offline also has no handshakes), so it counts only peers
-that are announcing — `online` but `stale`.
+Agreed 2026-10-02: on every network change, move the ports shrooms chose
+itself; leave pinned ones alone. Two things sink it:
 
-**Decision: what about a port that is pinned in the config?** A pinned port
-may have a router port-forward behind it (Core nodes, relays), and moving it
-would quietly break inbound reachability while fixing outbound.
+- **"Pinned" does not mean "chosen by a person".** Creating or joining a mesh
+  writes its port into the config (`cmd/shrooms/setup.go`, `joinmore.go`), so a
+  later rename cannot reshuffle ports. Every config made since then pins every
+  port; the rule would cover almost nothing, and would treat ports nobody
+  forwards as if somebody did.
+- **A session-only move does not survive a restart.** On 2026-10-02 07:38 the
+  daemon restarted itself after a network change and came back on its
+  configured ports — the very ones the phone had stranded.
 
-1. **Move only ports shrooms chose itself**; leave pinned ones and report the
-   problem in `shrooms status`. Safe, but on the laptop as configured right now
-   (pinned during the test) it would never fire.
-2. **Move any port, for this session only**, and return to the pinned one at
-   the next start. Fixes the laptop either way; a port-forwarded Core node
-   could lose inbound until it restarts.
-3. **Move unpinned ports; for pinned ones, move only on Edge nodes** (which
-   rely on outbound anyway). Most specific, one more rule to explain.
+### Proposed instead: decide by role
 
-Recommendation: **3**, and remove the two `port =` lines added during the test
-so the laptop is back to ports shrooms chooses.
+The ports that must not move are the ones other machines are told to reach:
+a Core node or relay, or anything with `advertise` set (a static public
+endpoint, usually a port-forward). An Edge node is reached by its own outgoing
+traffic and by whatever it learns and announces, so its port is nobody's
+contract.
+
+- **Edge nodes without `advertise`:** the WireGuard port is ephemeral — a free
+  port at every start, and a new one on every network change. The configured
+  port stays in the config (it is harmless, and keeps the interface naming
+  stable) but is not what such a node binds.
+- **Core nodes, relays, and anything with `advertise`:** never move.
+- **Phones:** Edge, so the same rule — a phone hops networks more than anything.
+
+Things to verify while building, since code compares against our own port:
+same-host neighbour detection (`bootstrapFrom`), the "allow inbound UDP <port>"
+hint, port mappings (PCP/UPnP are already re-requested on a network change),
+and the relay registration.
+
+Peers lose nothing they had: after a network change our address changed
+anyway, so cached endpoints for us were already useless; tunnels we start are
+answered wherever our packets come from.

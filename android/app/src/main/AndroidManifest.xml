@@ -74,6 +74,17 @@
             </intent-filter>
         </receiver>
 
+        <!-- The agents watcher, for the preview build, which has no VPN
+             service to host it (AgentWatch.kt). -->
+        <service
+            android:name=".AgentWatchService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Notifies the owner when an AI agent on one of their own machines needs approval or has replied, over their private mesh." />
+        </service>
+
         <service
             android:name=".MeshVpnService"
             android:exported="false"

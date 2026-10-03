@@ -63,6 +63,8 @@ type Info struct {
 	ContextWindow uint64 `json:"context_window,omitempty"`
 	// Preview is the start of the last thing the model said.
 	Preview string `json:"preview,omitempty"`
+	// Model is the one the conversation runs on, as Claude Code names it.
+	Model string `json:"model,omitempty"`
 }
 
 // Session is one conversation in one directory.
@@ -84,6 +86,7 @@ type Session struct {
 	ctxUsed     uint64
 	ctxWindow   uint64
 	preview     string
+	model       string
 }
 
 // memoryEvents bounds what a session keeps in memory. Older events are on
@@ -280,7 +283,7 @@ func (s *Session) Info() Info {
 	defer s.mu.Unlock()
 	in := Info{Name: s.name, Dir: s.dir, State: s.state, Pending: len(s.pending),
 		Running: s.proc != nil, LastSeq: s.seq, AutoApprove: s.autoApprove,
-		ContextUsed: s.ctxUsed, ContextWindow: s.ctxWindow, Preview: s.preview}
+		ContextUsed: s.ctxUsed, ContextWindow: s.ctxWindow, Preview: s.preview, Model: s.model}
 	if n := len(s.events); n > 0 {
 		in.LastTime = s.events[n-1].Time
 	}
@@ -359,8 +362,11 @@ func (s *Session) broadcast(e Event) {
 func (s *Session) observe(raw json.RawMessage) {
 	var m struct {
 		Type       string  `json:"type"`
+		Subtype    string  `json:"subtype"`
+		Model      string  `json:"model"`
 		ParentTool *string `json:"parent_tool_use_id"`
 		Message    struct {
+			Model   string                        `json:"model"`
 			Content []struct{ Type, Text string } `json:"content"`
 			Usage   struct {
 				Input       uint64 `json:"input_tokens"`
@@ -376,11 +382,18 @@ func (s *Session) observe(raw json.RawMessage) {
 		return
 	}
 	switch m.Type {
+	case "system":
+		if m.Subtype == "init" && m.Model != "" {
+			s.model = m.Model
+		}
 	case "assistant":
 		// A subagent's messages carry the tool use they belong to; their
 		// usage is the subagent's context, not this conversation's.
 		if m.ParentTool != nil && *m.ParentTool != "" {
 			return
+		}
+		if m.Message.Model != "" {
+			s.model = m.Message.Model
 		}
 		if u := m.Message.Usage; u.Input+u.CacheRead+u.CacheCreate > 0 {
 			s.ctxUsed = u.Input + u.CacheRead + u.CacheCreate

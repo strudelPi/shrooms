@@ -48,6 +48,22 @@ import com.journeyapps.barcodescanner.ScanOptions
 import mobile.Mobile
 
 class MainActivity : ComponentActivity() {
+    /** A session to open, from a tapped agent notification (AgentWatch). */
+    private val openAgent = androidx.compose.runtime.mutableStateOf<OpenSession?>(null)
+
+    private fun agentFrom(i: Intent?): OpenSession? {
+        val addr = i?.getStringExtra(AgentWatch.EXTRA_ADDRESS) ?: return null
+        val session = i.getStringExtra(AgentWatch.EXTRA_SESSION) ?: return null
+        if (!AgentClient.isMeshAddress(addr)) return null
+        return OpenSession(addr, i.getStringExtra(AgentWatch.EXTRA_HOST) ?: "",
+            i.getStringExtra(AgentWatch.EXTRA_MESH) ?: "", session)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        agentFrom(intent)?.let { openAgent.value = it }
+    }
+
 
     private val vpnConsent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         if (r.resultCode == RESULT_OK) startService(connectIntent()) else MeshState.fail("VPN permission refused")
@@ -93,10 +109,19 @@ class MainActivity : ComponentActivity() {
         // offer to connect: the VPN belongs to the real app installed beside
         // it, and Android allows one VPN at a time.
         if (packageName.endsWith(".preview")) {
-            setContent { LogosTheme { AgentsScreen(peers = emptyList(), onClose = { finish() }) } }
+            // Notifications need something running: the real app has its VPN
+            // service, the preview has this.
+            startForegroundService(Intent(this, AgentWatchService::class.java))
+            openAgent.value = agentFrom(intent)
+            setContent {
+                LogosTheme {
+                    AgentsScreen(peers = emptyList(), onClose = { finish() }, initial = openAgent.value)
+                }
+            }
             return
         }
 
+        openAgent.value = agentFrom(intent)
         setContent {
             LogosTheme {
                 val dir = filesDir.absolutePath
@@ -105,6 +130,7 @@ class MainActivity : ComponentActivity() {
                 var inSettings by remember { mutableStateOf(false) }
                 var inviting by remember { mutableStateOf(false) }
                 var inAgents by remember { mutableStateOf(false) }
+                LaunchedEffect(openAgent.value) { if (openAgent.value != null) inAgents = true }
                 // Which picture the graph draws. It is set in settings and read
                 // by the mesh screen, so it belongs to neither of them — and it
                 // is saveable because a rotation that quietly reverts a setting
@@ -184,7 +210,8 @@ class MainActivity : ComponentActivity() {
                         // The agents on the owner's other machines
                         // (docs/agents.md). Back is handled inside, where it
                         // leaves a conversation before it leaves the list.
-                        AgentsScreen(peers = snap.peers, onClose = { inAgents = false })
+                        AgentsScreen(peers = snap.peers, onClose = { inAgents = false; openAgent.value = null },
+                            initial = openAgent.value)
                     } else if (inSettings) {
                         // System back leaves settings rather than the app: this
                         // is a screen swapped in by state, not an Activity, so

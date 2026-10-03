@@ -69,8 +69,9 @@ func TestTheListShowsContextAndTheLastReply(t *testing.T) {
 	waitFor(t, s, 0, func(e Event) bool { return claudeType(e) == "result/success" })
 
 	check := func(in Info, when string) {
-		if in.ContextUsed != 1210 || in.ContextWindow != 1000000 || in.Preview != "echo: hello" {
-			t.Errorf("%s: context %d/%d, preview %q", when, in.ContextUsed, in.ContextWindow, in.Preview)
+		if in.ContextUsed != 1210 || in.ContextWindow != 1000000 || in.Preview != "echo: hello" ||
+			in.Model != "claude-opus-5[1m]" {
+			t.Errorf("%s: context %d/%d, preview %q, model %q", when, in.ContextUsed, in.ContextWindow, in.Preview, in.Model)
 		}
 	}
 	check(s.Info(), "live")

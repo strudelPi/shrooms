@@ -32,6 +32,8 @@ func Handler(log *slog.Logger, m *Manager, who Who) http.Handler {
 	mux.HandleFunc("POST /v1/sessions", h.create)
 	mux.HandleFunc("DELETE /v1/sessions/{name}", h.remove)
 	mux.HandleFunc("PATCH /v1/sessions/{name}", h.update)
+	// The same, for clients that cannot send PATCH (Android's HttpURLConnection).
+	mux.HandleFunc("POST /v1/sessions/{name}/settings", h.update)
 	mux.HandleFunc("GET /v1/sessions/{name}/history", h.history)
 	mux.HandleFunc("GET /v1/sessions/{name}/events", h.events)
 	mux.HandleFunc("POST /v1/sessions/{name}/messages", h.message)

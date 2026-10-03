@@ -47,6 +47,7 @@ func fakeClaude() {
 	skip := hasFlag(os.Args, "--dangerously-skip-permissions")
 	stream := hasFlag(os.Args, "--include-partial-messages")
 	emit(map[string]any{"type": "system", "subtype": "init", "session_id": id, "resumed": resumed, "cwd": mustWd(),
+		"model":            "claude-opus-5[1m]",
 		"skip_permissions": skip})
 
 	in := bufio.NewScanner(os.Stdin)

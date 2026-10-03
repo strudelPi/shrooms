@@ -26,7 +26,20 @@ data class AgentSession(
     val pending: Int,
     val running: Boolean,
     val lastSeq: Long,
+    /** When the last event happened, epoch millis; 0 if never. */
+    val lastTime: Long = 0,
+    val autoApprove: Boolean = false,
+    /** Tokens of the model's context the conversation fills, and of how many. */
+    val contextUsed: Long = 0,
+    val contextWindow: Long = 0,
+    /** The start of the last thing the model said. */
+    val preview: String = "",
+    /** The model the conversation runs on, as Claude Code names it. */
+    val model: String = "",
 )
+
+/** A line of the conversation from before the agent had it (the transcript). */
+data class Earlier(val time: Long, val role: String, val text: String)
 
 data class AgentEvent(
     val seq: Long,
@@ -34,6 +47,8 @@ data class AgentEvent(
     val kind: String,
     val by: String,
     val data: JSONObject,
+    /** Epoch millis. */
+    val time: Long = 0,
 )
 
 class AgentClient(address: String) {
@@ -56,12 +71,35 @@ class AgentClient(address: String) {
                 pending = s.optInt("pending"),
                 running = s.optBoolean("running"),
                 lastSeq = s.optLong("last_seq"),
+                lastTime = parseTime(s.optString("last_time")),
+                autoApprove = s.optBoolean("auto_approve"),
+                contextUsed = s.optLong("context_used"),
+                contextWindow = s.optLong("context_window"),
+                preview = s.optString("preview"),
+                model = s.optString("model"),
             )
         }
     }
 
-    fun create(name: String, dir: String) {
-        request("POST", "/v1/sessions", JSONObject().put("name", name).put("dir", dir).toString())
+    fun create(name: String, dir: String, autoApprove: Boolean = false) {
+        request("POST", "/v1/sessions",
+            JSONObject().put("name", name).put("dir", dir).put("auto_approve", autoApprove).toString())
+    }
+
+    /** Whether a session asks before running things — the desktop's --dangerously-skip-permissions. */
+    fun setAutoApprove(session: String, on: Boolean) {
+        // POST rather than PATCH: HttpURLConnection refuses PATCH outright.
+        request("POST", "/v1/sessions/${enc(session)}/settings", JSONObject().put("auto_approve", on).toString())
+    }
+
+    /** The last [limit] exchanges before the agent had the conversation, oldest first. */
+    fun history(session: String, limit: Int = 30): List<Earlier> {
+        val a = JSONObject(request("GET", "/v1/sessions/${enc(session)}/history?limit=$limit", null))
+            .optJSONArray("history") ?: return emptyList()
+        return (0 until a.length()).map { i ->
+            val o = a.getJSONObject(i)
+            Earlier(parseTime(o.optString("time")), o.optString("role"), o.optString("text"))
+        }
     }
 
     fun remove(name: String) {
@@ -103,6 +141,9 @@ class AgentClient(address: String) {
                     val line = r.readLine() ?: break
                     if (!line.startsWith("data: ")) continue
                     val e = parseEvent(JSONObject(line.removePrefix("data: ")))
+                    // Streamed text is live only and carries the last real
+                    // event's number, so it is passed on without moving `last`.
+                    if (e.kind == "partial") { onEvent(e); continue }
                     if (e.seq <= last) continue
                     last = e.seq
                     onEvent(e)
@@ -172,7 +213,14 @@ class AgentClient(address: String) {
             kind = o.optString("kind"),
             by = o.optString("by"),
             data = o.optJSONObject("data") ?: JSONObject(),
+            time = parseTime(o.optString("time")),
         )
+
+        /** RFC 3339 with up to nanoseconds, as Go writes it; 0 if absent or unreadable. */
+        fun parseTime(s: String): Long = runCatching {
+            if (s.isEmpty() || s.startsWith("0001-")) 0L
+            else java.time.OffsetDateTime.parse(s).toInstant().toEpochMilli()
+        }.getOrDefault(0L)
     }
 }
 

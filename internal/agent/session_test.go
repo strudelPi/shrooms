@@ -361,6 +361,22 @@ func TestTheAPIOverHTTP(t *testing.T) {
 		t.Fatal("no live events arrived")
 	}
 
+	// Settings, both ways a client can send them.
+	for _, c := range []struct {
+		method, path, body string
+		want               bool
+	}{
+		{"PATCH", "/v1/sessions/proj", `{"auto_approve":true}`, true},
+		{"POST", "/v1/sessions/proj/settings", `{"auto_approve":false}`, false},
+	} {
+		var in Info
+		r := do(c.method, c.path, c.body)
+		json.NewDecoder(r.Body).Decode(&in)
+		if r.StatusCode != http.StatusOK || in.AutoApprove != c.want {
+			t.Errorf("%s %s: %s, auto_approve %v", c.method, c.path, r.Status, in.AutoApprove)
+		}
+	}
+
 	if r := do("DELETE", "/v1/sessions/proj", ""); r.StatusCode != http.StatusNoContent {
 		t.Errorf("delete: %s", r.Status)
 	}

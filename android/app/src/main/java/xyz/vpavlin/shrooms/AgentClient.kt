@@ -117,6 +117,34 @@ class AgentClient(address: String) {
         )
     }
 
+    /**
+     * Sends a file to the agent's machine and returns where it was kept, for
+     * the next message to name. The agent picks the path; the name only says
+     * what the file was.
+     */
+    fun upload(session: String, name: String, bytes: ByteArray): String {
+        val c = open("POST", "/v1/sessions/${enc(session)}/files?name=${enc(name)}", 60_000)
+        try {
+            c.doOutput = true
+            c.setRequestProperty("Content-Type", "application/octet-stream")
+            c.setFixedLengthStreamingMode(bytes.size)
+            c.outputStream.use { it.write(bytes) }
+            if (c.responseCode / 100 != 2) throw AgentError(errorOf(c))
+            return JSONObject(c.inputStream.bufferedReader().use { it.readText() }).optString("path")
+        } finally {
+            c.disconnect()
+        }
+    }
+
+    /** The mesh as the agent's machine sees it: (name, mesh, overlay address). */
+    fun peers(): List<Triple<String, String, String>> {
+        val a = JSONObject(request("GET", "/v1/peers", null, 4000)).optJSONArray("peers") ?: return emptyList()
+        return (0 until a.length()).map { i ->
+            val o = a.getJSONObject(i)
+            Triple(o.optString("name"), o.optString("mesh"), o.optString("overlay"))
+        }.filter { isMeshAddress(it.third) }
+    }
+
     fun interrupt(session: String) {
         request("POST", "/v1/sessions/${enc(session)}/interrupt", null)
     }

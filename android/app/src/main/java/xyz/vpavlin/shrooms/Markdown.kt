@@ -105,8 +105,32 @@ object Markdown {
     private fun cells(row: String): List<List<Span>> =
         row.trim().removePrefix("|").removeSuffix("|").split('|').map { inline(it.trim()) }
 
+    private val bareUrl = Regex("""https?://[^\s<>()\[\]`"']+[^\s<>()\[\]`"'.,;:!?]""")
+
+    /**
+     * Plain text with its bare URLs made links, and nothing else touched — for
+     * what the user typed, where a * is just a *.
+     */
+    fun links(s: String): List<Span> {
+        val out = mutableListOf<Span>()
+        var at = 0
+        for (m in bareUrl.findAll(s)) {
+            if (m.range.first > at) out += Span(s.substring(at, m.range.first))
+            out += Span(m.value, link = m.value)
+            at = m.range.last + 1
+        }
+        if (at < s.length) out += Span(s.substring(at))
+        return out
+    }
+
     /** Bold, italic, code and links within one line of text. */
-    fun inline(s: String): List<Span> {
+    fun inline(s: String): List<Span> = inlineStyled(s).flatMap { sp ->
+        // Bare URLs in plain runs become links too: Claude writes them that way.
+        if (sp.code || sp.link != null) listOf(sp)
+        else links(sp.text).map { it.copy(bold = sp.bold, italic = sp.italic) }
+    }
+
+    private fun inlineStyled(s: String): List<Span> {
         val out = mutableListOf<Span>()
         val buf = StringBuilder()
         var bold = false

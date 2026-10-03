@@ -35,6 +35,7 @@ func Handler(log *slog.Logger, m *Manager, who Who) http.Handler {
 	// The same, for clients that cannot send PATCH (Android's HttpURLConnection).
 	mux.HandleFunc("POST /v1/sessions/{name}/settings", h.update)
 	mux.HandleFunc("GET /v1/sessions/{name}/history", h.history)
+	mux.HandleFunc("POST /v1/sessions/{name}/files", h.upload)
 	mux.HandleFunc("GET /v1/sessions/{name}/events", h.events)
 	mux.HandleFunc("POST /v1/sessions/{name}/messages", h.message)
 	mux.HandleFunc("POST /v1/sessions/{name}/prompts/{id}", h.answer)
@@ -137,6 +138,28 @@ func (h *handler) update(w http.ResponseWriter, r *http.Request) {
 		h.log.Info("auto-approve changed", "session", s.name, "on", *req.AutoApprove, "by", h.caller(r))
 	}
 	writeJSON(w, http.StatusOK, s.Info())
+}
+
+// MaxUpload bounds one uploaded file: photos, screenshots, logs and PDFs, not
+// disk images.
+const MaxUpload = 50 << 20
+
+// upload keeps a file sent from a device on this machine, for the session to
+// read: ?name=<original name>, the bytes as the body. Returns {"path"}, which
+// the device puts in its next message — Claude Code reads images, PDFs and
+// text from a path like any other file.
+func (h *handler) upload(w http.ResponseWriter, r *http.Request) {
+	s, ok := h.session(w, r)
+	if !ok {
+		return
+	}
+	path, err := s.Upload(r.URL.Query().Get("name"), http.MaxBytesReader(w, r.Body, MaxUpload))
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	h.log.Info("file received", "session", s.name, "path", path, "by", h.caller(r))
+	writeJSON(w, http.StatusCreated, map[string]string{"path": path})
 }
 
 // history is the conversation before this agent's own events, from Claude

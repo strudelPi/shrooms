@@ -58,6 +58,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -114,7 +115,17 @@ suspend fun discoverAgents(peers: List<Peer>, byName: List<String> = emptyList()
                 }
             }
         }
-        (fromPeers + named).awaitAll().filterNotNull().distinctBy { it.name }.sortedBy { it.name }
+        val found = (fromPeers + named).awaitAll().filterNotNull().distinctBy { it.name }
+        // Then the mesh as each agent's machine sees it: a phone that knows one
+        // agent finds the rest without being told (/v1/peers). One round, not
+        // a crawl — every machine sees the same mesh.
+        val known = found.map { it.name }.toSet() + peers.map { it.name }
+        val via = found.flatMap { h -> runCatching { AgentClient(h.address).peers() }.getOrDefault(emptyList()) }
+            .filter { it.first !in known }.distinctBy { it.first }
+            .map { (name, mesh, addr) ->
+                async { runCatching { AgentHost(name, mesh, addr, AgentClient(addr).sessions(3000)) }.getOrNull() }
+            }
+        (found + via.awaitAll().filterNotNull()).sortedBy { it.name }
     }
 
 /**
@@ -414,6 +425,35 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     var actionError by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val list = rememberLazyListState()
+    val ctx = LocalContext.current
+    // Files sent to the agent's machine, named in the next message.
+    var attached by remember(o) { mutableStateOf<List<String>>(emptyList()) }
+    var uploading by remember { mutableStateOf("") }
+    val pickFile = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val name = displayName(ctx, uri)
+        uploading = name
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val bytes = ctx.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
+                    client.upload(o.session, name, bytes)
+                }
+            }.onSuccess { attached = attached + it }.onFailure { actionError = it.message ?: "could not send $name" }
+            uploading = ""
+        }
+    }
+    // Dictation: Claude reads text, so speech becomes text here, to be read
+    // and corrected before it is sent.
+    val dictate = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(),
+    ) { r ->
+        r.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let {
+            input = if (input.isBlank()) it else input.trimEnd() + " " + it
+        }
+    }
 
     // Not notified about while it is on screen — and only while the app is in
     // front: a phone in a pocket on this screen should still buzz.
@@ -583,7 +623,31 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
             Text(actionError, style = MaterialTheme.typography.bodySmall, color = Palette.Rust,
                 modifier = Modifier.padding(horizontal = 20.dp).clickable { actionError = "" })
         }
+        if (attached.isNotEmpty() || uploading.isNotEmpty()) {
+            Row(Modifier.padding(start = 14.dp, end = 14.dp, top = 6.dp).horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (a in attached) {
+                    Text("📎 ${a.substringAfterLast('/').substringAfter('-').substringAfter('-')}  ×",
+                        style = MaterialTheme.typography.labelSmall, color = Palette.Sky,
+                        modifier = Modifier.border(1.dp, Palette.Sky.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                            .clickable { attached = attached - a }.padding(horizontal = 10.dp, vertical = 6.dp))
+                }
+                if (uploading.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically) {
+                    Pulse(Palette.Sky); Spacer(Modifier.width(6.dp)); Label("sending $uploading…")
+                }
+            }
+        }
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(10.dp)) {
+            ComposerButton("📎") { pickFile.launch("*/*") }
+            ComposerButton("🎤") {
+                val i = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                    .putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                        android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    // On the phone where it can be: what is said to an agent
+                    // is nobody else's business.
+                    .putExtra(android.speech.RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                runCatching { dictate.launch(i) }.onFailure { actionError = "no speech recognition on this phone" }
+            }
             Box(Modifier.weight(1f)) {
                 OutlinedTextField(
                     value = input, onValueChange = { input = it },
@@ -599,12 +663,14 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                 )
             }
             Spacer(Modifier.width(8.dp))
+            val canSend = (input.isNotBlank() || attached.isNotEmpty()) && uploading.isEmpty()
             Box(
                 Modifier.size(44.dp)
-                    .background(if (input.isNotBlank()) Palette.Phosphor else Palette.Line, CircleShape)
-                    .clickable(enabled = input.isNotBlank()) {
-                        val text = input.trim()
+                    .background(if (canSend) Palette.Phosphor else Palette.Line, CircleShape)
+                    .clickable(enabled = canSend) {
+                        val text = withAttachments(input.trim(), attached)
                         input = ""
+                        attached = emptyList()
                         actionError = ""
                         scope.launch(Dispatchers.IO) {
                             runCatching { client.send(o.session, text) }
@@ -636,7 +702,9 @@ fun keysOf(items: List<ChatItem>): List<String> {
 private fun Bubble(bg: Color, border: Color = Palette.Line, content: @Composable () -> Unit) {
     // Selectable: long-press any part of a message to copy just that.
     androidx.compose.foundation.text.selection.SelectionContainer {
-        Column(Modifier.fillMaxWidth().background(bg.copy(alpha = 0.9f), RoundedCornerShape(12.dp))
+        // Multiplied, not replaced: a tint's own faintness is the point of it.
+        // Replacing it made "you" bubbles solid Phosphor under light text.
+        Column(Modifier.fillMaxWidth().background(bg.copy(alpha = bg.alpha * 0.9f), RoundedCornerShape(12.dp))
             .border(1.dp, border, RoundedCornerShape(12.dp)).padding(12.dp)) { content() }
     }
 }
@@ -675,7 +743,7 @@ private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean) -> Unit) {
         is ChatItem.You -> Bubble(Palette.Phosphor.copy(alpha = 0.08f), Palette.Phosphor.copy(alpha = 0.35f)) {
             Stamp(listOf("YOU", item.by, whenSaid(item.time)).filter { it.isNotEmpty() }.joinToString("  ·  "),
                 Palette.Phosphor, copy = item.text)
-            Text(item.text, style = MaterialTheme.typography.bodyMedium, color = Palette.Bone)
+            Text(spans(Markdown.links(item.text)), style = MaterialTheme.typography.bodyMedium)
         }
         is ChatItem.Said -> Bubble(Palette.Panel) {
             Stamp(whenSaid(item.time), copy = item.text)
@@ -778,9 +846,17 @@ private fun spans(s: List<Markdown.Span>, base: Color = Palette.Bone): Annotated
             background = if (sp.code) Palette.Void else Color.Unspecified,
             textDecoration = if (sp.link != null) TextDecoration.Underline else null,
         )
-        withStyle(style) { append(sp.text) }
+        if (sp.link != null && isWebLink(sp.link)) {
+            withLink(androidx.compose.ui.text.LinkAnnotation.Url(sp.link,
+                androidx.compose.ui.text.TextLinkStyles(style))) { append(sp.text) }
+        } else {
+            withStyle(style) { append(sp.text) }
+        }
     }
 }
+
+/** Only web links open on tap; anything else stays text. */
+private fun isWebLink(u: String) = u.startsWith("http://") || u.startsWith("https://")
 
 /** Claude's markdown, in the app's own look. */
 @Composable
@@ -818,3 +894,26 @@ fun MarkdownText(src: String) {
         }
     }
 }
+
+@Composable
+private fun ComposerButton(glyph: String, onClick: () -> Unit) {
+    Box(Modifier.size(40.dp).clickable { onClick() }, contentAlignment = Alignment.Center) {
+        Text(glyph, style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+/** What a picked file is called, as the phone shows it. */
+private fun displayName(ctx: android.content.Context, uri: android.net.Uri): String =
+    runCatching {
+        ctx.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+    }.getOrNull() ?: uri.lastPathSegment ?: "file"
+
+/**
+ * A message with the files sent alongside it named at the end, by the path on
+ * the agent's machine — which is all Claude Code needs to read them.
+ */
+fun withAttachments(text: String, paths: List<String>): String =
+    if (paths.isEmpty()) text
+    else (if (text.isEmpty()) "" else "$text\n\n") +
+        "Attached from my phone (on this machine):\n" + paths.joinToString("\n") { "- $it" }

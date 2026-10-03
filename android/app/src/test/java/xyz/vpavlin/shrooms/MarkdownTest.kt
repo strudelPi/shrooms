@@ -122,3 +122,34 @@ class AgentListTest {
         assertEquals("haiku-4-5", shortModel("claude-haiku-4-5-20251001"))
     }
 }
+
+class LinksTest {
+    // Bare URLs as Claude writes them, ending a sentence or in brackets.
+    @Test fun bareUrlsBecomeLinksWithoutTheirPunctuation() {
+        val s = Markdown.inline("Same link: http://vps.office.mesh:8099/shrooms-preview.apk. Done")
+        val link = s.single { it.link != null }
+        assertEquals("http://vps.office.mesh:8099/shrooms-preview.apk", link.link)
+        assertEquals("Same link: http://vps.office.mesh:8099/shrooms-preview.apk. Done", s.joinToString("") { it.text })
+        assertEquals("https://x.org/a_b", Markdown.inline("(see https://x.org/a_b)").single { it.link != null }.link)
+    }
+
+    // A URL inside code is code, not a link.
+    @Test fun codeIsNotLinked() {
+        assertTrue(Markdown.inline("`curl http://x`").none { it.link != null })
+    }
+
+    // What the user typed: links, and a * is just a *.
+    @Test fun typedTextKeepsItsStars() {
+        val s = Markdown.links("2*3 is **not** bold, see http://a.b")
+        assertEquals("2*3 is **not** bold, see http://a.b", s.joinToString("") { it.text })
+        assertTrue(s.none { it.bold })
+        assertEquals("http://a.b", s.last().link)
+    }
+
+    @Test fun attachmentsAreNamedByPath() {
+        assertEquals("look\n\nAttached from my phone (on this machine):\n- /a/1.png\n- /a/2.pdf",
+            withAttachments("look", listOf("/a/1.png", "/a/2.pdf")))
+        assertEquals("Attached from my phone (on this machine):\n- /a/1.png", withAttachments("", listOf("/a/1.png")))
+        assertEquals("plain", withAttachments("plain", emptyList()))
+    }
+}

@@ -2,6 +2,12 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -196,3 +202,59 @@ func TestAutoApproveAnswersARunningProcess(t *testing.T) {
 		t.Errorf("asked %v, auto-answered %v (turn ended at %d)", asked, auto, end.Seq)
 	}
 }
+
+// A file from the phone lands under the agent's own directory whatever its
+// name says, keeps a recognisable name, and its path comes back to be quoted
+// in the next message.
+func TestUploadsLandWhereTheAgentDecides(t *testing.T) {
+	state := t.TempDir()
+	m := newTestManager(t, state)
+	m.Create("proj", t.TempDir())
+	srv := httptest.NewServer(Handler(slog.New(slog.DiscardHandler), m, nil))
+	t.Cleanup(srv.Close)
+
+	for name, wantBase := range map[string]string{
+		"screenshot 1.png":       "screenshot_1.png",
+		"../../../.bashrc":       "bashrc",
+		"":                       "file",
+		"notes/../../etc/passwd": "passwd",
+	} {
+		resp, err := http.Post(srv.URL+"/v1/sessions/proj/files?name="+url.QueryEscape(name), "application/octet-stream",
+			strings.NewReader("contents"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out struct{ Path string }
+		json.NewDecoder(resp.Body).Decode(&out)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("%q: %s", name, resp.Status)
+		}
+		dir := filepath.Join(state, "uploads", "proj")
+		if filepath.Dir(out.Path) != dir || !strings.HasSuffix(out.Path, "-"+wantBase) {
+			t.Errorf("%q landed at %s, want %s/<time>-%s", name, out.Path, dir, wantBase)
+		}
+		if b, _ := os.ReadFile(out.Path); string(b) != "contents" {
+			t.Errorf("%q: kept %q", name, b)
+		}
+	}
+	// The same name twice in one second: two files, not one overwritten.
+	var paths []string
+	for i := 0; i < 2; i++ {
+		resp, _ := http.Post(srv.URL+"/v1/sessions/proj/files?name=same.txt", "text/plain", strings.NewReader(fmt.Sprint(i)))
+		var out struct{ Path string }
+		json.NewDecoder(resp.Body).Decode(&out)
+		paths = append(paths, out.Path)
+	}
+	if paths[0] == paths[1] || paths[0] == "" {
+		t.Errorf("same name twice: %v", paths)
+	}
+	resp, _ := http.Post(srv.URL+"/v1/sessions/proj/files?name=big", "application/octet-stream",
+		io.LimitReader(zeros{}, MaxUpload+1))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("an oversized upload: %s", resp.Status)
+	}
+}
+
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) { return len(p), nil }

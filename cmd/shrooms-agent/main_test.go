@@ -62,3 +62,14 @@ func TestCallersAreNamedByTheirAddress(t *testing.T) {
 		}
 	}
 }
+
+// The peer list a phone discovers other agents from: every member with an
+// overlay address, on every mesh.
+func TestPeersAreListedForDiscovery(t *testing.T) {
+	var p peerNames
+	p.update(parse(t))
+	got := p.list()
+	if len(got) != 2 || got[0].Name != "nothing" || got[0].Mesh != "home" || got[1].Overlay != "fdb0:9afc:a5ef:f167:7ad7:68b7:aca0:b9fa" {
+		t.Errorf("peers: %+v", got)
+	}
+}

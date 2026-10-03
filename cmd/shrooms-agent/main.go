@@ -104,7 +104,16 @@ func run() error {
 		}
 	}()
 
-	srv := &http.Server{Handler: agent.Handler(log, m, names.who), ReadHeaderTimeout: 10 * time.Second}
+	mux := http.NewServeMux()
+	mux.Handle("/", agent.Handler(log, m, names.who))
+	// The mesh as this machine sees it, so a phone that knows one agent finds
+	// the rest without being told (the preview build has no peer list of its
+	// own). Names and mesh addresses only: what any member already sees.
+	mux.HandleFunc("GET /v1/peers", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"peers": names.list()})
+	})
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	var wg sync.WaitGroup
 	for label, a := range addrs {
 		ln, err := net.Listen("tcp", net.JoinHostPort(a.String(), strconv.Itoa(*port)))
@@ -193,12 +202,32 @@ func (st status) addresses(want string) (map[string]netip.Addr, error) {
 // peerNames maps overlay addresses to device names, refreshed from the
 // daemon so a device that joins later is named too.
 type peerNames struct {
-	mu sync.Mutex
-	by map[netip.Addr]string
+	mu    sync.Mutex
+	by    map[netip.Addr]string
+	peers []peer
+}
+
+// peer is one member as /v1/peers reports it.
+type peer struct {
+	Name    string `json:"name"`
+	Mesh    string `json:"mesh"`
+	Overlay string `json:"overlay"`
+}
+
+func (p *peerNames) list() []peer {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]peer{}, p.peers...)
 }
 
 func (p *peerNames) update(st status) {
 	by := map[netip.Addr]string{}
+	var peers []peer
+	for _, pr := range st.Peers {
+		if _, err := netip.ParseAddr(pr.Overlay); err == nil {
+			peers = append(peers, peer{Name: pr.Name, Mesh: pr.Mesh, Overlay: pr.Overlay})
+		}
+	}
 	for _, peer := range st.Peers {
 		for _, s := range []string{peer.Overlay, peer.OverlayV4} {
 			if a, err := netip.ParseAddr(s); err == nil {
@@ -207,7 +236,7 @@ func (p *peerNames) update(st status) {
 		}
 	}
 	p.mu.Lock()
-	p.by = by
+	p.by, p.peers = by, peers
 	p.mu.Unlock()
 }
 

@@ -194,14 +194,17 @@ peers=$(echo "$out" | sed -n 's/.*PEERS=\([0-9]*\).*/\1/p' | head -1)
 echo
 echo "both transports OK"
 
-# The Agents panel (docs/agents.md), against a stand-in core: it only runs
+# Shrooms Agents (docs/agents.md), against a stand-in core: it only runs
 # inside Basecamp, so this is the one place it is exercised before a person
 # opens it. Also saves a picture of it, for looking at.
 echo
 echo "==> the Agents panel"
-cp basecamp/test/AgentsHarness.qml "$work/"
+# Its own module now (basecamp-agents), with its own Main.qml: a directory of
+# its own, so the two views do not overwrite each other.
+mkdir -p "$work/agents"
+cp basecamp-agents/Main.qml basecamp-agents/test/AgentsHarness.qml "$work/agents/"
 shot=${AGENTS_SHOT:-$work/agents.png}
-out=$(run "$QML" -I "$work" "$work/AgentsHarness.qml" "$shot")
+out=$(run "$QML" -I "$work/agents" "$work/agents/AgentsHarness.qml" "$shot")
 echo "$out" | grep -E "^qml: (HOSTS|PROBED|ROWS|STREAMING|PROMPT|CALLS|ATTACHED|SENT)" || true
 expect() { echo "$out" | grep -qF "$1" || { echo "FAIL: $2"; exit 1; }; }
 expect "HOSTS=1 SESSIONS=2" "the agents were not listed"

@@ -1,10 +1,8 @@
 # Agents on the mesh
 
-**Status:** stage 1 (the server, `shrooms-agent`) built 2026-10-03 and run
-end to end: a session on the laptop, driven from the VPS over the office mesh,
-waited on a real Claude Code permission prompt, was approved remotely, and
-finished — every action attributed to `vps.office`. Stage 2 (the Android
-"Agents" screen) built the same day; not yet run on a phone.
+**Status (2026-10-03):** in daily use from a phone and from Basecamp, on the
+day it was built. **Shrooms Agents** is its own app and its own Basecamp
+module, beside shrooms (decided 2026-10-03, below).
 
 Talk to the Claude Code sessions on every machine you own, from the phone,
 over the mesh — and approve what they want to do from there. It replaces `cl`
@@ -16,18 +14,36 @@ own Remote Control does much of this through a cloud relay; this does not.
 ## Shape
 
 ```
-phone (shrooms app, "Agents")  ── HTTP over the mesh ──▶  shrooms-agent (each machine)
-                                                              │ stream-json, one process per session
-                                                              ▼
-                                                           claude -p
+Shrooms Agents (Android)  ─┐
+Shrooms Agents (Basecamp) ─┼─ HTTP over the mesh ──▶  shrooms-agent (each machine)
+                           │                              │ stream-json, one process per session
+                           │                              ▼
+                           │                           claude -p
+shrooms (VPN, the mesh) ───┘  the network both run over
 ```
 
 - **`shrooms-agent`** is a separate binary, not part of the daemon. Shrooms is
   the network; something that runs code on request does not belong in its
-  most privileged process.
-- **The mobile app is a screen in the shrooms Android app**, not a second app.
-  The shrooms app already knows the peers and what they announce, so it finds
-  every agent with nothing configured. No web UI (decided 2026-10-03).
+  most privileged process. It runs as the user (a systemd user unit, started
+  through a login shell so sessions find what a terminal finds).
+- **Shrooms Agents is a separate app, and a separate Basecamp module**
+  (decided 2026-10-03). Agents grow out of the mesh and are not the mesh: the
+  two change at very different speeds — the network should be boring, the
+  agents UI changed a dozen times on its first day — and an app that records
+  audio and drives machines that run code is a bigger target bundled into a
+  VPN. The dependency runs one way: agents need the mesh for addresses, access
+  and discovery; the mesh does not need agents. Its mark is the mushrooms
+  alone (assets/agents_logo.py), shrooms' is the mycelium.
+  - **Android:** the "agents" build of the same code
+    (xyz.vpavlin.shrooms.agents), signed with its own key, kept outside the
+    repository (~/apk-signing/shrooms-agents) with its password beside it. It
+    is no mesh client: the shrooms app's "agents" link opens it and hands over
+    the peers it can reach, and an agent lists the mesh as its machine sees it
+    (/v1/peers), so knowing one finds the rest.
+  - **Basecamp:** `shrooms_agents`, a view of its own that shares
+    `shrooms_core` — which does all the networking, since Basecamp's sandbox
+    forbids it in a view, on threads of its own so no call freezes the window.
+- One repository, one set of tools.
 
 ## Access: the bind is the access control
 
@@ -92,19 +108,24 @@ directory — the same thing `cl` keys on.
 Events are numbered per session and kept on disk, so a phone that was away
 catches up from the last number it saw.
 
-## Stages
+## What it does
 
-1. **Server** — `shrooms-agent`: sessions, the Claude Code process protocol,
-   permission prompts, the API, binding to overlay addresses. Tested against a
-   fake `claude` that speaks the protocol, plus one real run.
-2. **Android** — an "Agents" screen: agents found from announced ports, a
-   session list, a conversation view, approve / deny.
-3. **Background** — notify the phone when a session is waiting for approval or
-   has finished, without the app open.
+On both: every machine running shrooms-agent and its sessions (NEEDS YOU when a
+prompt waits, context use, model, the last reply); a conversation with the
+transcript's earlier history, streamed replies, markdown, permission prompts
+with the command in full, auto-approve per session (the desktop's
+--dangerously-skip-permissions), stop, new sessions, copy; files (📎, or dropped
+on Basecamp) kept on the agent's machine and named by path in the next
+message; voice notes, recorded on the device and transcribed on the agent's
+machine by whisper.cpp, so no audio reaches a speech service. The phone
+notifies when a session needs you or replied.
 
 ## Open
 
-- Notifications without the app open (stage 3): a long-lived connection from
-  the shrooms VPN service is the obvious place, since it is already running.
-- Basecamp: the desktop module and the Android app are meant to match; an
-  Agents view there would follow stage 2.
+- Publishing: the LAN F-Droid and Basecamp repositories live on jimmy-crib,
+  which was down when this was built; the agents packages go there with the
+  next shrooms release.
+- Paste a screenshot into Basecamp's composer; share to Shrooms Agents from
+  any Android app; several files at once.
+- Taking over a conversation started in a terminal (`cl`), rather than
+  pointing a session at its id by hand.

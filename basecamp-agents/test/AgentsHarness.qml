@@ -52,7 +52,6 @@ Item {
     Main {
         id: view
         anchors.fill: parent
-        statusPath: "/nonexistent.json"
         bridge: QtObject {
             function callModule(module, method, args) {
                 top.calls.push(method)
@@ -84,7 +83,6 @@ Item {
         }
     }
 
-    Timer { interval: 300; running: true; onTriggered: view.agentsOpen = true }
     Timer {
         interval: 1500; running: true
         onTriggered: {

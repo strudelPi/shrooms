@@ -32,7 +32,7 @@ GO ?= go
 VERSION ?= $(shell git describe --tags --match 'v*' --always --dirty 2>/dev/null || echo dev)
 
 .PHONY: all deps deps-basecamp check-lib shrooms wakuspike s3topics m0demo \
-        s1 s3 probe relay relay-image m0 m1 m2 m2-edm m3 m3-remote dist image push-image deps-release install uninstall test-uninstall purge build-all vet-cgo vet-pcsc test test-unit e2e e2e-two-nodes e2e-keycard e2e-keycard-mesh android-deps android-core aar apk fdroid basecamp-check basecamp-lgx site-adrs fmt clean
+        s1 s3 probe relay relay-image m0 m1 m2 m2-edm m3 m3-remote dist image push-image deps-release install uninstall test-uninstall purge build-all vet-cgo vet-pcsc test test-unit e2e e2e-two-nodes e2e-keycard e2e-keycard-mesh android-deps android-core aar apk fdroid basecamp-check basecamp-lgx basecamp-agents-lgx site-adrs fmt clean
 
 all: shrooms
 
@@ -299,6 +299,12 @@ basecamp-check:
 basecamp-lgx:
 	nix build ./basecamp#lgx-portable --print-build-logs
 	@find -L result -name '*.lgx' -exec ls -lL {} \;
+
+## Build Shrooms Agents (docs/agents.md): a view of its own beside the shrooms
+## one, sharing its core, which does the networking the sandbox forbids here.
+basecamp-agents-lgx:
+	nix build ./basecamp-agents#lgx-portable --print-build-logs --out-link result-agents
+	@find -L result-agents -name '*.lgx' -exec ls -lL {} \;
 
 ## Build the core module — the part that talks to the daemon.
 ##

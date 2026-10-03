@@ -276,12 +276,7 @@ m2-edm:
 ## inheriting -llogosdelivery would fail the link when the library is absent —
 ## which is exactly the situation in CI before the build job runs.
 test-unit:
-	CGO_CFLAGS= CGO_LDFLAGS= $(GO) test -race ./internal/identity/... \
-		./internal/topic/... ./internal/control/... ./internal/wg/... \
-		./internal/disco/... ./internal/relay/... ./internal/state/... \
-		./internal/hosts/... ./internal/dns/... ./internal/service/... \
-		./internal/cred/... ./internal/invite/... ./internal/portmap/... \
-		./internal/v4/... ./internal/listeners/... ./internal/logtail/...
+	CGO_CFLAGS= CGO_LDFLAGS= $(GO) test -race $$(./scripts/test-packages.sh pure)
 
 ## --- android ---
 
@@ -456,7 +451,18 @@ test: check-lib
 	  echo "not gofmt'd:"; echo "$$unformatted"; \
 	  echo "run: make fmt"; exit 1; \
 	fi
-	$(GO) test -race ./...
+	@# Two invocations, split by whether a package reaches liblogosdelivery
+	@# (scripts/test-packages.sh). CGO_LDFLAGS is exported for the whole
+	@# Makefile, and -race links runtime/cgo into every test binary, so a
+	@# package with no cgo of its own still came out needing the library —
+	@# linked internally, without the rpath, so the loader could not find it.
+	@# Twenty-one packages failed with "cannot open shared object file" on a
+	@# machine where the library was right there, and `make test` only
+	@# worked with LD_LIBRARY_PATH set by hand. The packages that use the
+	@# library are linked externally and keep the rpath; the rest are built
+	@# with the flags cleared, as CI's test-unit always has.
+	$(GO) test -race $$(./scripts/test-packages.sh linked)
+	CGO_CFLAGS= CGO_LDFLAGS= $(GO) test -race $$(./scripts/test-packages.sh pure)
 	@# The mobile module is nested, so ./... above does not reach it. build-all
 	@# has known that since a struct change reached an F-Droid publish before
 	@# anything complained — but `make test` did not depend on it, so the same

@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"syscall"
@@ -557,10 +558,7 @@ func cmdPaths(args []string) error {
 		for _, r := range st.Reflexive {
 			fmt.Printf("  %s\n", r)
 		}
-		if len(st.Reflexive) > 1 {
-			fmt.Printf("  note: %d distinct addresses suggests endpoint-dependent NAT,\n", len(st.Reflexive))
-			fmt.Printf("        where hole punching fails and a relay is needed.\n")
-		}
+		fmt.Print(reflexiveNote(st.Reflexive))
 		fmt.Println()
 	}
 
@@ -633,6 +631,43 @@ func cmdPaths(args []string) error {
 		fmt.Println("no peers known yet")
 	}
 	return nil
+}
+
+// reflexiveNote warns of endpoint-dependent NAT when peers see us at several
+// addresses, counted within an address family.
+//
+// Counted per family because a dual-stack node on a LAN is seen at one IPv4
+// and one IPv6 address by the same peer, which is two addresses and not two
+// NAT mappings. The note fired on every such node and told its operator to
+// get a relay. Several addresses in one family is the real signal: each peer
+// reaching us through a different port of the same NAT.
+func reflexiveNote(addrs []string) string {
+	// Address and port together: under endpoint-dependent NAT the port is
+	// what differs between observers, so two ports on one address are two.
+	seen4, seen6 := map[netip.AddrPort]bool{}, map[netip.AddrPort]bool{}
+	for _, s := range addrs {
+		ap, err := netip.ParseAddrPort(s)
+		if err != nil {
+			continue
+		}
+		ap = netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
+		if ap.Addr().Is4() {
+			seen4[ap] = true
+		} else {
+			seen6[ap] = true
+		}
+	}
+	var out strings.Builder
+	for _, f := range []struct {
+		name string
+		n    int
+	}{{"IPv4", len(seen4)}, {"IPv6", len(seen6)}} {
+		if f.n > 1 {
+			fmt.Fprintf(&out, "  note: %d distinct %s addresses suggests endpoint-dependent NAT,\n", f.n, f.name)
+			out.WriteString("        where hole punching fails and a relay is needed.\n")
+		}
+	}
+	return out.String()
 }
 
 // announcedLine is what a peer told everybody about where to reach it, which

@@ -634,34 +634,62 @@ fun keysOf(items: List<ChatItem>): List<String> {
 
 @Composable
 private fun Bubble(bg: Color, border: Color = Palette.Line, content: @Composable () -> Unit) {
-    Column(Modifier.fillMaxWidth().background(bg.copy(alpha = 0.9f), RoundedCornerShape(12.dp))
-        .border(1.dp, border, RoundedCornerShape(12.dp)).padding(12.dp)) { content() }
+    // Selectable: long-press any part of a message to copy just that.
+    androidx.compose.foundation.text.selection.SelectionContainer {
+        Column(Modifier.fillMaxWidth().background(bg.copy(alpha = 0.9f), RoundedCornerShape(12.dp))
+            .border(1.dp, border, RoundedCornerShape(12.dp)).padding(12.dp)) { content() }
+    }
 }
 
 @Composable
-private fun Stamp(text: String, colour: Color = Palette.Ash) {
-    Text(text, style = MaterialTheme.typography.labelSmall, color = colour, modifier = Modifier.padding(bottom = 4.dp))
+private fun Stamp(text: String, colour: Color = Palette.Ash, copy: String? = null) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 4.dp)) {
+        Text(text, style = MaterialTheme.typography.labelSmall, color = colour, modifier = Modifier.weight(1f))
+        if (copy != null) CopyLink(copy)
+    }
+}
+
+/**
+ * Copies a whole message in one tap — the markdown as written, so it pastes
+ * into a terminal or another chat intact — and says so, since a copy with no
+ * feedback looks like a tap that missed.
+ */
+@Composable
+private fun CopyLink(text: String) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) { if (copied) { delay(1200); copied = false } }
+    androidx.compose.foundation.text.selection.DisableSelection {
+        Text(if (copied) "copied" else "copy", style = MaterialTheme.typography.labelSmall,
+            color = if (copied) Palette.Phosphor else Palette.Ash,
+            modifier = Modifier.clickable {
+                clipboard.setText(AnnotatedString(text))
+                copied = true
+            }.padding(start = 12.dp, top = 2.dp, bottom = 2.dp))
+    }
 }
 
 @Composable
 private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean) -> Unit) {
     when (item) {
         is ChatItem.You -> Bubble(Palette.Phosphor.copy(alpha = 0.08f), Palette.Phosphor.copy(alpha = 0.35f)) {
-            Stamp(listOf("YOU", item.by, whenSaid(item.time)).filter { it.isNotEmpty() }.joinToString("  ·  "), Palette.Phosphor)
+            Stamp(listOf("YOU", item.by, whenSaid(item.time)).filter { it.isNotEmpty() }.joinToString("  ·  "),
+                Palette.Phosphor, copy = item.text)
             Text(item.text, style = MaterialTheme.typography.bodyMedium, color = Palette.Bone)
         }
         is ChatItem.Said -> Bubble(Palette.Panel) {
-            Stamp(whenSaid(item.time))
+            Stamp(whenSaid(item.time), copy = item.text)
             MarkdownText(item.text)
         }
         is ChatItem.Earlier -> if (item.user) {
             Bubble(Palette.Phosphor.copy(alpha = 0.05f), Palette.Line) {
-                Stamp(listOf("YOU", whenSaid(item.time)).joinToString("  ·  "), Palette.Phosphor.copy(alpha = 0.6f))
+                Stamp(listOf("YOU", whenSaid(item.time)).joinToString("  ·  "), Palette.Phosphor.copy(alpha = 0.6f),
+                    copy = item.text)
                 Text(item.text, style = MaterialTheme.typography.bodyMedium, color = Palette.Bone.copy(alpha = 0.8f))
             }
         } else {
             Bubble(Palette.Panel.copy(alpha = 0.6f)) {
-                Stamp(whenSaid(item.time))
+                Stamp(whenSaid(item.time), copy = item.text)
                 MarkdownText(item.text)
             }
         }
@@ -677,12 +705,12 @@ private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean) -> Unit) {
             var expanded by remember { mutableStateOf(false) }
             val firstLine = item.text.lineSequence().firstOrNull().orEmpty().take(120)
             val more = item.text.contains('\n') || item.text.length > 120
-            Text(
+            androidx.compose.foundation.text.selection.SelectionContainer { Text(
                 if (expanded) item.text else firstLine + if (more) "  …" else "",
                 style = MaterialTheme.typography.bodySmall,
                 color = if (item.error) Palette.Rust else Palette.Ash,
                 modifier = Modifier.clickable(enabled = more) { expanded = !expanded }.padding(start = 16.dp),
-            )
+            ) }
         }
         is ChatItem.Prompt -> PromptCard(item, onAnswer)
         is ChatItem.Done -> Label("— ${item.note}${whenSaid(item.time).let { if (it.isEmpty()) "" else "  ·  $it" }}")
@@ -728,7 +756,7 @@ private fun PromptCard(p: ChatItem.Prompt, onAnswer: (String, Boolean) -> Unit) 
 // --- markdown ---------------------------------------------------------------
 
 @Composable
-private fun CodeBox(text: String) {
+private fun CodeBox(text: String) = androidx.compose.foundation.text.selection.SelectionContainer {
     Box(Modifier.fillMaxWidth().background(Palette.Void, RoundedCornerShape(8.dp))
         .border(1.dp, Palette.Line, RoundedCornerShape(8.dp))
         .horizontalScroll(rememberScrollState()).padding(10.dp)) {

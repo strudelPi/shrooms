@@ -35,6 +35,7 @@ func Handler(log *slog.Logger, m *Manager, who Who) http.Handler {
 	// The same, for clients that cannot send PATCH (Android's HttpURLConnection).
 	mux.HandleFunc("POST /v1/sessions/{name}/settings", h.update)
 	mux.HandleFunc("GET /v1/sessions/{name}/history", h.history)
+	mux.HandleFunc("GET /v1/sessions/{name}/search", h.search)
 	mux.HandleFunc("POST /v1/sessions/{name}/files", h.upload)
 	mux.HandleFunc("POST /v1/sessions/{name}/transcribe", h.transcribe)
 	mux.HandleFunc("GET /v1/conversations", h.conversations)
@@ -269,6 +270,31 @@ func (h *handler) history(w http.ResponseWriter, r *http.Request) {
 		said = []Said{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"history": said})
+}
+
+func (h *handler) search(w http.ResponseWriter, r *http.Request) {
+	s, ok := h.session(w, r)
+	if !ok {
+		return
+	}
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			fail(w, http.StatusBadRequest, fmt.Errorf("limit: %q", v))
+			return
+		}
+		limit = min(n, 200)
+	}
+	found, err := s.Search(r.URL.Query().Get("q"), limit)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	if found == nil {
+		found = []Found{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"found": found})
 }
 
 func (h *handler) message(w http.ResponseWriter, r *http.Request) {

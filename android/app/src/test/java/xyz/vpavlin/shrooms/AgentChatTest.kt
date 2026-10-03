@@ -26,6 +26,25 @@ class AgentChatTest {
             "tool_name":"Bash","input":{"command":"make test"},"description":"Run tests"}}"""),
     )
 
+    // A search result jumps to its event: the first of that event's items, in a
+    // list laid out from the bottom with the live row as item 0.
+    @Test fun aSearchResultIsFoundInTheList() {
+        val items = AgentChat.items(asked, listOf(Earlier(1, "user", "long ago")))
+        // Earlier, You(1), Said(3), Tool(3), Prompt(4): event 3 is the third
+        // from the top, so list index 5 - 2 = 3 (the live row, Prompt, Tool, Said).
+        assertEquals(3, AgentChat.listIndexOf(items, 3))
+        assertEquals(4, AgentChat.listIndexOf(items, 1))
+        assertEquals("not loaded", null, AgentChat.listIndexOf(items, 99))
+        // seq 0 is the transcript's, never an event to jump to.
+        assertEquals(null, AgentChat.listIndexOf(items, 0))
+    }
+
+    @Test fun aResultFurtherBackWidensTheTail() {
+        assertEquals("reaches event 500 of 1000, and some before it", 521, AgentChat.tailReaching(300, 1000, 500))
+        assertEquals("never narrower than it was", 300, AgentChat.tailReaching(300, 1000, 990))
+        assertEquals("everything stays everything", 0, AgentChat.tailReaching(0, 1000, 5))
+    }
+
     @Test fun aPromptNobodyAnsweredIsOpen() {
         val items = AgentChat.items(asked)
         val p = items.filterIsInstance<ChatItem.Prompt>().single()

@@ -49,6 +49,8 @@ Item {
     property string lastPost: ""
     property string lastDelete: ""
     property string lastWatch: ""
+    property string lastSearch: ""
+    property int searchAsked: 0
     property var jobsNow: []
 
     Main {
@@ -63,6 +65,12 @@ Item {
                 // The same machine answering on a second mesh address.
                 if (method === "agentsFind") { top.lastFind = args[0]
                     return JSON.stringify(top.hosts.concat([Object.assign({}, top.hosts[0], { mesh: "home", address: "fd7b::1" })])) }
+                if (method === "agentSearch") { top.lastSearch = args.join(" "); return JSON.stringify({ search: 1 }) }
+                // Still running the first time it is asked, as a real search is.
+                if (method === "agentSearched" && top.searchAsked++ === 0) return JSON.stringify({ id: 1, done: false, error: "", found: null })
+                if (method === "agentSearched") return JSON.stringify({ id: 1, done: true, error: "", found: [
+                    { seq: 3, time: "2026-10-03T14:22:00+02:00", role: "assistant", snippet: "All **tests** pass." },
+                    { seq: 0, time: "2026-10-02T10:00:00+02:00", role: "user", snippet: "the tests, in a terminal", text: "Earlier: the tests, in a terminal." } ] })
                 if (method === "agentWatch") { top.lastWatch = args.join(" "); return JSON.stringify({ ok: true }) }
                 if (method === "agentEvents") {
                     top.eventCalls++
@@ -133,6 +141,23 @@ Item {
             view.sendToAgent("look")
 
             console.error("SENT=" + JSON.stringify(JSON.parse(top.lastPost).text) + " ATTACHED_AFTER=" + view.agentAttached.length)
+
+            // Search: asked of the core, read back, and a result opened — one
+            // from before the agent is shown whole, one of its own is jumped to.
+            view.searchOpen = true
+            view.runSearch("  tests ")
+            view.pumpSearch()
+            console.error("STILLBUSY=" + view.searchBusy + " " + (view.searchFound === null))
+            view.pumpSearch()
+            console.error("SEARCH=" + top.lastSearch + " FOUND=" + view.searchFound.length + " BUSY=" + view.searchBusy)
+            view.openFound(view.searchFound[1])
+            console.error("READING=" + view.readingOpen() + " TEXT=" + view.reading.text)
+            view.openFound(view.searchFound[0])
+            var litRow = -1
+            for (i = 0; i < chatCount(); i++) if (view.chatModelAt(i).seq === 3) { litRow = i; break }
+            console.error("JUMP lit=" + view.agentLit + " row=" + litRow + " kind=" + (litRow >= 0 ? view.chatModelAt(litRow).kind : "")
+                          + " searchOpen=" + view.searchOpen + " stick=" + view.chatStick
+                          + " reach=" + view.tailReaching(300, 1000, 500) + "," + view.tailReaching(0, 1000, 5))
 
             // Taking over a conversation from a terminal.
             view.loadConversations(view.agentHosts[0])

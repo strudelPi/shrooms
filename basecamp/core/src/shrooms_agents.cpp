@@ -740,6 +740,46 @@ long Hub::pasteImage(const std::string& address, const std::string& session, std
     return id;
 }
 
+long Hub::search(const std::string& address, const std::string& session, const std::string& query)
+{
+    long id;
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        id = ++searchId_;
+        searchDone_ = false;
+        searchFound_ = "null";
+        searchError_.clear();
+    }
+    std::thread([this, id, address, session, query]() {
+        std::string out, err;
+        bool ok = request(address, "GET", "/v1/sessions/" + session + "/search?limit=100&q=" + urlEncode(query),
+                          "", 60, out, err);
+        // Only the agent's {"found":[…]} is passed on, as it is.
+        std::string found = "null";
+        if (ok) {
+            size_t at = out.find('[');
+            size_t end = out.rfind(']');
+            if (out.compare(0, 9, "{\"found\":") == 0 && at != std::string::npos && end != std::string::npos && end > at)
+                found = out.substr(at, end - at + 1);
+            else
+                err = "the agent answered something else";
+        }
+        std::lock_guard<std::mutex> g(mu_);
+        if (id != searchId_) return; // a newer search replaced it
+        searchDone_ = true;
+        searchFound_ = found;
+        searchError_ = (ok && found != "null") ? "" : (err.empty() ? "no answer" : err);
+    }).detach();
+    return id;
+}
+
+std::string Hub::searched()
+{
+    std::lock_guard<std::mutex> g(mu_);
+    return "{\"id\":" + std::to_string(searchId_) + ",\"done\":" + (searchDone_ ? "true" : "false") +
+           ",\"error\":\"" + jsonEscape(searchError_) + "\",\"found\":" + searchFound_ + "}";
+}
+
 std::string Hub::jobs()
 {
     std::lock_guard<std::mutex> g(mu_);

@@ -210,11 +210,14 @@ Item {
         return null
     }
 
-    // Sessions open at their last agentTail events; "load them" asks for all.
+    // Sessions open at their last agentTail events; "load them" asks for all
+    // (0), and a search result further back for as many as reach it.
     readonly property int agentTail: 300
-    property bool agentLoadAll: false
-    function openSession(h, s, all) {
-        root.agentLoadAll = !!all
+    property int agentTailNow: agentTail
+    function openSession(h, s, tail) {
+        var t = (tail === undefined || tail === null) ? agentTail : tail
+        root.agentTailNow = t
+        root.searchOpen = false
         root.agentOpen = { address: h.address, name: h.name, mesh: h.mesh, session: s }
         root.agentEventsList = []
         root.agentEarlier = []
@@ -223,7 +226,7 @@ Item {
         root.chatStick = true
         root.agentAttached = []
         chatModel.clear()
-        agentCall("agentWatch", [h.address, s, String(all ? 0 : agentTail)])
+        agentCall("agentWatch", [h.address, s, String(t)])
         // After the first paint: a call during construction of what it fills
         // freezes the view.
         Qt.callLater(function() {
@@ -295,12 +298,13 @@ Item {
         for (i = 0; i < agentEarlier.length; i++) {
             var h = agentEarlier[i], ht = epoch(h.time)
             if (first && ht >= first) continue
-            out.push({ key: "h" + i, kind: h.role === "user" ? "you" : "said", earlier: true, text: h.text, time: ht, by: "" })
+            out.push({ key: "h" + i, seq: 0, kind: h.role === "user" ? "you" : "said", earlier: true, text: h.text, time: ht, by: "" })
         }
         var per = {}
         function add(e, item) {
             per[e.seq] = (per[e.seq] || 0) + 1
             item.key = "e" + e.seq + "-" + per[e.seq]
+            item.seq = e.seq
             item.time = epoch(e.time)
             item.earlier = false
             out.push(item)
@@ -358,10 +362,67 @@ Item {
             i = 0
         }
         for (; i < items.length; i++) chatModel.append(row(items[i]))
+        if (root.jumpTo > 0) {
+            for (i = 0; i < chatModel.count; i++) {
+                if (chatModel.get(i).earlier || chatModel.get(i).seq !== root.jumpTo) continue
+                // The one scroll done in code that is not following the end:
+                // somebody asked for this message.
+                var at = i
+                root.chatStick = false
+                root.agentLit = root.jumpTo
+                root.jumpTo = 0
+                Qt.callLater(function() { chatList.positionViewAtIndex(at, ListView.Center) })
+                litTimer.restart()
+                return
+            }
+        }
         if (root.chatStick) Qt.callLater(function() { chatList.positionViewAtEnd() })
     }
+
+    // Search: the whole conversation, on the agent's machine; the core does it
+    // in the background and pumpSearch reads the answer.
+    property bool searchOpen: false
+    property bool searchBusy: false
+    property var searchFound: null
+    property real jumpTo: 0
+    property real agentLit: 0
+    property var reading: null
+    function runSearch(q) {
+        q = String(q || "").trim()
+        if (q === "" || !agentOpen) return
+        var r = agentCall("agentSearch", [agentOpen.address, agentOpen.session, q])
+        if (r === null) return
+        root.searchBusy = true
+        root.searchFound = null
+    }
+    function pumpSearch() {
+        if (!searchBusy) return
+        var r = unwrap(callCore("agentSearched", []))
+        if (!r || !r.done) return
+        root.searchBusy = false
+        if (r.error) { root.said = "search: " + r.error; root.saidBad = true; return }
+        root.searchFound = r.found || []
+    }
+    // What tailReaching does on the phone (AgentChat.kt).
+    function tailReaching(current, lastSeq, seq) {
+        return current === 0 ? 0 : Math.max(current, lastSeq - seq + 1 + 20)
+    }
+    function openFound(f) {
+        if (!f.seq) { root.reading = f; readingDialog.open(); return }
+        root.searchOpen = false
+        var evs = agentEventsList
+        var first = evs.length > 0 ? evs[0].seq : Infinity
+        if (f.seq < first) {
+            var lastSeq = Math.max(agentInfo ? (agentInfo.last_seq || 0) : 0, evs.length > 0 ? evs[evs.length - 1].seq : 0)
+            var h = { address: agentOpen.address, name: agentOpen.name, mesh: agentOpen.mesh }
+            openSession(h, agentOpen.session, tailReaching(agentTailNow, lastSeq, f.seq))
+        }
+        root.jumpTo = f.seq
+        rebuildChat()
+    }
+    Timer { id: litTimer; interval: 4000; onTriggered: root.agentLit = 0 }
     function row(it) {
-        return { key: it.key, kind: it.kind, text: it.text || "", by: it.by || "", time: it.time || 0,
+        return { key: it.key, seq: it.seq || 0, kind: it.kind, text: it.text || "", by: it.by || "", time: it.time || 0,
                  earlier: !!it.earlier, error: !!it.error, pid: it.id || "", tool: it.tool || "",
                  description: it.description || "", open: !!it.open, answer: it.answer || "",
                  blob: JSON.stringify(it) }
@@ -542,6 +603,46 @@ Item {
             }
         }
     }
+    // A search result from before this agent had the conversation: no event to
+    // jump to, so it is shown whole.
+    Dialog {
+        id: readingDialog
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(root.sz(640), root.width - root.sz(40))
+        height: Math.min(root.sz(520), root.height - root.sz(40))
+        padding: root.sz(20)
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: Qt.rgba(0, 0, 0, 0.6) }
+        background: Rectangle { color: cPanel; radius: root.sz(12); border.color: cSky }
+        header: Item {}
+        footer: Item {}
+        contentItem: ColumnLayout {
+            spacing: root.sz(10)
+            RowLayout {
+                Text {
+                    Layout.fillWidth: true
+                    text: root.reading ? [root.reading.role === "user" ? "YOU" : "CLAUDE", root.clock(root.epoch(root.reading.time)), "before this agent"].join("  ·  ") : ""
+                    color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10); font.letterSpacing: 1
+                }
+                Lnk { text: "copy"; base: cAsh; font.pixelSize: root.fs(10); onClicked: root.copyText(root.reading ? root.reading.text : "") }
+                Lnk { text: "close"; base: cBone; font.pixelSize: root.fs(10); onClicked: readingDialog.close() }
+            }
+            ScrollView {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                clip: true
+                TextEdit {
+                    width: readingDialog.availableWidth
+                    readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap
+                    textFormat: root.reading && root.reading.role !== "user" ? TextEdit.MarkdownText : TextEdit.PlainText
+                    text: root.reading ? root.reading.text : ""
+                    color: cBone; font.family: "monospace"; font.pixelSize: root.fs(12)
+                }
+            }
+        }
+    }
+    function readingOpen() { return readingDialog.visible }
+
     // For the harness, which cannot reach an id inside this component.
     function chatModelCount() { return chatModel.count }
     function chatModelAt(i) { return chatModel.get(i) }
@@ -562,7 +663,7 @@ Item {
         interval: 300
         running: root.agentsOpen && root.agentOpen !== null && root.haveCore
         repeat: true
-        onTriggered: { root.pumpAgent(); root.pumpJobs() }
+        onTriggered: { root.pumpAgent(); root.pumpJobs(); root.pumpSearch() }
     }
 
     component Lnk: Text {
@@ -838,6 +939,8 @@ Item {
                             base: on ? cPhosphor : cAsh
                             onClicked: root.setAutoApprove(!on)
                         }
+                        Lnk { text: root.searchOpen ? "close search" : "search"; base: cSky
+                              onClicked: { root.searchOpen = !root.searchOpen; if (root.searchOpen) searchField.forceActiveFocus() } }
                         Lnk { text: "delete"; base: cAsh; onClicked: root.askDelete() }
                         Lnk { visible: root.agentWorking; text: "stop"; base: cRust
                               onClicked: root.agentCall("agentPost", [root.agentOpen.address, "/v1/sessions/" + root.agentOpen.session + "/interrupt", ""]) }
@@ -862,9 +965,73 @@ Item {
                     }
                 }
 
+                ColumnLayout {
+                    visible: !root.agentCreating && root.agentOpen !== null && root.searchOpen
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: root.sz(8)
+                    TextField {
+                        id: searchField
+                        Layout.fillWidth: true
+                        placeholderText: "search the whole conversation — Enter"
+                        placeholderTextColor: cAsh; color: cBone; font.family: "monospace"
+                        background: Rectangle { color: cPanel; border.color: searchField.activeFocus ? cSky : cLine; radius: 6 }
+                        onAccepted: root.runSearch(text)
+                    }
+                    RowLayout {
+                        spacing: 8
+                        Pulse { visible: root.searchBusy; tint: cSky }
+                        Text {
+                            text: root.searchBusy ? "searching…"
+                                : root.searchFound === null ? "Words anywhere in what was typed or answered — also before this agent had it. Case and accents do not matter."
+                                : root.searchFound.length === 0 ? "Nothing found."
+                                : root.searchFound.length >= 100 ? "the newest 100" : root.searchFound.length + " found"
+                            color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10)
+                            Layout.fillWidth: true; wrapMode: Text.Wrap
+                        }
+                    }
+                    ListView {
+                        id: foundList
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        spacing: root.sz(8)
+                        model: root.searchFound || []
+                        ScrollBar.vertical: ScrollBar {}
+                        delegate: Rectangle {
+                            id: frow
+                            required property var modelData
+                            width: foundList.width
+                            height: frowCol.implicitHeight + root.sz(16)
+                            radius: root.sz(8)
+                            color: frowMouse.containsMouse ? cPanel : "transparent"
+                            border.color: cLine
+                            Column {
+                                id: frowCol
+                                x: root.sz(8); y: root.sz(8); width: parent.width - root.sz(16)
+                                spacing: 4
+                                Text {
+                                    text: [frow.modelData.role === "user" ? "YOU" : "CLAUDE", root.clock(root.epoch(frow.modelData.time)),
+                                           frow.modelData.seq ? "" : "before this agent"].filter(function(x) { return x !== "" }).join("  ·  ")
+                                    color: frow.modelData.role === "user" ? cPhosphor : cAsh
+                                    font.family: "monospace"; font.pixelSize: root.fs(9); font.letterSpacing: 1
+                                }
+                                Text {
+                                    width: parent.width
+                                    text: frow.modelData.snippet
+                                    color: cBone; font.family: "monospace"; font.pixelSize: root.fs(11)
+                                    wrapMode: Text.Wrap; maximumLineCount: 4; elide: Text.ElideRight
+                                }
+                            }
+                            MouseArea { id: frowMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.openFound(frow.modelData) }
+                        }
+                    }
+                }
+
                 ListView {
                     id: chatList
-                    visible: !root.agentCreating && root.agentOpen !== null
+                    visible: !root.agentCreating && root.agentOpen !== null && !root.searchOpen
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
@@ -912,14 +1079,14 @@ Item {
                         readonly property int firstSeq: root.agentEventsList.length > 0 ? root.agentEventsList[0].seq : 0
                         width: chatList.width
                         height: visible ? root.sz(30) : 0
-                        visible: !root.agentLoadAll && firstSeq > 1
+                        visible: root.agentTailNow !== 0 && firstSeq > 1
                         Lnk {
                             anchors.centerIn: parent
                             text: "— " + (parent.firstSeq - 1) + " earlier events not loaded · load them —"
                             font.pixelSize: root.fs(10)
                             onClicked: {
                                 var h = { address: root.agentOpen.address, name: root.agentOpen.name, mesh: root.agentOpen.mesh }
-                                root.openSession(h, root.agentOpen.session, true)
+                                root.openSession(h, root.agentOpen.session, 0)
                             }
                         }
                     }
@@ -955,6 +1122,7 @@ Item {
                     delegate: Item {
                         id: crow
                         required property int index
+                        required property real seq
                         required property string kind
                         required property string text
                         required property string by
@@ -992,7 +1160,9 @@ Item {
                                 height: bubbleCol.implicitHeight + root.sz(20)
                                 radius: root.sz(10)
                                 color: crow.kind === "you" ? Qt.rgba(0.21, 0.94, 0.63, crow.earlier ? 0.04 : 0.07) : cPanel
-                                border.color: crow.kind === "you" ? Qt.rgba(0.21, 0.94, 0.63, 0.35) : cLine
+                                border.color: crow.seq !== 0 && crow.seq === root.agentLit ? cSky
+                                            : crow.kind === "you" ? Qt.rgba(0.21, 0.94, 0.63, 0.35) : cLine
+                                border.width: crow.seq !== 0 && crow.seq === root.agentLit ? 2 : 1
                                 opacity: crow.earlier ? 0.8 : 1
                                 Column {
                                     id: bubbleCol

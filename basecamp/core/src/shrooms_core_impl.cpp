@@ -854,6 +854,18 @@ std::string ShroomsCoreImpl::agentJobs()
     return hub().jobs();
 }
 
+std::string ShroomsCoreImpl::agentSearch(const std::string& address, const std::string& session, const std::string& query)
+{
+    if (!agents::isMeshAddress(address)) return errorJson("not a mesh address", address);
+    if (!safeSession(session)) return errorJson("not a session name", session);
+    return "{\"search\":" + std::to_string(hub().search(address, session, query)) + "}";
+}
+
+std::string ShroomsCoreImpl::agentSearched()
+{
+    return hub().searched();
+}
+
 std::string ShroomsCoreImpl::agentPaste(const std::string& address, const std::string& session)
 {
     if (!agents::isMeshAddress(address)) return errorJson("not a mesh address", address);

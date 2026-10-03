@@ -220,6 +220,11 @@ expect "ROWS=you,said,you,said,tool,output,note,note,you,tool,prompt" "the conve
 # answers four events at a time, as the real one caps its replies).
 expect "WATCH=fdb0:9afc:a5ef:388c:8264:7716:36fc:64eb shrooms 300" "the session was not opened at its tail"
 expect "LOADED=11/11" "the session was not read to the end straight after opening"
+expect "STILLBUSY=true true" "a search still running was taken as done"
+expect "SEARCH=fdb0:9afc:a5ef:388c:8264:7716:36fc:64eb shrooms tests FOUND=2 BUSY=false" "the search was not asked of the core, or not read back"
+expect "READING=true TEXT=Earlier: the tests, in a terminal." "a result from before the agent is not shown whole"
+# Row 3: two earlier lines from the transcript, the first message, then it.
+expect "JUMP lit=3 row=3 kind=said searchOpen=false stick=false reach=521,0" "a search result does not jump to its message"
 expect "STREAMING=[Pushing **now**…] WORKING=true" "the streamed reply is not shown as it grows"
 expect "CONTEXT=67% of 1M MODEL=opus-5 1m" "context and model are not read from the session"
 expect "PROMPT open=true id=p1" "the waiting prompt is not offered"

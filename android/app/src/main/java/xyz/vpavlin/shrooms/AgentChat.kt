@@ -56,6 +56,24 @@ sealed class ChatItem {
 
 object AgentChat {
     /**
+     * Where the first item of event [seq] is in the conversation's list, which
+     * is laid out from the bottom with the live row as item 0; null while that
+     * event is not loaded.
+     */
+    fun listIndexOf(items: List<ChatItem>, seq: Long): Int? {
+        val i = items.indexOfFirst { it !is ChatItem.Earlier && it.seq == seq }
+        return if (i < 0) null else items.size - i
+    }
+
+    /**
+     * How many events to open at so that [seq] is among them, with a few
+     * before it for context: never fewer than [current], and 0 (everything)
+     * stays everything.
+     */
+    fun tailReaching(current: Int, lastSeq: Long, seq: Long): Int =
+        if (current == 0) 0 else maxOf(current.toLong(), lastSeq - seq + 1 + 20).toInt()
+
+    /**
      * The conversation to show: [earlier] lines from the transcript that come
      * before the first event this agent kept — the rest of the transcript is
      * the same conversation the events already show — then the events.

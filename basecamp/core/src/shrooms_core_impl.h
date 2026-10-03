@@ -385,6 +385,15 @@ public:
     std::string agentJobs();
 
     /**
+     * @brief Searches a session's whole conversation, in the background:
+     * {"search":N}. agentSearched() says when it is done and what it found.
+     */
+    std::string agentSearch(const std::string& address, const std::string& session, const std::string& query);
+
+    /** @brief The latest search: {"id","done","error","found":[…]}. */
+    std::string agentSearched();
+
+    /**
      * @brief Sends an image on the clipboard to the session's machine, in the
      * background: {"job":N}, or {"none":true} when the clipboard holds no
      * image and the view should paste its text as usual.

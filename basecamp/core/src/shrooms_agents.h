@@ -111,6 +111,19 @@ public:
      */
     std::string jobs();
 
+    /**
+     * Searches a session's whole conversation in the background — on a long
+     * one that takes a second or more — replacing any search still running.
+     * Returns its id; searched() reports it.
+     */
+    long search(const std::string& address, const std::string& session, const std::string& query);
+
+    /**
+     * The latest search: {"id":N,"done":bool,"error":"…","found":[…]}, found
+     * being the agent's answer as it gave it (null until done, or on error).
+     */
+    std::string searched();
+
 private:
     struct Job {
         long id;
@@ -137,6 +150,10 @@ private:
     long nextJob_ = 1;
     int recorder_ = -1;
     std::string recording_;
+
+    long searchId_ = 0;
+    bool searchDone_ = true;
+    std::string searchFound_ = "null", searchError_;
 };
 
 }  // namespace agents

@@ -516,8 +516,17 @@ private fun Field(label: String, value: String, onChange: (String) -> Unit) {
 @Composable
 private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     var askDelete by remember { mutableStateOf(false) }
-    // Everything rather than the tail, once asked for.
-    var loadAll by remember(o) { mutableStateOf(false) }
+    // How many of the last events are loaded: 0 is everything, once asked for;
+    // more, to reach a search result further back.
+    var tail by remember(o) { mutableStateOf(SESSION_TAIL) }
+    // Search: the box, what it found, and the event a result jumps to.
+    var searching by remember(o) { mutableStateOf(false) }
+    var query by remember(o) { mutableStateOf("") }
+    var found by remember(o) { mutableStateOf<List<Found>?>(null) }
+    var searchBusy by remember { mutableStateOf(false) }
+    var reading by remember { mutableStateOf<Found?>(null) }
+    var jumpTo by remember(o) { mutableStateOf(0L) }
+    var lit by remember(o) { mutableStateOf(0L) }
     val client = remember(o.address) { AgentClient(o.address) }
     val events = remember(o) { mutableStateListOf<AgentEvent>() }
     var earlier by remember(o) { mutableStateOf<List<Earlier>>(emptyList()) }
@@ -617,7 +626,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     // It opens at the last SESSION_TAIL events, and what arrives is applied in
     // batches: a long session replayed one event and one re-render at a time
     // scrolled through its own history for ten seconds before settling.
-    LaunchedEffect(o, loadAll) {
+    LaunchedEffect(o, tail) {
         events.clear()
         streaming = ""
         val after = java.util.concurrent.atomic.AtomicLong(0)
@@ -647,7 +656,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
             val r = withContext(Dispatchers.IO) {
                 runCatching {
                     client.follow(o.session, after.get(), stop = { !isActive },
-                        tail = if (loadAll) 0 else SESSION_TAIL) { e ->
+                        tail = tail) { e ->
                         if (e.kind != "partial") after.set(e.seq)
                         pending += e
                     }
@@ -673,11 +682,61 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     // view to the start of the conversation.
     val scrolledUp by remember { derivedStateOf { list.firstVisibleItemIndex > 1 } }
 
+    // A search result's event, once it is loaded: the one scroll done in code,
+    // because somebody asked for it. Lit for a few seconds so it is seen.
+    LaunchedEffect(jumpTo, items) {
+        if (jumpTo == 0L) return@LaunchedEffect
+        val at = AgentChat.listIndexOf(items, jumpTo) ?: return@LaunchedEffect
+        list.scrollToItem(at)
+        lit = jumpTo
+        jumpTo = 0
+        delay(4000)
+        lit = 0
+    }
+    fun open(f: Found) {
+        if (f.seq == 0L) { reading = f; return }
+        searching = false
+        val first = events.firstOrNull()?.seq ?: Long.MAX_VALUE
+        if (f.seq < first) {
+            val lastSeq = maxOf(info?.lastSeq ?: 0, events.lastOrNull()?.seq ?: 0)
+            tail = AgentChat.tailReaching(tail, lastSeq, f.seq)
+        }
+        jumpTo = f.seq
+    }
+    fun runSearch() {
+        val q = query.trim()
+        if (q.isEmpty()) return
+        searchBusy = true
+        scope.launch {
+            withContext(Dispatchers.IO) { runCatching { client.search(o.session, q) } }
+                .onSuccess { found = it }
+                .onFailure { actionError = it.message ?: "could not search" }
+            searchBusy = false
+        }
+    }
+
     val i = info
     if (askDelete) {
         DeleteSessionDialog(o.host, o.address,
             i ?: AgentSession(o.session, "", "idle", 0, false, 0),
             onDismiss = { askDelete = false }, onDeleted = { askDelete = false; onBack() })
+    }
+    reading?.let { f ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { reading = null },
+            containerColor = Palette.Panel,
+            title = {
+                Stamp(listOf(if (f.role == "user") "YOU" else "CLAUDE", whenSaid(f.time), "before this agent")
+                    .joinToString("  ·  "), copy = f.text)
+            },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) { MarkdownText(f.text) }
+            },
+            confirmButton = {
+                Text("CLOSE", style = MaterialTheme.typography.labelSmall, color = Palette.Bone,
+                    modifier = Modifier.clickable { reading = null }.padding(12.dp))
+            },
+        )
     }
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).imePadding()) {
         // Header: the name on its own line, the facts under it, then actions.
@@ -715,6 +774,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                 if (working) Link("stop", Palette.Rust) {
                     scope.launch(Dispatchers.IO) { runCatching { client.interrupt(o.session) } }
                 }
+                Link(if (searching) "close search" else "search", Palette.Sky) { searching = !searching }
                 Link("delete", Palette.Ash) { askDelete = true }
             }
             if (connError.isNotEmpty()) {
@@ -723,7 +783,49 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
             }
         }
 
-        Box(Modifier.weight(1f)) {
+        if (searching) Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
+            OutlinedTextField(
+                value = query, onValueChange = { query = it },
+                placeholder = { Text("search the whole conversation", color = Palette.Ash) },
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = Palette.Bone),
+                singleLine = true,
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { runSearch() }),
+                trailingIcon = {
+                    if (searchBusy) Pulse(Palette.Sky, 10)
+                    else Text("go", color = Palette.Sky, style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.clickable { runSearch() }.padding(12.dp))
+                },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Palette.Sky, unfocusedBorderColor = Palette.Line, cursorColor = Palette.Sky),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+            )
+            val f = found
+            when {
+                f == null -> Label("Words anywhere in what was typed or answered — also before this agent had it. Case and accents do not matter.")
+                f.isEmpty() -> Label("Nothing found.")
+                else -> {
+                    Label(if (f.size >= 100) "the newest 100" else "${f.size} found")
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
+                        items(f.size) { n ->
+                            val r = f[n]
+                            Column(Modifier.fillMaxWidth()
+                                .border(1.dp, Palette.Line, RoundedCornerShape(10.dp))
+                                .clickable { open(r) }.padding(10.dp)) {
+                                Text(listOf(if (r.role == "user") "YOU" else "CLAUDE", whenSaid(r.time),
+                                    if (r.seq == 0L) "before this agent" else "").filter { it.isNotEmpty() }.joinToString("  ·  "),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (r.role == "user") Palette.Phosphor else Palette.Ash)
+                                Text(r.snippet, style = MaterialTheme.typography.bodySmall, color = Palette.Bone,
+                                    maxLines = 4, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+            }
+        } else Box(Modifier.weight(1f)) {
             LazyColumn(
                 state = list,
                 reverseLayout = true,
@@ -751,21 +853,24 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                     val prev = items.getOrNull(idx - 1)
                     if (item is ChatItem.Earlier && prev !is ChatItem.Earlier) Label("— earlier, from the transcript —")
                     if (item !is ChatItem.Earlier && prev is ChatItem.Earlier) Label("— on this phone —")
-                    ChatRow(item) { prompt, allow ->
-                        scope.launch(Dispatchers.IO) {
-                            runCatching { client.answer(o.session, prompt, allow) }
-                                .onFailure { actionError = it.message ?: "could not answer" }
+                    Box(if (lit != 0L && item.seq == lit && item !is ChatItem.Earlier)
+                        Modifier.border(2.dp, Palette.Sky, RoundedCornerShape(12.dp)) else Modifier) {
+                        ChatRow(item) { prompt, allow ->
+                            scope.launch(Dispatchers.IO) {
+                                runCatching { client.answer(o.session, prompt, allow) }
+                                    .onFailure { actionError = it.message ?: "could not answer" }
+                            }
                         }
                     }
                 }
                 // At the top (the list is laid out from the bottom): what was
                 // left out, and how to have it.
                 val firstSeq = events.firstOrNull()?.seq ?: 0
-                if (!loadAll && firstSeq > 1) {
+                if (tail != 0 && firstSeq > 1) {
                     item(key = "earlier-events") {
                         Text("— ${firstSeq - 1} earlier events not loaded · load them —",
                             style = MaterialTheme.typography.labelSmall, color = Palette.Phosphor,
-                            modifier = Modifier.fillMaxWidth().clickable { loadAll = true }.padding(vertical = 12.dp))
+                            modifier = Modifier.fillMaxWidth().clickable { tail = 0 }.padding(vertical = 12.dp))
                     }
                 }
             }

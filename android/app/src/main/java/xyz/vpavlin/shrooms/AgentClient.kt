@@ -57,6 +57,12 @@ data class Conversation(
 /** A line of the conversation from before the agent had it (the transcript). */
 data class Earlier(val time: Long, val role: String, val text: String)
 
+/**
+ * A turn that matched a search. [seq] is the event to jump to; 0 when it was
+ * said before the agent had the conversation, and then [text] is all of it.
+ */
+data class Found(val seq: Long, val time: Long, val role: String, val snippet: String, val text: String)
+
 data class AgentEvent(
     val seq: Long,
     /** claude, message, answer or stopped. */
@@ -145,6 +151,17 @@ class AgentClient(address: String) {
         return (0 until a.length()).map { i ->
             val o = a.getJSONObject(i)
             Earlier(parseTime(o.optString("time")), o.optString("role"), o.optString("text"))
+        }
+    }
+
+    /** Turns of the whole conversation containing [q], newest first. */
+    fun search(session: String, q: String, limit: Int = 100): List<Found> {
+        val a = JSONObject(request("GET", "/v1/sessions/${enc(session)}/search?q=${enc(q)}&limit=$limit", null))
+            .optJSONArray("found") ?: return emptyList()
+        return (0 until a.length()).map { i ->
+            val o = a.getJSONObject(i)
+            Found(o.optLong("seq"), parseTime(o.optString("time")), o.optString("role"),
+                o.optString("snippet"), o.optString("text"))
         }
     }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/vpavlin/shrooms/internal/disco"
 	"github.com/vpavlin/shrooms/internal/hosts"
 	"github.com/vpavlin/shrooms/internal/mesh"
 	"io"
@@ -593,22 +594,35 @@ func cmdPaths(args []string) error {
 			default:
 				fmt.Printf("  no candidate has answered a probe yet\n")
 			}
-			if len(p.Endpoints) > 0 {
-				fmt.Printf("  announced: %v\n", p.Endpoints)
-			}
+			fmt.Print(announcedLine(p))
 			fmt.Println()
 			continue
 		}
+		now := time.Now()
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "  CANDIDATE\tRTT\tLAST PONG\t")
 		for _, path := range p.Paths {
 			mark := ""
-			if path.Selected {
+			switch {
+			case path.Selected:
 				mark = "  <- in use"
+			case !pongFresh(path.LastPong, now):
+				mark = "  stale"
 			}
 			fmt.Fprintf(w, "  %s\t%dms\t%s\t%s\n", path.Addr, path.RTTMs, path.LastPong, mark)
 		}
 		w.Flush()
+		// A peer with history looked connected when it was not. Pongs are
+		// never forgotten, so a phone that moved off Wi-Fi hours ago still
+		// shows its Wi-Fi paths, and the one fact that explained it — an
+		// announce with no endpoints in it — was printed only for peers with
+		// no history at all. Seen as four rows, all hours old, nothing
+		// current, and nothing saying so.
+		if newest, ok := newestPong(p.Paths); ok && !pongFresh(newest.Format(time.RFC3339), now) {
+			fmt.Printf("  none of these is current — newest pong %s ago\n",
+				now.Sub(newest).Round(time.Second))
+			fmt.Print(announcedLine(p))
+		}
 		fmt.Println()
 	}
 
@@ -619,6 +633,41 @@ func cmdPaths(args []string) error {
 		fmt.Println("no peers known yet")
 	}
 	return nil
+}
+
+// announcedLine is what a peer told everybody about where to reach it, which
+// is the question to ask of a peer nobody can reach.
+//
+// Empty is the case worth reading and the one that used to be silent: a phone
+// whose OS will not let it list its own addresses announces nothing, and can
+// then be dialled only by a peer that has already heard from it.
+func announcedLine(p peerStatus) string {
+	if len(p.Endpoints) == 0 {
+		return "  announced: nothing — it can be dialled only by a peer that has heard from it first\n"
+	}
+	return fmt.Sprintf("  announced: %v\n", p.Endpoints)
+}
+
+// pongFresh is the daemon's own standard for a working path, applied to the
+// timestamp the status payload carries: a pong older than disco.PathFresh is
+// not a path in use, whatever the table looks like.
+func pongFresh(lastPong string, now time.Time) bool {
+	t, err := time.Parse(time.RFC3339, lastPong)
+	if err != nil {
+		return false
+	}
+	return now.Sub(t) < disco.PathFresh
+}
+
+// newestPong is the most recent answer among a peer's paths, if any parses.
+func newestPong(paths []pathStatus) (time.Time, bool) {
+	var newest time.Time
+	for _, path := range paths {
+		if t, err := time.Parse(time.RFC3339, path.LastPong); err == nil && t.After(newest) {
+			newest = t
+		}
+	}
+	return newest, !newest.IsZero()
 }
 
 // expiryNote says how long this device's membership has left, and only when

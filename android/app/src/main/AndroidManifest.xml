@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Only to scan a network key from another device's screen. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Voice notes to agents, transcribed on the owner's own machine. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Reading a Keycard, so the mesh's admin key can live on a card rather
          than on a device (ADR-022). Foreground only: Android reads NFC while a
          screen is in front, which is why signing is a deliberate tap. -->
@@ -22,14 +24,6 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- So the mesh comes back after a reboot without opening the app. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-
-    <!-- Dictation in the Agents screen: Android 11+ hides other apps'
-         activities unless they are named here. -->
-    <queries>
-        <intent>
-            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
-        </intent>
-    </queries>
 
     <application
         android:networkSecurityConfig="@xml/network_security_config"

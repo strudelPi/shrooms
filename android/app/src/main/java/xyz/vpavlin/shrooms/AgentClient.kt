@@ -136,6 +136,24 @@ class AgentClient(address: String) {
         }
     }
 
+    /**
+     * Sends a voice note and returns its text, transcribed on the agent's
+     * machine. Long timeout: a minute of speech takes the model a while.
+     */
+    fun transcribe(session: String, name: String, bytes: ByteArray, lang: String): String {
+        val c = open("POST", "/v1/sessions/${enc(session)}/transcribe?name=${enc(name)}&lang=${enc(lang)}", 180_000)
+        try {
+            c.doOutput = true
+            c.setRequestProperty("Content-Type", "audio/mp4")
+            c.setFixedLengthStreamingMode(bytes.size)
+            c.outputStream.use { it.write(bytes) }
+            if (c.responseCode / 100 != 2) throw AgentError(errorOf(c))
+            return JSONObject(c.inputStream.bufferedReader().use { it.readText() }).optString("text")
+        } finally {
+            c.disconnect()
+        }
+    }
+
     /** The mesh as the agent's machine sees it: (name, mesh, overlay address). */
     fun peers(): List<Triple<String, String, String>> {
         val a = JSONObject(request("GET", "/v1/peers", null, 4000)).optJSONArray("peers") ?: return emptyList()

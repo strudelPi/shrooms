@@ -105,6 +105,9 @@ type Manager struct {
 	// before it is stopped. The conversation is kept and resumed by id.
 	IdleStop time.Duration
 
+	// STT transcribes voice notes; nil when this machine has no model.
+	STT *Transcriber
+
 	ctx context.Context
 
 	mu       sync.Mutex

@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -445,13 +446,33 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
             uploading = ""
         }
     }
-    // Dictation: Claude reads text, so speech becomes text here, to be read
-    // and corrected before it is sent.
-    val dictate = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(),
-    ) { r ->
-        r.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let {
-            input = if (input.isBlank()) it else input.trimEnd() + " " + it
+    // Voice notes: recorded here, transcribed on the agent's machine, and the
+    // text put in the box to be read and corrected before it is sent.
+    val recorder = remember { VoiceRecorder(ctx) }
+    var recording by remember { mutableStateOf(false) }
+    var transcribing by remember { mutableStateOf(false) }
+    val prefs = remember { ctx.getSharedPreferences("agents", android.content.Context.MODE_PRIVATE) }
+    var lang by remember { mutableStateOf(prefs.getString("voice_lang", null) ?: defaultVoiceLang()) }
+    DisposableEffect(Unit) { onDispose { recorder.cancel() } }
+    fun startRecording() {
+        runCatching { recorder.start() }
+            .onSuccess { recording = true }
+            .onFailure { actionError = "could not record: ${it.message}" }
+    }
+    val askMic = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted -> if (granted) startRecording() else actionError = "the microphone was not allowed" }
+    fun stopAndTranscribe() {
+        recording = false
+        val f = recorder.stop() ?: return
+        transcribing = true
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { client.transcribe(o.session, f.name, f.readBytes(), lang) }.also { f.delete() }
+            }.onSuccess { text ->
+                if (text.isNotBlank()) input = if (input.isBlank()) text else input.trimEnd() + " " + text
+            }.onFailure { actionError = it.message ?: "could not transcribe" }
+            transcribing = false
         }
     }
 
@@ -525,23 +546,12 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
             last !is ChatItem.Earlier && last !is ChatItem.Note && !(last is ChatItem.Prompt && !last.open))
     val waiting = items.any { it is ChatItem.Prompt && it.open }
 
-    // Stick to the bottom only when already there; otherwise leave the reader
-    // where they are. Jumping on every event is what threw the view about.
-    val atBottom by remember {
-        derivedStateOf {
-            val li = list.layoutInfo
-            li.totalItemsCount == 0 || (li.visibleItemsInfo.lastOrNull()?.index ?: 0) >= li.totalItemsCount - 2
-        }
-    }
-    var placed by remember(o) { mutableStateOf(false) }
-    val total = items.size + 1 // + the live row
-    LaunchedEffect(items.size, streaming.length / 80, earlier.size) {
-        if (total <= 1) return@LaunchedEffect
-        if (!placed || atBottom) {
-            list.scrollToItem(total - 1)
-            placed = true
-        }
-    }
+    // Laid out from the bottom, as chats are: the newest message is item 0, so
+    // a reader at the bottom stays there as messages arrive and one who has
+    // scrolled up stays where they are — the list keeps its place by key, with
+    // no scrolling done in code. Scrolling in code is what kept throwing the
+    // view to the start of the conversation.
+    val scrolledUp by remember { derivedStateOf { list.firstVisibleItemIndex > 1 } }
 
     val i = info
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).imePadding()) {
@@ -587,34 +597,48 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
             }
         }
 
-        LazyColumn(
-            state = list,
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier.weight(1f).padding(horizontal = 14.dp),
-        ) {
-            // Stable keys: history arriving after the events, or a reply
-            // growing, must not move what the reader is looking at.
-            itemsIndexed(items, key = { idx, _ -> keys[idx] }) { idx, item ->
-                val prev = items.getOrNull(idx - 1)
-                if (item is ChatItem.Earlier && prev !is ChatItem.Earlier) Label("— earlier, from the transcript —")
-                if (item !is ChatItem.Earlier && prev is ChatItem.Earlier) Label("— on this phone —")
-                ChatRow(item) { prompt, allow ->
-                    scope.launch(Dispatchers.IO) {
-                        runCatching { client.answer(o.session, prompt, allow) }
-                            .onFailure { actionError = it.message ?: "could not answer" }
+        Box(Modifier.weight(1f)) {
+            LazyColumn(
+                state = list,
+                reverseLayout = true,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
+            ) {
+                // Item 0, at the bottom: what is happening now.
+                item(key = "live") {
+                    when {
+                        streaming.isNotEmpty() -> Bubble(Palette.Panel) {
+                            MarkdownText(streaming)
+                            Text("▍", color = Palette.Phosphor, style = MaterialTheme.typography.bodyMedium)
+                        }
+                        working && !waiting -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(4.dp)) {
+                            Pulse(Palette.Phosphor); Spacer(Modifier.width(8.dp)); Label("thinking…")
+                        }
+                        else -> Spacer(Modifier.height(4.dp))
+                    }
+                }
+                // Then newest to oldest. Stable keys: history arriving, or a
+                // prompt being answered, must not move what is being read.
+                items(items.size, key = { keys[items.size - 1 - it] }) { r ->
+                    val idx = items.size - 1 - r
+                    val item = items[idx]
+                    val prev = items.getOrNull(idx - 1)
+                    if (item is ChatItem.Earlier && prev !is ChatItem.Earlier) Label("— earlier, from the transcript —")
+                    if (item !is ChatItem.Earlier && prev is ChatItem.Earlier) Label("— on this phone —")
+                    ChatRow(item) { prompt, allow ->
+                        scope.launch(Dispatchers.IO) {
+                            runCatching { client.answer(o.session, prompt, allow) }
+                                .onFailure { actionError = it.message ?: "could not answer" }
+                        }
                     }
                 }
             }
-            item(key = "live") {
-                when {
-                    streaming.isNotEmpty() -> Bubble(Palette.Panel) {
-                        MarkdownText(streaming)
-                        Text("▍", color = Palette.Phosphor, style = MaterialTheme.typography.bodyMedium)
-                    }
-                    working && !waiting -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(4.dp)) {
-                        Pulse(Palette.Phosphor); Spacer(Modifier.width(8.dp)); Label("thinking…")
-                    }
-                    else -> Spacer(Modifier.height(4.dp))
+            if (scrolledUp) {
+                Box(Modifier.align(Alignment.BottomEnd).padding(16.dp).size(40.dp)
+                    .background(Palette.Panel, CircleShape).border(1.dp, Palette.Phosphor, CircleShape)
+                    .clickable { scope.launch { list.animateScrollToItem(0) } },
+                    contentAlignment = Alignment.Center) {
+                    Text("↓", color = Palette.Phosphor, style = MaterialTheme.typography.titleMedium)
                 }
             }
         }
@@ -639,15 +663,26 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
         }
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(10.dp)) {
             ComposerButton("📎") { pickFile.launch("*/*") }
-            ComposerButton("🎤") {
-                val i = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-                    .putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                        android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    // On the phone where it can be: what is said to an agent
-                    // is nobody else's business.
-                    .putExtra(android.speech.RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-                runCatching { dictate.launch(i) }.onFailure { actionError = "no speech recognition on this phone" }
+            when {
+                transcribing -> Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) { Pulse(Palette.Sky, 12) }
+                recording -> Box(Modifier.size(40.dp).clickable { stopAndTranscribe() }, contentAlignment = Alignment.Center) {
+                    Pulse(Palette.Rust, 16)
+                    Text("■", color = Palette.Bone, style = MaterialTheme.typography.labelSmall)
+                }
+                else -> ComposerButton("🎤") {
+                    val has = androidx.core.content.ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.RECORD_AUDIO) ==
+                        android.content.pm.PackageManager.PERMISSION_GRANTED
+                    if (has) startRecording() else askMic.launch(android.Manifest.permission.RECORD_AUDIO)
+                }
             }
+            // The language to transcribe in: naming it halves the time, since
+            // detecting it costs the model a whole extra pass.
+            Text(lang.uppercase(), style = MaterialTheme.typography.labelSmall,
+                color = if (lang == "auto") Palette.Ash else Palette.Sky,
+                modifier = Modifier.clickable {
+                    lang = nextVoiceLang(lang)
+                    prefs.edit().putString("voice_lang", lang).apply()
+                }.padding(horizontal = 4.dp, vertical = 12.dp))
             Box(Modifier.weight(1f)) {
                 OutlinedTextField(
                     value = input, onValueChange = { input = it },
@@ -917,3 +952,10 @@ fun withAttachments(text: String, paths: List<String>): String =
     if (paths.isEmpty()) text
     else (if (text.isEmpty()) "" else "$text\n\n") +
         "Attached from my phone (on this machine):\n" + paths.joinToString("\n") { "- $it" }
+
+private val voiceLangs = listOf("cs", "en", "auto")
+
+/** Czech on a Czech phone, English otherwise; tap to change. */
+fun defaultVoiceLang(): String = if (java.util.Locale.getDefault().language == "cs") "cs" else "en"
+
+fun nextVoiceLang(l: String): String = voiceLangs[(voiceLangs.indexOf(l) + 1) % voiceLangs.size]

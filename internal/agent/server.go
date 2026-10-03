@@ -36,6 +36,7 @@ func Handler(log *slog.Logger, m *Manager, who Who) http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{name}/settings", h.update)
 	mux.HandleFunc("GET /v1/sessions/{name}/history", h.history)
 	mux.HandleFunc("POST /v1/sessions/{name}/files", h.upload)
+	mux.HandleFunc("POST /v1/sessions/{name}/transcribe", h.transcribe)
 	mux.HandleFunc("GET /v1/sessions/{name}/events", h.events)
 	mux.HandleFunc("POST /v1/sessions/{name}/messages", h.message)
 	mux.HandleFunc("POST /v1/sessions/{name}/prompts/{id}", h.answer)
@@ -160,6 +161,34 @@ func (h *handler) upload(w http.ResponseWriter, r *http.Request) {
 	}
 	h.log.Info("file received", "session", s.name, "path", path, "by", h.caller(r))
 	writeJSON(w, http.StatusCreated, map[string]string{"path": path})
+}
+
+// transcribe keeps a voice note like any other file and returns its text,
+// transcribed on this machine: ?name=<file name>&lang=<code or auto>. The
+// phone puts the text in the message box, to be read and corrected first.
+func (h *handler) transcribe(w http.ResponseWriter, r *http.Request) {
+	s, ok := h.session(w, r)
+	if !ok {
+		return
+	}
+	if h.m.STT == nil {
+		fail(w, http.StatusNotImplemented, fmt.Errorf("no speech-to-text on this machine: see shrooms-agent --help (-stt-model)"))
+		return
+	}
+	path, err := s.Upload(r.URL.Query().Get("name"), http.MaxBytesReader(w, r.Body, MaxUpload))
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	start := time.Now()
+	text, err := h.m.STT.Transcribe(r.Context(), path, r.URL.Query().Get("lang"))
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	h.log.Info("voice note transcribed", "session", s.name, "took", time.Since(start).Round(time.Millisecond),
+		"words", len(strings.Fields(text)), "by", h.caller(r))
+	writeJSON(w, http.StatusOK, map[string]string{"path": path, "text": text})
 }
 
 // history is the conversation before this agent's own events, from Claude

@@ -153,3 +153,13 @@ class LinksTest {
         assertEquals("plain", withAttachments("plain", emptyList()))
     }
 }
+
+class VoiceLangTest {
+    @Test fun theLanguageCyclesThroughCzechEnglishAndAuto() {
+        assertEquals("en", nextVoiceLang("cs"))
+        assertEquals("auto", nextVoiceLang("en"))
+        assertEquals("cs", nextVoiceLang("auto"))
+        // Something unknown from an older version lands on a real choice.
+        assertEquals("cs", nextVoiceLang("de"))
+    }
+}

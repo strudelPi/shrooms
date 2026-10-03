@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -44,6 +45,10 @@ func run() error {
 	claude := flag.String("claude", "claude", "the claude binary")
 	sock := flag.String("socket", "/run/shrooms/shrooms.sock", "the shrooms daemon's control socket")
 	verbose := flag.Bool("verbose", false, "log Claude Code's stderr")
+	sttModel := flag.String("stt-model", filepath.Join(home, ".local", "share", "whisper", "ggml-large-v3-turbo-q5_0.bin"),
+		"whisper.cpp model for voice notes; voice notes are off when it is missing")
+	sttBin := flag.String("stt-bin", "whisper-cli", "whisper.cpp's CLI")
+	sttThreads := flag.Int("stt-threads", 12, "threads for transcription")
 	flag.Parse()
 
 	level := slog.LevelInfo
@@ -89,6 +94,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if _, err := os.Stat(*sttModel); err != nil {
+		log.Info("voice notes off: no speech-to-text model", "model", *sttModel)
+	} else if bin, err := exec.LookPath(*sttBin); err != nil {
+		log.Info("voice notes off: whisper.cpp not found", "bin", *sttBin)
+	} else {
+		m.STT = &agent.Transcriber{Whisper: bin, Model: *sttModel, FFmpeg: "ffmpeg", FFprobe: "ffprobe", Threads: *sttThreads}
+		log.Info("voice notes on", "model", filepath.Base(*sttModel))
+	}
+
 	names := &peerNames{}
 	names.update(st)
 	go func() {

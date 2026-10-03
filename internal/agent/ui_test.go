@@ -160,7 +160,7 @@ func TestHistoryFromTheTranscript(t *testing.T) {
 	m := newTestManager(t, t.TempDir())
 	m.Create("proj", t.TempDir())
 	s, _ := m.Get("proj")
-	s.claudeID = "conv-1"
+	s.convID = "conv-1"
 
 	all, err := s.History(time.Time{}, 0)
 	if err != nil {

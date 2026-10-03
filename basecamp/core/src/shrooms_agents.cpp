@@ -27,6 +27,7 @@ namespace {
 
 constexpr size_t kMaxBody = 8 * 1024 * 1024;
 constexpr size_t kKeepEvents = 4000;
+constexpr size_t kMaxReply = 512 * 1024;
 
 std::string jsonEscape(const std::string& s)
 {
@@ -301,7 +302,7 @@ void Hub::stopFollower()
     if (follower_.joinable()) follower_.join();
 }
 
-void Hub::watch(const std::string& address, const std::string& session)
+void Hub::watch(const std::string& address, const std::string& session, int tail)
 {
     stopFollower();
     {
@@ -312,10 +313,10 @@ void Hub::watch(const std::string& address, const std::string& session)
         error_.clear();
     }
     unsigned gen = generation_.load();
-    follower_ = std::thread(&Hub::follow, this, address, session, gen);
+    follower_ = std::thread(&Hub::follow, this, address, session, tail, gen);
 }
 
-void Hub::follow(std::string address, std::string session, unsigned generation)
+void Hub::follow(std::string address, std::string session, int tail, unsigned generation)
 {
     long long after = 0;
     while (generation_.load() == generation) {
@@ -326,6 +327,8 @@ void Hub::follow(std::string address, std::string session, unsigned generation)
         if (fd >= 0) {
             followFd_ = fd;
             std::string target = "/v1/sessions/" + session + "/events?after=" + std::to_string(after);
+            // Only on the first connection: a reconnect is catching up.
+            if (after == 0 && tail > 0) target += "&tail=" + std::to_string(tail);
             if (sendAll(fd, requestText(address, "GET", target, "", true), err)) {
                 std::string buf;
                 bool inBody = false;
@@ -390,16 +393,22 @@ std::string Hub::events(long long after)
 {
     std::lock_guard<std::mutex> g(mu_);
     long long from = after < base_ ? base_ : after;
-    std::string out = "{\"next\":" + std::to_string(base_ + static_cast<long long>(events_.size())) +
-                      ",\"connected\":" + (connected_ ? "true" : "false") +
-                      ",\"error\":\"" + jsonEscape(error_) + "\",\"events\":[";
-    bool first = true;
-    for (long long i = from - base_; i < static_cast<long long>(events_.size()); i++) {
-        if (!first) out += ",";
-        out += events_[static_cast<size_t>(i)];
-        first = false;
+    // At most about kMaxReply per answer, and "more" when there is more: a
+    // long session's backlog is megabytes of tool output, and one reply that
+    // size through Basecamp's IPC is the likely reason conversations showed
+    // empty after switching to them (2026-10-03; not proven).
+    std::string body;
+    long long i = from - base_;
+    for (; i < static_cast<long long>(events_.size()); i++) {
+        const std::string& ev = events_[static_cast<size_t>(i)];
+        if (!body.empty() && body.size() + ev.size() > kMaxReply) break;
+        if (!body.empty()) body += ",";
+        body += ev;
     }
-    return out + "]}";
+    bool more = i < static_cast<long long>(events_.size());
+    return "{\"next\":" + std::to_string(base_ + i) + ",\"more\":" + (more ? "true" : "false") +
+           ",\"connected\":" + (connected_ ? "true" : "false") +
+           ",\"error\":\"" + jsonEscape(error_) + "\",\"events\":[" + body + "]}";
 }
 
 namespace {

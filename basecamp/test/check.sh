@@ -213,6 +213,10 @@ expect "PROBED=desk|office|fdb0:9afc:a5ef:1111:2222:3333:4444:5555;laptop|office
 # History before the conversation, the conversation's rows in order, the
 # setting note, and the prompt still open.
 expect "ROWS=you,said,you,said,tool,output,note,note,you,tool,prompt" "the conversation rows are wrong"
+# Opened at its tail, and read in pieces until caught up (the stand-in core
+# answers four events at a time, as the real one caps its replies).
+expect "WATCH=fdb0:9afc:a5ef:388c:8264:7716:36fc:64eb shrooms 300" "the session was not opened at its tail"
+expect "LOADED=11/11" "the session was not read to the end straight after opening"
 expect "STREAMING=[Pushing **now**…] WORKING=true" "the streamed reply is not shown as it grows"
 expect "CONTEXT=67% of 1M MODEL=opus-5 1m" "context and model are not read from the session"
 expect "PROMPT open=true id=p1" "the waiting prompt is not offered"

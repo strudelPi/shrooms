@@ -794,11 +794,11 @@ std::string ShroomsCoreImpl::agentsFind(const std::string& peers)
     return hub().found();
 }
 
-std::string ShroomsCoreImpl::agentWatch(const std::string& address, const std::string& session)
+std::string ShroomsCoreImpl::agentWatch(const std::string& address, const std::string& session, const std::string& tail)
 {
     if (!agents::isMeshAddress(address)) return errorJson("not a mesh address", address);
     if (!safeSession(session)) return errorJson("not a session name", session);
-    hub().watch(address, session);
+    hub().watch(address, session, std::atoi(tail.c_str()));
     return "{\"ok\":true}";
 }
 

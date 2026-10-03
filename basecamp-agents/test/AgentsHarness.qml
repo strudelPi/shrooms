@@ -48,6 +48,7 @@ Item {
     property string lastFind: ""
     property string lastPost: ""
     property string lastDelete: ""
+    property string lastWatch: ""
     property var jobsNow: []
 
     Main {
@@ -62,12 +63,14 @@ Item {
                 // The same machine answering on a second mesh address.
                 if (method === "agentsFind") { top.lastFind = args[0]
                     return JSON.stringify(top.hosts.concat([Object.assign({}, top.hosts[0], { mesh: "home", address: "fd7b::1" })])) }
-                if (method === "agentWatch") return JSON.stringify({ ok: true })
+                if (method === "agentWatch") { top.lastWatch = args.join(" "); return JSON.stringify({ ok: true }) }
                 if (method === "agentEvents") {
                     top.eventCalls++
                     var after = Number(args[0])
-                    return JSON.stringify({ next: top.events.length, connected: true, error: "",
-                                            events: after >= top.events.length ? [] : top.events.slice(after) })
+                    // In pieces, as the core answers: the view must keep reading.
+                    var upto = Math.min(top.events.length, after + 4)
+                    return JSON.stringify({ next: upto, more: upto < top.events.length, connected: true, error: "",
+                                            events: after >= top.events.length ? [] : top.events.slice(after, upto) })
                 }
                 if (method === "agentGet" && String(args[1]).indexOf("/v1/conversations") === 0) return JSON.stringify({ conversations: [
                     { id: "c-new", dir: "/home/someone/shrooms", modified: "2026-10-03T15:00:00+02:00", size: 1000,
@@ -98,12 +101,18 @@ Item {
             view.openSession(view.agentHosts[0], "shrooms")
         }
     }
+    // Just after opening, before the view's next poll: everything is read.
+    Timer {
+        interval: 1600; running: true
+        onTriggered: console.error("LOADED=" + view.agentNext + "/" + top.events.length)
+    }
     Timer {
         interval: 3500; running: true
         onTriggered: {
             var kinds = []
             for (var i = 0; i < chatCount(); i++) kinds.push(view.chatModelAt(i).kind)
             console.error("ROWS=" + kinds.join(","))
+            console.error("WATCH=" + top.lastWatch)
             console.error("STREAMING=[" + view.agentStreaming + "] WORKING=" + view.agentWorking
                           + " CONTEXT=" + view.contextLabel(view.agentInfo.context_used, view.agentInfo.context_window)
                           + " MODEL=" + view.shortModel(view.agentInfo.model))

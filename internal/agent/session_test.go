@@ -450,3 +450,30 @@ func TestATildeIsThisMachinesHome(t *testing.T) {
 		t.Errorf("~/proj became %s", in.Dir)
 	}
 }
+
+// Opening a long session at its tail: only the last N events, the newest
+// last — and a reconnect is never trimmed, since it is catching up.
+func TestEventsCanStartAtTheTail(t *testing.T) {
+	m := newTestManager(t, t.TempDir())
+	m.Create("proj", t.TempDir())
+	s, _ := m.Get("proj")
+	var last uint64
+	for i := 0; i < 3; i++ {
+		s.Send(fmt.Sprint("turn ", i), "")
+		last = waitFor(t, s, last, func(e Event) bool { return claudeType(e) == "result/success" }).Seq
+	}
+	all, _ := s.Since(0)
+	srv := httptest.NewServer(Handler(slog.New(slog.DiscardHandler), m, nil))
+	t.Cleanup(srv.Close)
+
+	tail := readSSE(t, srv.URL+"/v1/sessions/proj/events?tail=3", "", 0)
+	if len(tail) != 3 || tail[2].Seq != all[len(all)-1].Seq {
+		t.Fatalf("tail=3 gave %d events ending at %v; the session has %d ending at %d",
+			len(tail), tail, len(all), all[len(all)-1].Seq)
+	}
+	mid := all[2].Seq
+	rest := readSSE(t, srv.URL+fmt.Sprintf("/v1/sessions/proj/events?tail=3&after=%d", mid), "", 0)
+	if len(rest) != len(all)-3 {
+		t.Errorf("a reconnect after %d with tail=3 gave %d events, want all %d after it", mid, len(rest), len(all)-3)
+	}
+}

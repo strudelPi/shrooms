@@ -352,6 +352,18 @@ func (h *handler) events(w http.ResponseWriter, r *http.Request) {
 	}
 	backlog, ch := s.Since(after)
 	defer s.Unsubscribe(ch)
+	// ?tail=N on a first connection: only the last N events of the backlog.
+	// A long session holds thousands — this conversation passed 1,500 in a
+	// day, much of it tool output — and a client that replays them all
+	// scrolls through its own history for seconds (the phone) or receives
+	// megabytes in one message (Basecamp). The client says what it skipped
+	// and can ask for everything. A reconnect (after > 0) is never trimmed:
+	// it is catching up, and must not lose anything.
+	if v := r.URL.Query().Get("tail"); v != "" && after == 0 {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && len(backlog) > n {
+			backlog = backlog[len(backlog)-n:]
+		}
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

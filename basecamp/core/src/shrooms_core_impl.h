@@ -341,9 +341,10 @@ public:
 
     /**
      * @brief Follows one session's live stream in the background, replacing
-     * whatever was followed before. Returns {"ok":true} or an error.
+     * whatever was followed before, from its last `tail` events ("0" for all).
+     * Returns {"ok":true} or an error.
      */
-    std::string agentWatch(const std::string& address, const std::string& session);
+    std::string agentWatch(const std::string& address, const std::string& session, const std::string& tail);
 
     /**
      * @brief The followed session's events after a local index, already

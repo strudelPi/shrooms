@@ -80,6 +80,9 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.PI
 
+/** How many of a session's latest events open with it; the rest on request. */
+const val SESSION_TAIL = 300
+
 /** A machine running shrooms-agent, reached at [address] on [mesh]. */
 data class AgentHost(
     val name: String,
@@ -513,6 +516,8 @@ private fun Field(label: String, value: String, onChange: (String) -> Unit) {
 @Composable
 private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     var askDelete by remember { mutableStateOf(false) }
+    // Everything rather than the tail, once asked for.
+    var loadAll by remember(o) { mutableStateOf(false) }
     val client = remember(o.address) { AgentClient(o.address) }
     val events = remember(o) { mutableStateListOf<AgentEvent>() }
     var earlier by remember(o) { mutableStateOf<List<Earlier>>(emptyList()) }
@@ -608,25 +613,43 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     // Follow the session for as long as it is on screen. A dropped connection
     // is normal on mobile data: reconnect from the last event seen, which the
     // server keeps, so nothing is lost or shown twice.
-    LaunchedEffect(o) {
+    //
+    // It opens at the last SESSION_TAIL events, and what arrives is applied in
+    // batches: a long session replayed one event and one re-render at a time
+    // scrolled through its own history for ten seconds before settling.
+    LaunchedEffect(o, loadAll) {
+        events.clear()
+        streaming = ""
         val after = java.util.concurrent.atomic.AtomicLong(0)
+        val pending = java.util.concurrent.ConcurrentLinkedQueue<AgentEvent>()
+        launch {
+            while (isActive) {
+                if (pending.isNotEmpty()) {
+                    val batch = ArrayList<AgentEvent>()
+                    while (true) batch += pending.poll() ?: break
+                    var text = streaming
+                    val kept = ArrayList<AgentEvent>()
+                    for (e in batch) {
+                        if (e.kind == "partial") { text += e.data.optString("text"); continue }
+                        // The whole message replaces what was streamed of it.
+                        val t = e.data.optString("type")
+                        if (e.kind == "claude" && (t == "assistant" || t == "result")) text = ""
+                        kept += e
+                    }
+                    streaming = text
+                    if (kept.isNotEmpty()) events.addAll(kept)
+                    connError = ""
+                }
+                delay(120)
+            }
+        }
         while (isActive) {
             val r = withContext(Dispatchers.IO) {
                 runCatching {
-                    client.follow(o.session, after.get(), stop = { !isActive }) { e ->
+                    client.follow(o.session, after.get(), stop = { !isActive },
+                        tail = if (loadAll) 0 else SESSION_TAIL) { e ->
                         if (e.kind != "partial") after.set(e.seq)
-                        scope.launch {
-                            connError = ""
-                            when {
-                                e.kind == "partial" -> streaming += e.data.optString("text")
-                                else -> {
-                                    // The whole message replaces what was streamed of it.
-                                    val t = e.data.optString("type")
-                                    if (e.kind == "claude" && (t == "assistant" || t == "result")) streaming = ""
-                                    events += e
-                                }
-                            }
-                        }
+                        pending += e
                     }
                 }
             }
@@ -733,6 +756,16 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                             runCatching { client.answer(o.session, prompt, allow) }
                                 .onFailure { actionError = it.message ?: "could not answer" }
                         }
+                    }
+                }
+                // At the top (the list is laid out from the bottom): what was
+                // left out, and how to have it.
+                val firstSeq = events.firstOrNull()?.seq ?: 0
+                if (!loadAll && firstSeq > 1) {
+                    item(key = "earlier-events") {
+                        Text("— ${firstSeq - 1} earlier events not loaded · load them —",
+                            style = MaterialTheme.typography.labelSmall, color = Palette.Phosphor,
+                            modifier = Modifier.fillMaxWidth().clickable { loadAll = true }.padding(vertical = 12.dp))
                     }
                 }
             }

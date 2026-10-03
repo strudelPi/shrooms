@@ -103,7 +103,7 @@ On each machine's overlay addresses, port 7387.
 | `POST /v1/sessions` | `{name, dir, auto_approve?}` — create; `{name, resume: id}` — continue an existing conversation, in the directory it ran in |
 | `DELETE /v1/sessions/{name}` | stop and forget |
 | `PATCH /v1/sessions/{name}`, `POST …/settings` | `{auto_approve}` (POST for clients that cannot send PATCH) |
-| `GET /v1/sessions/{name}/events?after=N` | the session's events, then a live stream (SSE); `partial` events carry reply text as it is written, unnumbered and never kept |
+| `GET /v1/sessions/{name}/events?after=N[&tail=T]` | the session's events, then a live stream (SSE); `partial` events carry reply text as it is written, unnumbered and never kept. `tail=T` with `after=0` starts at the last T events instead of the first: both apps open a session at its last 300 and offer to load the rest |
 | `GET /v1/sessions/{name}/history?limit=N` | what was said before this agent had the conversation, from Claude Code's transcript (its last 4 MB) |
 | `POST /v1/sessions/{name}/messages` | `{text}` — a user turn |
 | `POST /v1/sessions/{name}/prompts/{id}` | `{allow, message?}` — answer a permission prompt |
@@ -138,6 +138,14 @@ on Basecamp) kept on the agent's machine and named by path in the next
 message; voice notes, recorded on the device and transcribed on the agent's
 machine by whisper.cpp, so no audio reaches a speech service. The phone
 notifies when a session needs you or replied.
+
+A conversation opens at its last 300 events, with a link to load the rest: a
+long session holds thousands, and replaying them all made the phone scroll for
+ten seconds before settling at the end. The phone also applies arriving events
+in batches every 120 ms rather than one by one. In Basecamp, the core answers
+the view in pieces of about half a megabyte and the view reads on until caught
+up: a session's whole backlog in one reply through Basecamp's IPC is the likely
+reason some conversations showed empty after switching to them (not proven).
 
 ## Open
 

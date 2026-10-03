@@ -2,6 +2,7 @@
 // will: find, read, follow. Run by test/agents_check.sh; not part of the build.
 #include "../core/src/shrooms_agents.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -47,7 +48,7 @@ int main(int argc, char** argv)
           "%s", found.substr(0, 200).c_str());
     CHECK(found.find("8.8.8.8") == std::string::npos, "a public address was probed");
 
-    hub.watch(addr, session);
+    hub.watch(addr, session, 0);
     std::string ev;
     for (int i = 0; i < 50; i++) {
         ev = hub.events(0);
@@ -59,6 +60,48 @@ int main(int argc, char** argv)
     long long next = std::atoll(ev.c_str() + 8);
     std::string more = hub.events(next);
     CHECK(more.find("\"events\":[]") != std::string::npos, "events after next: %s", more.substr(0, 120).c_str());
+
+    // The whole backlog, read in pieces: no reply much over half a megabyte,
+    // and every event once, in order.
+    {
+        for (int i = 0; i < 50; i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (hub.events(0).find("\"more\":true") == std::string::npos && i > 10) break;
+        }
+        long long at = 0, last = 0, pieces = 0;
+        size_t biggest = 0;
+        bool ordered = true, more = true;
+        while (more && pieces < 10000) {
+            std::string r = hub.events(at);
+            pieces++;
+            biggest = std::max(biggest, r.size());
+            more = r.find("\"more\":true") != std::string::npos;
+            at = std::atoll(r.c_str() + 8);
+            // Each event starts {"seq":; inside a string it would be {\"seq\":.
+            for (size_t p = r.find("{\"seq\":"); p != std::string::npos; p = r.find("{\"seq\":", p + 1)) {
+                long long s = std::atoll(r.c_str() + p + 7);
+                if (s != last + 1) ordered = false;
+                last = s;
+            }
+        }
+        std::printf("     backlog: %lld events in %lld pieces, the biggest %zu bytes\n", last, pieces, biggest);
+        CHECK(ordered && last > 0, "events skipped or repeated, last %lld", last);
+        CHECK(biggest < 2 * 512 * 1024 || pieces == 1, "a reply of %zu bytes", biggest);
+
+        // Opened at its tail: the last five, nothing before.
+        hub.watch(addr, session, 5);
+        std::string t;
+        for (int i = 0; i < 50; i++) {
+            t = hub.events(0);
+            if (t.find("\"seq\":") != std::string::npos) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        t = hub.events(0);
+        size_t p = t.find("{\"seq\":");
+        long long first = p == std::string::npos ? -1 : std::atoll(t.c_str() + p + 7);
+        CHECK(first >= last - 4 && first > 1, "the tail started at %lld of %lld", first, last);
+    }
 
     // Go escapes <, > and & as \u sequences: they must come back as written.
     CHECK(field("{\"text\":\"A \\u0026 B \\u003cx\\u003e \\\"q\\\" Vašek\"}", "text") == "A & B <x> \"q\" Vašek",

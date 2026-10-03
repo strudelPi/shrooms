@@ -210,7 +210,11 @@ Item {
         return null
     }
 
-    function openSession(h, s) {
+    // Sessions open at their last agentTail events; "load them" asks for all.
+    readonly property int agentTail: 300
+    property bool agentLoadAll: false
+    function openSession(h, s, all) {
+        root.agentLoadAll = !!all
         root.agentOpen = { address: h.address, name: h.name, mesh: h.mesh, session: s }
         root.agentEventsList = []
         root.agentEarlier = []
@@ -219,7 +223,7 @@ Item {
         root.chatStick = true
         root.agentAttached = []
         chatModel.clear()
-        agentCall("agentWatch", [h.address, s])
+        agentCall("agentWatch", [h.address, s, String(all ? 0 : agentTail)])
         // After the first paint: a call during construction of what it fills
         // freezes the view.
         Qt.callLater(function() {
@@ -227,6 +231,7 @@ Item {
             var r = agentCall("agentGet", [root.agentOpen.address,
                 "/v1/sessions/" + root.agentOpen.session + "/history?limit=30"])
             if (r && r.history) { root.agentEarlier = r.history; rebuildChat() }
+            pumpAgent()
         })
     }
 
@@ -250,6 +255,9 @@ Item {
         root.agentEventsList = evs
         root.agentStreaming = streaming
         rebuildChat()
+        // The core answers in pieces of about half a megabyte: keep reading
+        // until caught up, without waiting for the next tick.
+        if (r.more) Qt.callLater(pumpAgent)
     }
 
     function epoch(s) { var t = Date.parse(s || ""); return isNaN(t) ? 0 : t }
@@ -899,6 +907,21 @@ Item {
                         Text { anchors.centerIn: parent; text: "↓"; color: cPhosphor; font.pixelSize: root.fs(16) }
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                                     onClicked: { root.chatStick = true; chatList.positionViewAtEnd() } }
+                    }
+                    header: Item {
+                        readonly property int firstSeq: root.agentEventsList.length > 0 ? root.agentEventsList[0].seq : 0
+                        width: chatList.width
+                        height: visible ? root.sz(30) : 0
+                        visible: !root.agentLoadAll && firstSeq > 1
+                        Lnk {
+                            anchors.centerIn: parent
+                            text: "— " + (parent.firstSeq - 1) + " earlier events not loaded · load them —"
+                            font.pixelSize: root.fs(10)
+                            onClicked: {
+                                var h = { address: root.agentOpen.address, name: root.agentOpen.name, mesh: root.agentOpen.mesh }
+                                root.openSession(h, root.agentOpen.session, true)
+                            }
+                        }
                     }
                     footer: Item {
                         width: chatList.width

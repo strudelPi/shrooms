@@ -219,9 +219,12 @@ class AgentClient(address: String) {
      * caller reconnects from there and loses nothing — the server keeps every
      * event, numbered.
      */
-    fun follow(session: String, after: Long, stop: () -> Boolean, onEvent: (AgentEvent) -> Unit): Long {
+    fun follow(session: String, after: Long, stop: () -> Boolean, tail: Int = 0, onEvent: (AgentEvent) -> Unit): Long {
         var last = after
-        val c = open("GET", "/v1/sessions/${enc(session)}/events?after=$after", 10_000)
+        // tail: on a first connection, only the last N events — a long
+        // session's whole history is thousands, and replaying them is slow.
+        val t = if (tail > 0 && after == 0L) "&tail=$tail" else ""
+        val c = open("GET", "/v1/sessions/${enc(session)}/events?after=$after$t", 10_000)
         // The server sends a comment every 20 seconds; 60 without anything is a
         // dead connection, which on mobile data is the normal way they end.
         c.readTimeout = 60_000

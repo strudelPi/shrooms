@@ -61,8 +61,11 @@ public:
     /** What the last rounds found, as a JSON array. */
     std::string found();
 
-    /** Follows one session's live stream, replacing whatever was followed. */
-    void watch(const std::string& address, const std::string& session);
+    /**
+     * Follows one session's live stream, replacing whatever was followed.
+     * tail > 0 starts at the last `tail` events instead of the first.
+     */
+    void watch(const std::string& address, const std::string& session, int tail);
 
     /**
      * The watched session's events after a local index, as
@@ -115,7 +118,7 @@ private:
     };
     long addJob(const std::string& kind, const std::string& name);
     void finishJob(long id, bool ok, const std::string& path, const std::string& text, const std::string& error);
-    void follow(std::string address, std::string session, unsigned generation);
+    void follow(std::string address, std::string session, int tail, unsigned generation);
     void stopFollower();
 
     std::mutex mu_;

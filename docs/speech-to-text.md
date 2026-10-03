@@ -1,6 +1,6 @@
 # Faster speech-to-text for voice notes
 
-**Status:** measured 2026-10-03; not switched yet — a decision below.
+**Status:** measured 2026-10-03, Czech included; not switched yet — a decision below.
 
 Voice notes to agents are transcribed on the agent's machine
 ([docs/agents.md](agents.md)). The first engine, whisper.cpp with
@@ -34,13 +34,28 @@ Quality on the real voice note:
 - **base** — fastest, and wrong in places ("a configured idea local AI model",
   "run on an hardware").
 
+### Czech (measured 2026-10-03)
+
+A real 9-second Czech voice note from the phone, same laptop:
+
+| engine | time | text |
+|---|---|---|
+| whisper turbo, `-l cs`, as the agent runs it | 8.7 s | …když **Parkýt** bude **funbovat**. |
+| whisper turbo, `-l auto` | 29 s | "a my." — the language was not recognised |
+| **parakeet v3 q4_k**, no language given | **1.5–1.9 s** | …když **parky** bude **fungovat**. |
+| parakeet v3 q8_0 | 1.6–2.0 s | the same as q4_k |
+
+Parakeet found the language itself, got every ordinary word right where
+Whisper mangled one, and took a fifth of the time. Neither knew "Parakeet".
+A shorter `-ac` (384) made Whisper repeat the sentence five times — the clip
+window rule in stt.go matters for it, and does not exist for Parakeet.
+
 ## What Parakeet changes besides speed
 
 - **No language choice.** Parakeet v3 detects the language itself, with no
   extra pass — Whisper's auto-detection doubled its time, which is why the
   apps grew a CS/EN/AUTO switch. That switch could go.
-- **Czech is supported** (v3 covers 25 European languages). Not measured yet:
-  needs a Czech voice note.
+- **Czech works** (v3 covers 25 European languages): measured above.
 - It runs in whisper.cpp's own build (`parakeet-cli`, upstream since
   2026-10), with ggml models from `ggml-org/parakeet-GGUF` on Hugging Face —
   no new dependency.

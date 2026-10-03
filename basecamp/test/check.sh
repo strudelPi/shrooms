@@ -207,6 +207,9 @@ shot=${AGENTS_SHOT:-$work/agents.png}
 out=$(run "$QML" -I "$work/agents" "$work/agents/AgentsHarness.qml" "$shot")
 echo "$out" | grep -E "^qml: (HOSTS|PROBED|ROWS|STREAMING|PROMPT|CALLS|ATTACHED|SENT|CONVERSATIONS|TAKEOVER)" || true
 expect() { echo "$out" | grep -qF "$1" || { echo "FAIL: $2"; exit 1; }; }
+# The first one also says why, when the view did not load at all: a QML
+# module the runner lacks (QtQuick.Dialogs, 2026-10-03) prints nothing else.
+echo "$out" | grep -qF "HOSTS=" || { echo "$out" | head -20; echo "FAIL: the view did not load"; exit 1; }
 expect "HOSTS=1 SESSIONS=2" "the agents were not listed"
 # This device first: an agent on the machine Basecamp runs on is no peer of it.
 expect "PROBED=desk|office|fdb0:9afc:a5ef:1111:2222:3333:4444:5555;laptop|office|fdb0:9afc:a5ef:388c" "this device's own agent is not looked for"

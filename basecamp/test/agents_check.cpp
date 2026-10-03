@@ -57,7 +57,11 @@ int main(int argc, char** argv)
     }
     CHECK(ev.find("\"connected\":true") != std::string::npos && ev.find("\"seq\":1,") != std::string::npos,
           "%s", ev.substr(0, 200).c_str());
+    // Read to the end (the core answers in pieces); after that, nothing.
     long long next = std::atoll(ev.c_str() + 8);
+    for (int i = 0; i < 10000 && hub.events(next).find("\"more\":true") != std::string::npos; i++)
+        next = std::atoll(hub.events(next).c_str() + 8);
+    next = std::atoll(hub.events(next).c_str() + 8);
     std::string more = hub.events(next);
     CHECK(more.find("\"events\":[]") != std::string::npos, "events after next: %s", more.substr(0, 120).c_str());
 

@@ -26,6 +26,20 @@ android {
         ndk { abiFilters += "arm64-v8a" }
     }
 
+    // The preview's own key, kept in android/preview.keystore (not in git).
+    // The debug key will not do: the build runs in a fresh container each
+    // time, which makes a new debug key each time, and Android refuses to
+    // update an app whose signature changed ("conflicts with an existing
+    // package", 2026-10-03).
+    signingConfigs {
+        create("preview") {
+            storeFile = rootProject.file("preview.keystore")
+            storePassword = "android"
+            keyAlias = "preview"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         debug { isMinifyEnabled = false }
         // Deliberately unsigned. The release key lives on the F-Droid host and
@@ -33,7 +47,7 @@ android {
         // debug-signed APK would also be skipped by `fdroid update`.
         release { isMinifyEnabled = false }
         // A test build that installs NEXT TO the real app rather than over it:
-        // another package, signed with the build's own debug key. For when the
+        // another package, signed with its own key (above). For when the
         // release key's host is unreachable (2026-10-03, the office router) and
         // a feature still needs trying. It opens straight into Agents and never
         // touches the VPN, which stays with the real app — so the phone keeps
@@ -42,7 +56,7 @@ android {
             initWith(getByName("debug"))
             applicationIdSuffix = ".preview"
             versionNameSuffix = "-preview"
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("preview")
             matchingFallbacks += "debug"
         }
     }

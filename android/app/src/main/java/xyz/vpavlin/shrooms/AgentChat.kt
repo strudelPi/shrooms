@@ -45,7 +45,13 @@ sealed class ChatItem {
         val description: String,
         val open: Boolean,
         val answer: String,
+        /** Not empty when the model is asking something (AskUserQuestion), not asking leave. */
+        val questions: List<Question> = emptyList(),
     ) : ChatItem()
+
+    /** One question of an AskUserQuestion, with the options offered. */
+    data class Question(val question: String, val header: String, val multi: Boolean, val options: List<Option>)
+    data class Option(val label: String, val description: String)
 
     /** A turn ended: how, and what it cost. */
     data class Done(override val seq: Long, override val time: Long, val ok: Boolean, val note: String) : ChatItem()
@@ -91,8 +97,9 @@ object AgentChat {
         var lastStop = -1L
         for (e in events) {
             when (e.kind) {
-                "answer" -> answers[e.data.optString("prompt")] =
-                    if (e.data.optBoolean("allow")) "allowed${by(e)}" else "denied${by(e)}"
+                "answer" -> answers[e.data.optString("prompt")] = e.data.optJSONObject("answers")
+                    ?.let { a -> "answered: " + a.keys().asSequence().map { a.optString(it) }.joinToString("; ") + by(e) }
+                    ?: if (e.data.optBoolean("allow")) "allowed${by(e)}" else "denied${by(e)}"
                 "stopped" -> lastStop = e.seq
             }
         }
@@ -154,6 +161,7 @@ object AgentChat {
                     description = r.optString("description"),
                     open = answer.isEmpty(),
                     answer = answer,
+                    questions = if (r.optString("tool_name") == QUESTION_TOOL) questions(r.optJSONObject("input")) else emptyList(),
                 )
             }
             "result" -> {
@@ -175,11 +183,48 @@ object AgentChat {
      */
     fun summarise(input: JSONObject?): String {
         if (input == null) return ""
+        // AskUserQuestion: what it asks, not its JSON.
+        input.optJSONArray("questions")?.let { qs ->
+            return (0 until qs.length()).mapNotNull { qs.optJSONObject(it)?.optString("question") }.joinToString("  ·  ")
+        }
         for (k in listOf("command", "file_path", "pattern", "path", "url", "query", "description", "prompt")) {
             val v = input.optString(k)
             if (v.isNotEmpty()) return v
         }
         return input.toString().take(200)
+    }
+
+    const val QUESTION_TOOL = "AskUserQuestion"
+
+    fun questions(input: JSONObject?): List<ChatItem.Question> {
+        val qs = input?.optJSONArray("questions") ?: return emptyList()
+        return (0 until qs.length()).mapNotNull { qs.optJSONObject(it) }.map { q ->
+            val os = q.optJSONArray("options")
+            ChatItem.Question(
+                q.optString("question"), q.optString("header"), q.optBoolean("multiSelect"),
+                (0 until (os?.length() ?: 0)).mapNotNull { os!!.optJSONObject(it) }
+                    .map { ChatItem.Option(it.optString("label"), it.optString("description")) },
+            )
+        }
+    }
+
+    /**
+     * The answers to send for a question card: per question, the options
+     * picked (in the order offered, joined by ", " as Claude Code does) or, in
+     * their place, what was typed. Null until every question has one.
+     */
+    fun answersFor(questions: List<ChatItem.Question>, picked: Map<String, Set<String>>, typed: Map<String, String>): Map<String, String>? {
+        val out = mutableMapOf<String, String>()
+        for (q in questions) {
+            val t = typed[q.question]?.trim().orEmpty()
+            val p = q.options.map { it.label }.filter { it in picked[q.question].orEmpty() }
+            out[q.question] = when {
+                t.isNotEmpty() -> t
+                p.isNotEmpty() -> p.joinToString(", ")
+                else -> return null
+            }
+        }
+        return out
     }
 
     private fun resultText(content: Any?): String = when (content) {

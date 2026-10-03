@@ -159,6 +159,30 @@ Item {
                           + " searchOpen=" + view.searchOpen + " stick=" + view.chatStick
                           + " reach=" + view.tailReaching(300, 1000, 500) + "," + view.tailReaching(0, 1000, 5))
 
+            // A question from the model: a card of its own, the options picked
+            // (two of three, given in the order offered), and the answer sent.
+            var qs = [ { question: "Which user?", header: "VPS user", multiSelect: false,
+                         options: [ { label: "agent", description: "no sudo" }, { label: "root", description: "" } ] },
+                       { question: "What else?", header: "Extras", multiSelect: true,
+                         options: [ { label: "voice", description: "" }, { label: "backups", description: "" }, { label: "logs", description: "" } ] } ]
+            top.events.push(ev(top.events.length + 1, "claude", { type: "control_request", request_id: "q1",
+                request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: { questions: qs } } }))
+            view.pumpAgent()
+            var qrow = null
+            for (i = 0; i < chatCount(); i++) if (view.chatModelAt(i).kind === "question") qrow = view.chatModelAt(i)
+            var before = view.questionAnswers("q1", qs)
+            view.pickOption("q1", "Which user?", "root", false)
+            view.pickOption("q1", "Which user?", "agent", false)
+            view.pickOption("q1", "What else?", "logs", true)
+            view.pickOption("q1", "What else?", "voice", true)
+            view.answerQuestion("q1", qs)
+            var posted = JSON.parse(top.lastPost)
+            top.events.push(ev(top.events.length + 1, "answer", { prompt: "q1", allow: true, answers: posted.answers }, "desk"))
+            view.pumpAgent()
+            for (i = 0; i < chatCount(); i++) if (view.chatModelAt(i).kind === "question") qrow = view.chatModelAt(i)
+            console.error("QUESTION open=" + (qrow !== null) + " before=" + before + " posted=" + JSON.stringify(posted)
+                          + " after=" + qrow.open + " [" + qrow.answer + "]")
+
             // Taking over a conversation from a terminal.
             view.loadConversations(view.agentHosts[0])
             console.error("CONVERSATIONS=" + view.conversations.length

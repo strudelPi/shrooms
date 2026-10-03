@@ -26,6 +26,48 @@ class AgentChatTest {
             "tool_name":"Bash","input":{"command":"make test"},"description":"Run tests"}}"""),
     )
 
+    // AskUserQuestion, as Claude Code 2.1.288 sends it: its own card with the
+    // questions and options, not a permission, and once answered, what was said.
+    private val asking = listOf(
+        ev(1, "claude", """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"AskUserQuestion",
+            "input":{"questions":[{"question":"Which user?","header":"VPS user","multiSelect":false,
+            "options":[{"label":"agent","description":"no sudo"},{"label":"root","description":""}]}]}}]}}"""),
+        ev(2, "claude", """{"type":"control_request","request_id":"q1","request":{"subtype":"can_use_tool",
+            "tool_name":"AskUserQuestion","input":{"questions":[{"question":"Which user?","header":"VPS user","multiSelect":false,
+            "options":[{"label":"agent","description":"no sudo"},{"label":"root","description":""}]}]}}}"""),
+    )
+
+    @Test fun aQuestionIsShownAsOne() {
+        val items = AgentChat.items(asking)
+        assertEquals("the tool row says what it asks, not its JSON", "Which user?", (items[0] as ChatItem.Tool).summary)
+        val p = items[1] as ChatItem.Prompt
+        assertTrue(p.open)
+        assertEquals(listOf(ChatItem.Question("Which user?", "VPS user", false,
+            listOf(ChatItem.Option("agent", "no sudo"), ChatItem.Option("root", "")))), p.questions)
+        val answered = AgentChat.items(asking + ev(3, "answer",
+            """{"prompt":"q1","allow":true,"answers":{"Which user?":"agent"}}""", by = "nothing.office"))
+        val q = answered.filterIsInstance<ChatItem.Prompt>().single()
+        assertFalse(q.open)
+        assertEquals("answered: agent from nothing.office", q.answer)
+        // A permission prompt carries no questions.
+        assertTrue(AgentChat.items(asked).filterIsInstance<ChatItem.Prompt>().single().questions.isEmpty())
+    }
+
+    @Test fun answersAreSentOnlyWhenEveryQuestionHasOne() {
+        val qs = listOf(
+            ChatItem.Question("Which?", "", false, listOf(ChatItem.Option("a", ""), ChatItem.Option("b", ""))),
+            ChatItem.Question("Also?", "", true, listOf(ChatItem.Option("x", ""), ChatItem.Option("y", ""), ChatItem.Option("z", ""))),
+        )
+        assertEquals(null, AgentChat.answersFor(qs, mapOf("Which?" to setOf("a")), emptyMap()))
+        // Several picked: in the order offered, joined as Claude Code joins them.
+        assertEquals(mapOf("Which?" to "a", "Also?" to "x, z"),
+            AgentChat.answersFor(qs, mapOf("Which?" to setOf("a"), "Also?" to setOf("z", "x")), emptyMap()))
+        // Typed words stand in for a pick; blank ones do not.
+        assertEquals(mapOf("Which?" to "neither, really", "Also?" to "y"),
+            AgentChat.answersFor(qs, mapOf("Also?" to setOf("y")), mapOf("Which?" to "  neither, really ")))
+        assertEquals(null, AgentChat.answersFor(qs, mapOf("Also?" to setOf("y")), mapOf("Which?" to "  ")))
+    }
+
     // A search result jumps to its event: the first of that event's items, in a
     // list laid out from the bottom with the live row as item 0.
     @Test fun aSearchResultIsFoundInTheList() {

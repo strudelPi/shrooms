@@ -320,14 +320,15 @@ func (h *handler) answer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Allow   bool   `json:"allow"`
-		Message string `json:"message"`
+		Allow   bool              `json:"allow"`
+		Message string            `json:"message"`
+		Answers map[string]string `json:"answers"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.Answer(r.PathValue("id"), req.Allow, req.Message, h.caller(r)); err != nil {
+	if err := s.Answer(r.PathValue("id"), req.Allow, req.Message, req.Answers, h.caller(r)); err != nil {
 		fail(w, http.StatusConflict, err)
 		return
 	}

@@ -107,7 +107,7 @@ On each machine's overlay addresses, port 7387.
 | `GET /v1/sessions/{name}/events?after=N[&tail=T]` | the session's events, then a live stream (SSE); `partial` events carry reply text as it is written, unnumbered and never kept. `tail=T` with `after=0` starts at the last T events instead of the first: both apps open a session at its last 300 and offer to load the rest |
 | `GET /v1/sessions/{name}/history?limit=N` | what was said before this agent had the conversation, from Claude Code's transcript (its last 4 MB) |
 | `POST /v1/sessions/{name}/messages` | `{text}` — a user turn |
-| `POST /v1/sessions/{name}/prompts/{id}` | `{allow, message?}` — answer a permission prompt |
+| `POST /v1/sessions/{name}/prompts/{id}` | `{allow, message?, answers?}` — answer a permission prompt. A question from the model (Claude Code's AskUserQuestion tool) arrives as a prompt for that tool, even under `--dangerously-skip-permissions`, and is answered with `allow` and `answers` (question → chosen label, labels joined by ", ", or the person's own words), which the agent puts into the tool's input; allowed without answers it is refused (409), since the model would read it as "the user did not answer". Auto-approve never answers a question |
 | `POST /v1/sessions/{name}/interrupt` | stop the current turn |
 | `POST /v1/sessions/{name}/files?name=` | the bytes of a file (50 MB at most); kept under the agent's own directory; returns `{path}` for the next message to name |
 | `POST /v1/sessions/{name}/transcribe?name=&lang=` | a voice note, kept like a file and transcribed on this machine; returns `{path, text}`. Parakeet v3 (the default) detects the language and ignores `lang`; with a Whisper model (`--stt-model`), naming it halves the time |
@@ -143,6 +143,11 @@ service. Voice notes are on when the agent finds the model
 (`~/.local/share/whisper/ggml-parakeet-tdt-0.6b-v3-q4_k.bin`, from
 `ggml-org/parakeet-GGUF`) and `parakeet-cli` on its PATH. The phone
 notifies when a session needs you or replied.
+
+Questions the model asks show as a card of their own: each question with
+the options offered (several where it allows), or an answer in your own
+words, sent together, or declined. Commands are shown by their first line,
+the rest on a tap, as their output is.
 
 Search (both apps) finds words anywhere in a conversation, on the agent's
 machine, so it covers what the app has not loaded and what was said in a

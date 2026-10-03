@@ -147,7 +147,7 @@ func TestAPromptIsAnsweredFromADevice(t *testing.T) {
 				t.Fatalf("while a prompt waits the session is %+v", in)
 			}
 
-			if err := s.Answer("req-1", allow, "not on a Friday", "nothing"); err != nil {
+			if err := s.Answer("req-1", allow, "not on a Friday", nil, "nothing"); err != nil {
 				t.Fatal(err)
 			}
 			end := waitFor(t, s, 0, func(e Event) bool { return claudeType(e) == "result/success" })
@@ -173,7 +173,7 @@ func TestAPromptIsAnsweredFromADevice(t *testing.T) {
 			if in := s.Info(); in.Pending != 0 || in.State != Idle {
 				t.Errorf("after the turn ended (seq %d) the session is %+v", end.Seq, in)
 			}
-			if err := s.Answer("req-1", true, "", "nothing"); err == nil {
+			if err := s.Answer("req-1", true, "", nil, "nothing"); err == nil {
 				t.Error("the same prompt could be answered twice")
 			}
 		})
@@ -219,7 +219,7 @@ func TestAPromptDiesWithItsProcess(t *testing.T) {
 	if in := s.Info(); in.Pending != 0 || in.State != Idle {
 		t.Errorf("after the process ended the session is %+v", in)
 	}
-	if err := s.Answer("req-1", true, "", ""); err == nil {
+	if err := s.Answer("req-1", true, "", nil, ""); err == nil {
 		t.Error("a prompt of a dead process could be answered")
 	}
 }
@@ -250,7 +250,7 @@ func TestOnlyAnIdleProcessIsStopped(t *testing.T) {
 	if !s.Info().Running {
 		t.Fatal("a process waiting for an answer was stopped as idle")
 	}
-	s.Answer("req-1", true, "", "")
+	s.Answer("req-1", true, "", nil, "")
 	waitFor(t, s, 0, func(e Event) bool { return claudeType(e) == "result/success" })
 	s.stopIfIdle(time.Now().Add(24*time.Hour), time.Minute)
 	waitFor(t, s, 0, func(e Event) bool { return e.Kind == "stopped" })

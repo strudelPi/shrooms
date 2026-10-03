@@ -18,6 +18,8 @@ import (
 //	  --resume was given), then for each user turn:
 //	"run <x>"  → a tool_use, a control_request can_use_tool, and after the
 //	             control_response either a tool result or the denial reason;
+//	"ask <q>"  → an AskUserQuestion, asked even with skipped permissions,
+//	             replying with the answer it was given;
 //	"slow"     → a turn that only ends when interrupted;
 //	anything   → an assistant text echoing it;
 //	each turn ending with a result. EOF on stdin ends the process.
@@ -131,6 +133,39 @@ func fakeClaude() {
 				text("done")
 			} else {
 				text(fmt.Sprintf("denied: %v", inner["message"]))
+			}
+			result("success")
+		case strings.HasPrefix(content, "ask "):
+			// AskUserQuestion: asked through can_use_tool even with
+			// --dangerously-skip-permissions (observed 2026-10-03), and
+			// answered by allowing it with input.answers filled in.
+			q := strings.TrimPrefix(content, "ask ")
+			input := map[string]any{"questions": []any{map[string]any{"question": q, "header": "Pick",
+				"multiSelect": false, "options": []any{
+					map[string]any{"label": "yes", "description": "do it"},
+					map[string]any{"label": "no", "description": "leave it"}}}}}
+			emit(map[string]any{"type": "assistant", "message": map[string]any{"role": "assistant",
+				"content": []any{map[string]any{"type": "tool_use", "id": "toolu_q", "name": "AskUserQuestion", "input": input}}}})
+			emit(map[string]any{"type": "control_request", "request_id": "req-q", "request": map[string]any{
+				"subtype": "can_use_tool", "tool_name": "AskUserQuestion", "input": input}})
+			var resp map[string]any
+			for {
+				resp = next()
+				if resp["type"] == "control_response" {
+					break
+				}
+			}
+			inner := resp["response"].(map[string]any)["response"].(map[string]any)
+			switch {
+			case inner["behavior"] != "allow":
+				text(fmt.Sprintf("denied: %v", inner["message"]))
+			default:
+				ans, _ := inner["updatedInput"].(map[string]any)["answers"].(map[string]any)
+				if len(ans) == 0 {
+					text("The user did not answer the questions.")
+				} else {
+					text(fmt.Sprintf("answered: %v", ans[q]))
+				}
 			}
 			result("success")
 		case content == "slow":

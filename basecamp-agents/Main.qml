@@ -269,6 +269,8 @@ Item {
     }
     function summarise(input) {
         if (!input) return ""
+        // AskUserQuestion: what it asks, not its JSON.
+        if (Array.isArray(input.questions)) return input.questions.map(function(q) { return q.question }).join("  ·  ")
         var ks = ["command", "file_path", "pattern", "path", "url", "query", "description", "prompt"]
         for (var i = 0; i < ks.length; i++) if (input[ks[i]]) return String(input[ks[i]])
         return JSON.stringify(input).slice(0, 200)
@@ -287,7 +289,9 @@ Item {
         var answers = {}, lastStop = -1
         for (var i = 0; i < evs.length; i++) {
             var e = evs[i]
-            if (e.kind === "answer" && e.data) answers[e.data.prompt] = (e.data.allow ? "allowed" : "denied") + (e.by ? " from " + e.by : "")
+            if (e.kind === "answer" && e.data) answers[e.data.prompt] = (e.data.answers
+                ? "answered: " + Object.keys(e.data.answers).map(function(k) { return e.data.answers[k] }).join("; ")
+                : (e.data.allow ? "allowed" : "denied")) + (e.by ? " from " + e.by : "")
             if (e.kind === "stopped") lastStop = e.seq
         }
         var first = 0
@@ -330,6 +334,11 @@ Item {
                     }
                 } else if (d.type === "control_request" && d.request && d.request.subtype === "can_use_tool") {
                     var ans = answers[d.request_id] || (lastStop > e.seq ? "the session stopped before it was answered" : "")
+                    if (d.request.tool_name === "AskUserQuestion") {
+                        add(e, { kind: "question", id: d.request_id, tool: d.request.tool_name, text: summarise(d.request.input),
+                                 qjson: JSON.stringify((d.request.input && d.request.input.questions) || []),
+                                 open: ans === "", answer: ans })
+                    } else
                     add(e, { kind: "prompt", id: d.request_id, tool: d.request.tool_name,
                              text: summarise(d.request.input), description: d.request.description || "",
                              open: ans === "", answer: ans })
@@ -421,7 +430,7 @@ Item {
     function row(it) {
         return { key: it.key, seq: it.seq || 0, kind: it.kind, text: it.text || "", by: it.by || "", time: it.time || 0,
                  earlier: !!it.earlier, error: !!it.error, pid: it.id || "", tool: it.tool || "",
-                 description: it.description || "", open: !!it.open, answer: it.answer || "",
+                 description: it.description || "", open: !!it.open, answer: it.answer || "", qjson: it.qjson || "",
                  blob: JSON.stringify(it) }
     }
 
@@ -532,6 +541,56 @@ Item {
         agentCall("agentPost", [agentOpen.address, "/v1/sessions/" + agentOpen.session + "/prompts/" + id,
                                 JSON.stringify({ allow: allow })])
     }
+    // A question from the model (AskUserQuestion): what has been picked or
+    // typed so far, per prompt and question, kept here so a row rebuilt by
+    // arriving events does not lose it. The rules are the phone's
+    // (AgentChat.answersFor): picks in the order offered, joined by ", ";
+    // typed words in their place; nothing sent until every question has one.
+    property var qPicked: ({})
+    property var qTyped: ({})
+    function pickOption(pid, question, label, multi) {
+        var all = Object.assign({}, qPicked)
+        var mine = Object.assign({}, all[pid] || {})
+        var cur = (mine[question] || []).slice()
+        var at = cur.indexOf(label)
+        if (multi) { if (at >= 0) cur.splice(at, 1); else cur.push(label) }
+        else cur = [label]
+        mine[question] = cur
+        all[pid] = mine
+        root.qPicked = all
+        typeAnswer(pid, question, "")
+    }
+    function typeAnswer(pid, question, text) {
+        var all = Object.assign({}, qTyped)
+        var mine = Object.assign({}, all[pid] || {})
+        mine[question] = text
+        all[pid] = mine
+        root.qTyped = all
+    }
+    function isPicked(pid, question, label) {
+        var p = (qPicked[pid] || {})[question] || []
+        return p.indexOf(label) >= 0
+    }
+    function questionAnswers(pid, questions) {
+        var out = {}
+        for (var i = 0; i < questions.length; i++) {
+            var q = questions[i]
+            var t = String((qTyped[pid] || {})[q.question] || "").trim()
+            var picked = (qPicked[pid] || {})[q.question] || []
+            var p = (q.options || []).map(function(o) { return o.label }).filter(function(l) { return picked.indexOf(l) >= 0 })
+            if (t !== "") out[q.question] = t
+            else if (p.length > 0) out[q.question] = p.join(", ")
+            else return null
+        }
+        return out
+    }
+    function answerQuestion(pid, questions) {
+        var a = questionAnswers(pid, questions)
+        if (!a || !agentOpen) return false
+        return agentCall("agentPost", [agentOpen.address, "/v1/sessions/" + agentOpen.session + "/prompts/" + pid,
+                                       JSON.stringify({ allow: true, answers: a })]) !== null
+    }
+
     function setAutoApprove(on) {
         if (!agentOpen) return
         if (agentCall("agentPost", [agentOpen.address, "/v1/sessions/" + agentOpen.session + "/settings",
@@ -1126,6 +1185,7 @@ Item {
                         required property string description
                         required property bool open
                         required property string answer
+                        required property string qjson
                         width: chatList.width
                         height: crowCol.implicitHeight
 
@@ -1182,12 +1242,20 @@ Item {
                                 }
                             }
 
+                            // A tool it used: the first line of its command, the rest on a click —
+                            // a long script filled the screen (2026-10-03).
                             Text {
+                                id: toolText
+                                property bool expanded: false
+                                readonly property bool more: crow.text.indexOf("\n") >= 0 || crow.text.length > 160
                                 visible: crow.kind === "tool"
                                 width: parent.width
-                                text: "▸ " + crow.text
+                                text: "▸ " + (expanded ? crow.text : crow.text.split("\n")[0].slice(0, 160) + (more ? "  … (click)" : ""))
                                 color: cViolet; font.family: "monospace"; font.pixelSize: root.fs(11)
-                                elide: Text.ElideRight
+                                wrapMode: expanded ? Text.Wrap : Text.NoWrap
+                                elide: expanded ? Text.ElideNone : Text.ElideRight
+                                MouseArea { anchors.fill: parent; enabled: toolText.more; cursorShape: toolText.more ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                            onClicked: toolText.expanded = !toolText.expanded }
                             }
 
                             TextEdit {
@@ -1243,6 +1311,90 @@ Item {
                                         Lnk { text: "DENY"; base: cRust; font.pixelSize: root.fs(12); onClicked: root.answerPrompt(crow.pid, false) }
                                     }
                                     Text { visible: !crow.open; text: crow.answer; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                                }
+                            }
+
+                            // The model asking something: its questions, the options
+                            // to pick, or your own words, then sent together.
+                            Rectangle {
+                                id: qcard
+                                visible: crow.kind === "question"
+                                readonly property var questions: crow.kind === "question" && crow.qjson ? JSON.parse(crow.qjson) : []
+                                width: parent.width
+                                height: visible ? qCol.implicitHeight + root.sz(24) : 0
+                                radius: root.sz(10)
+                                color: cPanel
+                                border.color: crow.open ? cSky : cLine
+                                Column {
+                                    id: qCol
+                                    x: root.sz(12); y: root.sz(12); width: parent.width - root.sz(24)
+                                    spacing: 10
+                                    RowLayout {
+                                        spacing: 8
+                                        Pulse { visible: crow.open; tint: cSky }
+                                        Text { text: crow.open ? "CLAUDE ASKS" : "CLAUDE ASKED"
+                                               color: crow.open ? cSky : cAsh; font.family: "monospace"; font.pixelSize: root.fs(10); font.letterSpacing: 1 }
+                                    }
+                                    Repeater {
+                                        model: qcard.questions
+                                        delegate: Column {
+                                            id: qq
+                                            required property var modelData
+                                            width: qCol.width
+                                            spacing: 6
+                                            Text { visible: !!qq.modelData.header; text: String(qq.modelData.header || "").toUpperCase() + (qq.modelData.multiSelect ? "  ·  pick any" : "")
+                                                   color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(9); font.letterSpacing: 1 }
+                                            Text { width: parent.width; wrapMode: Text.Wrap; text: qq.modelData.question
+                                                   color: cBone; font.family: "monospace"; font.pixelSize: root.fs(12) }
+                                            Repeater {
+                                                model: crow.open ? (qq.modelData.options || []) : []
+                                                delegate: Rectangle {
+                                                    id: opt
+                                                    required property var modelData
+                                                    readonly property bool on: root.isPicked(crow.pid, qq.modelData.question, opt.modelData.label)
+                                                    width: qq.width
+                                                    height: optCol.implicitHeight + root.sz(14)
+                                                    radius: root.sz(8)
+                                                    color: on ? Qt.rgba(0.35, 0.66, 1.0, 0.12) : (optMouse.containsMouse ? cVoid : "transparent")
+                                                    border.color: on ? cSky : cLine
+                                                    Column {
+                                                        id: optCol
+                                                        x: root.sz(10); y: root.sz(7); width: parent.width - root.sz(20)
+                                                        Text { text: opt.modelData.label; color: opt.on ? cSky : cBone; font.family: "monospace"; font.pixelSize: root.fs(12) }
+                                                        Text { visible: !!opt.modelData.description; width: parent.width; wrapMode: Text.Wrap
+                                                               text: opt.modelData.description || ""; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                                                    }
+                                                    MouseArea { id: optMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                                                onClicked: root.pickOption(crow.pid, qq.modelData.question, opt.modelData.label, !!qq.modelData.multiSelect) }
+                                                }
+                                            }
+                                            TextField {
+                                                id: own
+                                                visible: crow.open
+                                                width: qq.width
+                                                placeholderText: "or in your own words"
+                                                placeholderTextColor: cAsh; color: cBone; font.family: "monospace"; font.pixelSize: root.fs(11)
+                                                background: Rectangle { color: cVoid; border.color: own.activeFocus ? cSky : cLine; radius: 6 }
+                                                text: (root.qTyped[crow.pid] || {})[qq.modelData.question] || ""
+                                                onTextEdited: {
+                                                    if (text.trim() !== "") {
+                                                        var all = Object.assign({}, root.qPicked), mine = Object.assign({}, all[crow.pid] || {})
+                                                        delete mine[qq.modelData.question]; all[crow.pid] = mine; root.qPicked = all
+                                                    }
+                                                    root.typeAnswer(crow.pid, qq.modelData.question, text)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    RowLayout {
+                                        visible: crow.open
+                                        spacing: root.sz(16)
+                                        Lnk { readonly property bool ready: root.questionAnswers(crow.pid, qcard.questions) !== null
+                                              text: "ANSWER"; base: ready ? cSky : cAsh; font.pixelSize: root.fs(12)
+                                              onClicked: if (ready) root.answerQuestion(crow.pid, qcard.questions) }
+                                        Lnk { text: "DECLINE"; base: cRust; font.pixelSize: root.fs(12); onClicked: root.answerPrompt(crow.pid, false) }
+                                    }
+                                    Text { visible: !crow.open; width: parent.width; wrapMode: Text.Wrap; text: crow.answer; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
                                 }
                             }
 

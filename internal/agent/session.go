@@ -509,14 +509,33 @@ func (s *Session) Send(text, by string) error {
 
 // Answer answers a permission prompt. Allowing runs the tool with the input
 // it asked for; denying tells the model why, so it can do something else.
-func (s *Session) Answer(prompt string, allow bool, message, by string) error {
+//
+// A question the model asks (the AskUserQuestion tool) arrives the same way,
+// as a prompt for that tool, and is answered by allowing it with answers —
+// question text to the chosen label, or labels joined by ", ", or what the
+// person typed. Allowed without answers it reads to the model as "the user
+// did not answer", so that is refused.
+func (s *Session) Answer(prompt string, allow bool, message string, answers map[string]string, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.answer(prompt, allow, message, by)
+	return s.answer(prompt, allow, message, answers, by)
+}
+
+// QuestionTool is Claude Code's tool for asking the user something.
+const QuestionTool = "AskUserQuestion"
+
+// isQuestion reports whether a can_use_tool request is a question rather than
+// a permission: never answered by auto-approve, which has nothing to say.
+func isQuestion(req json.RawMessage) bool {
+	var r struct {
+		ToolName string `json:"tool_name"`
+	}
+	json.Unmarshal(req, &r)
+	return r.ToolName == QuestionTool
 }
 
 // answer is Answer with s.mu held.
-func (s *Session) answer(prompt string, allow bool, message, by string) error {
+func (s *Session) answer(prompt string, allow bool, message string, answers map[string]string, by string) error {
 	req, ok := s.pending[prompt]
 	if !ok {
 		return fmt.Errorf("no prompt %q is waiting — it may have been answered already", prompt)
@@ -525,11 +544,23 @@ func (s *Session) answer(prompt string, allow bool, message, by string) error {
 		Input json.RawMessage `json:"input"`
 	}
 	json.Unmarshal(req, &r)
+	question := isQuestion(req)
+	if allow && question && len(answers) == 0 {
+		return errors.New("this is a question: answer it, or decline it")
+	}
 	resp := map[string]any{"behavior": "deny", "message": message}
 	if allow {
 		input := r.Input
 		if len(input) == 0 {
 			input = json.RawMessage("{}")
+		}
+		if question {
+			var in map[string]any
+			if err := json.Unmarshal(input, &in); err != nil || in == nil {
+				in = map[string]any{}
+			}
+			in["answers"] = answers
+			input, _ = json.Marshal(in)
 		}
 		resp = map[string]any{"behavior": "allow", "updatedInput": input}
 	} else if message == "" {
@@ -545,7 +576,11 @@ func (s *Session) answer(prompt string, allow bool, message, by string) error {
 		return err
 	}
 	delete(s.pending, prompt)
-	s.record("answer", by, map[string]any{"prompt": prompt, "allow": allow, "message": message})
+	rec := map[string]any{"prompt": prompt, "allow": allow, "message": message}
+	if question && allow {
+		rec["answers"] = answers
+	}
+	s.record("answer", by, rec)
 	if len(s.pending) == 0 {
 		s.state = Working
 	}
@@ -612,7 +647,7 @@ func (s *Session) read(p *proc) {
 			json.Unmarshal(raw, &full)
 			s.pending[head.RequestID] = full.Request
 			s.state = Waiting
-			if s.autoApprove {
+			if s.autoApprove && !isQuestion(full.Request) {
 				autoAnswer = head.RequestID
 			}
 		case head.Type == "result":
@@ -624,7 +659,7 @@ func (s *Session) read(p *proc) {
 		s.record("claude", "", raw)
 		if autoAnswer != "" {
 			// Switched on after this process started, so it still asks.
-			if err := s.answer(autoAnswer, true, "", "auto-approve"); err != nil {
+			if err := s.answer(autoAnswer, true, "", nil, "auto-approve"); err != nil {
 				s.m.log.Warn("could not auto-approve", "session", s.name, "err", err)
 			}
 		}
@@ -679,8 +714,11 @@ func (s *Session) SetAutoApprove(on bool, by string) error {
 	s.mu.Lock()
 	s.autoApprove = on
 	if on {
-		for id := range s.pending {
-			if err := s.answer(id, true, "", "auto-approve"); err != nil {
+		for id, req := range s.pending {
+			if isQuestion(req) {
+				continue
+			}
+			if err := s.answer(id, true, "", nil, "auto-approve"); err != nil {
 				s.m.log.Warn("could not auto-approve", "session", s.name, "err", err)
 			}
 		}

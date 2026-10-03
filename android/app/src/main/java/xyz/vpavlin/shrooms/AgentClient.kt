@@ -173,11 +173,11 @@ class AgentClient(address: String) {
         request("POST", "/v1/sessions/${enc(session)}/messages", JSONObject().put("text", text).toString())
     }
 
-    fun answer(session: String, prompt: String, allow: Boolean, message: String = "") {
-        request(
-            "POST", "/v1/sessions/${enc(session)}/prompts/${enc(prompt)}",
-            JSONObject().put("allow", allow).put("message", message).toString(),
-        )
+    /** Answers a prompt; for a question, [answers] maps each question to its answer. */
+    fun answer(session: String, prompt: String, allow: Boolean, message: String = "", answers: Map<String, String>? = null) {
+        val body = JSONObject().put("allow", allow).put("message", message)
+        if (answers != null) body.put("answers", JSONObject(answers as Map<*, *>))
+        request("POST", "/v1/sessions/${enc(session)}/prompts/${enc(prompt)}", body.toString())
     }
 
     /**

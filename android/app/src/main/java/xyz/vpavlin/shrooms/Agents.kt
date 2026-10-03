@@ -853,9 +853,9 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                     if (item !is ChatItem.Earlier && prev is ChatItem.Earlier) Label("— on this phone —")
                     Box(if (lit != 0L && item.seq == lit && item !is ChatItem.Earlier)
                         Modifier.border(2.dp, Palette.Sky, RoundedCornerShape(12.dp)) else Modifier) {
-                        ChatRow(item) { prompt, allow ->
+                        ChatRow(item) { prompt, allow, answers ->
                             scope.launch(Dispatchers.IO) {
-                                runCatching { client.answer(o.session, prompt, allow) }
+                                runCatching { client.answer(o.session, prompt, allow, answers = answers) }
                                     .onFailure { actionError = it.message ?: "could not answer" }
                             }
                         }
@@ -1004,7 +1004,7 @@ private fun CopyLink(text: String) {
 }
 
 @Composable
-private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean) -> Unit) {
+private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean, Map<String, String>?) -> Unit) {
     when (item) {
         is ChatItem.You -> Bubble(Palette.Phosphor.copy(alpha = 0.08f), Palette.Phosphor.copy(alpha = 0.35f)) {
             Stamp(listOf("YOU", item.by, whenSaid(item.time)).filter { it.isNotEmpty() }.joinToString("  ·  "),
@@ -1027,13 +1027,22 @@ private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean) -> Unit) {
                 MarkdownText(item.text)
             }
         }
-        is ChatItem.Tool -> Row(verticalAlignment = Alignment.Top) {
-            Text("▸ ", style = MaterialTheme.typography.bodySmall, color = Palette.Violet)
-            Text(buildAnnotatedString {
-                withStyle(SpanStyle(color = Palette.Violet, fontWeight = FontWeight.Medium)) { append(item.name) }
-                append("  ")
-                withStyle(SpanStyle(color = Palette.Sky)) { append(item.summary) }
-            }, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        // The first line of what it ran; the rest on a tap — a long script
+        // filled the screen (2026-10-03).
+        is ChatItem.Tool -> {
+            var expanded by remember { mutableStateOf(false) }
+            val more = item.summary.contains('\n') || item.summary.length > 120
+            Row(verticalAlignment = Alignment.Top, modifier = Modifier.clickable(enabled = more) { expanded = !expanded }) {
+                Text("▸ ", style = MaterialTheme.typography.bodySmall, color = Palette.Violet)
+                Text(buildAnnotatedString {
+                    withStyle(SpanStyle(color = Palette.Violet, fontWeight = FontWeight.Medium)) { append(item.name) }
+                    append("  ")
+                    withStyle(SpanStyle(color = Palette.Sky)) {
+                        append(if (expanded) item.summary else item.summary.lineSequence().first().take(120) + if (more) "  …" else "")
+                    }
+                }, style = MaterialTheme.typography.bodySmall,
+                    maxLines = if (expanded) Int.MAX_VALUE else 1, overflow = TextOverflow.Ellipsis)
+            }
         }
         is ChatItem.Output -> {
             var expanded by remember { mutableStateOf(false) }
@@ -1046,7 +1055,7 @@ private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean) -> Unit) {
                 modifier = Modifier.clickable(enabled = more) { expanded = !expanded }.padding(start = 16.dp),
             ) }
         }
-        is ChatItem.Prompt -> PromptCard(item, onAnswer)
+        is ChatItem.Prompt -> if (item.questions.isNotEmpty()) QuestionCard(item, onAnswer) else PromptCard(item, onAnswer)
         is ChatItem.Done -> Label("— ${item.note}${whenSaid(item.time).let { if (it.isEmpty()) "" else "  ·  $it" }}")
         is ChatItem.Stopped -> Label("— asleep; the next message wakes it")
         is ChatItem.Note -> Label("— ${item.text}")
@@ -1059,7 +1068,7 @@ private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean) -> Unit) {
  * the summary is what you are saying yes to.
  */
 @Composable
-private fun PromptCard(p: ChatItem.Prompt, onAnswer: (String, Boolean) -> Unit) {
+private fun PromptCard(p: ChatItem.Prompt, onAnswer: (String, Boolean, Map<String, String>?) -> Unit) {
     Column(
         Modifier.fillMaxWidth()
             .background(Palette.Panel, RoundedCornerShape(12.dp))
@@ -1078,8 +1087,88 @@ private fun PromptCard(p: ChatItem.Prompt, onAnswer: (String, Boolean) -> Unit) 
         }
         if (p.open) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.weight(1f)) { Action("ALLOW", enabled = true) { onAnswer(p.id, true) } }
-                Box(Modifier.weight(1f)) { Action("DENY", enabled = true, danger = true) { onAnswer(p.id, false) } }
+                Box(Modifier.weight(1f)) { Action("ALLOW", enabled = true) { onAnswer(p.id, true, null) } }
+                Box(Modifier.weight(1f)) { Action("DENY", enabled = true, danger = true) { onAnswer(p.id, false, null) } }
+            }
+        } else {
+            Label(p.answer)
+        }
+    }
+}
+
+/**
+ * The model asking something (AskUserQuestion): its questions with the
+ * options it offers, picked by tapping — several where it allows — or
+ * answered in your own words, then sent together.
+ */
+@Composable
+private fun QuestionCard(p: ChatItem.Prompt, onAnswer: (String, Boolean, Map<String, String>?) -> Unit) {
+    var picked by remember(p.id) { mutableStateOf(mapOf<String, Set<String>>()) }
+    var typed by remember(p.id) { mutableStateOf(mapOf<String, String>()) }
+    val answers = AgentChat.answersFor(p.questions, picked, typed)
+    Column(
+        Modifier.fillMaxWidth()
+            .background(Palette.Panel, RoundedCornerShape(12.dp))
+            .border(1.dp, if (p.open) Palette.Sky else Palette.Line, RoundedCornerShape(12.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (p.open) { Pulse(Palette.Sky); Spacer(Modifier.width(8.dp)) }
+            Text(if (p.open) "CLAUDE ASKS" else "CLAUDE ASKED", style = MaterialTheme.typography.labelSmall,
+                color = if (p.open) Palette.Sky else Palette.Ash)
+        }
+        for (q in p.questions) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (q.header.isNotEmpty()) Label(q.header.uppercase() + if (q.multi) "  ·  pick any" else "")
+                Text(q.question, style = MaterialTheme.typography.bodyMedium, color = Palette.Bone)
+                if (p.open) {
+                    for (o in q.options) {
+                        val on = o.label in picked[q.question].orEmpty()
+                        Column(
+                            Modifier.fillMaxWidth()
+                                .border(1.dp, if (on) Palette.Sky else Palette.Line, RoundedCornerShape(10.dp))
+                                .background(if (on) Palette.Sky.copy(alpha = 0.12f) else Color.Transparent, RoundedCornerShape(10.dp))
+                                .clickable {
+                                    val cur = picked[q.question].orEmpty()
+                                    val next = when {
+                                        q.multi && on -> cur - o.label
+                                        q.multi -> cur + o.label
+                                        else -> setOf(o.label)
+                                    }
+                                    picked = picked + (q.question to next)
+                                    typed = typed - q.question
+                                }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        ) {
+                            Text(o.label, style = MaterialTheme.typography.bodyMedium, color = if (on) Palette.Sky else Palette.Bone)
+                            if (o.description.isNotEmpty()) {
+                                Text(o.description, style = MaterialTheme.typography.bodySmall, color = Palette.Ash)
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = typed[q.question].orEmpty(),
+                        onValueChange = { v -> typed = typed + (q.question to v); if (v.isNotBlank()) picked = picked - q.question },
+                        placeholder = { Text("or in your own words", color = Palette.Ash) },
+                        textStyle = MaterialTheme.typography.bodySmall.copy(color = Palette.Bone),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Palette.Sky, unfocusedBorderColor = Palette.Line, cursorColor = Palette.Sky),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+        if (p.open) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.weight(1f)) {
+                    // Closes when the answer is in the session's events.
+                    Action("ANSWER", enabled = answers != null) { onAnswer(p.id, true, answers) }
+                }
+                Box(Modifier.weight(1f)) {
+                    Action("DECLINE", enabled = true, danger = true) { onAnswer(p.id, false, null) }
+                }
             }
         } else {
             Label(p.answer)

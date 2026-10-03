@@ -864,3 +864,11 @@ std::string ShroomsCoreImpl::agentPaste(const std::string& address, const std::s
     if (id == 0) return "{\"none\":true}";
     return "{\"job\":" + std::to_string(id) + "}";
 }
+
+std::string ShroomsCoreImpl::agentDelete(const std::string& address, const std::string& path)
+{
+    if (!agents::safePath(path)) return errorJson("not an agent path", path);
+    std::string out, err;
+    if (!agents::request(address, "DELETE", path, "", 8, out, err)) return errorJson("agent", err);
+    return "{\"ok\":true}";
+}

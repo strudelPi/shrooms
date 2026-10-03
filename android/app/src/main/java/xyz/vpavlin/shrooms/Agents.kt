@@ -11,6 +11,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -229,6 +230,8 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
     val prefs = remember { ctx.getSharedPreferences("agents", android.content.Context.MODE_PRIVATE) }
     var named by remember { mutableStateOf(prefs.getStringSet("named", emptySet())!!.sorted()) }
     var addingMachine by remember { mutableStateOf(false) }
+    // A session awaiting confirmation that it should be deleted.
+    var deleting by remember { mutableStateOf<Pair<AgentHost, AgentSession>?>(null) }
 
     // Refreshed while the list is on screen, so a session that starts waiting
     // for an answer shows it without a pull. What is found is remembered for
@@ -252,6 +255,10 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
             return@Box
         }
         BackHandler { if (creatingOn != null) creatingOn = null else onClose() }
+        deleting?.let { (h, sess) ->
+            DeleteSessionDialog(h.name, h.address, sess, onDismiss = { deleting = null },
+                onDeleted = { deleting = null; refresh++; hosts = null })
+        }
 
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = 20.dp)) {
             Spacer(Modifier.height(12.dp))
@@ -327,7 +334,9 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
                         item(key = "e-" + h.name) { Label("no sessions yet") }
                     }
                     itemsIndexed(h.sessions, key = { _, s -> h.name + "/" + s.name }) { _, s ->
-                        SessionRow(s) { open = OpenSession(h.address, h.name, h.mesh, s.name) }
+                        SessionRow(s, onLongPress = { deleting = h to s }) {
+                            open = OpenSession(h.address, h.name, h.mesh, s.name)
+                        }
                     }
                 }
                 item(key = "bottom") { Spacer(Modifier.height(24.dp)) }
@@ -337,7 +346,8 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
 }
 
 @Composable
-private fun SessionRow(s: AgentSession, onOpen: () -> Unit) {
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private fun SessionRow(s: AgentSession, onLongPress: () -> Unit, onOpen: () -> Unit) {
     val (badge, colour) = when (s.state) {
         "waiting" -> "NEEDS YOU" to Palette.Amber
         "working" -> "WORKING" to Palette.Phosphor
@@ -347,7 +357,7 @@ private fun SessionRow(s: AgentSession, onOpen: () -> Unit) {
         Modifier.fillMaxWidth()
             .background(Palette.Panel.copy(alpha = 0.85f), RoundedCornerShape(12.dp))
             .border(1.dp, if (s.state == "waiting") Palette.Amber else Palette.Line, RoundedCornerShape(12.dp))
-            .clickable { onOpen() }
+            .combinedClickable(onClick = onOpen, onLongClick = onLongPress)
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -502,6 +512,7 @@ private fun Field(label: String, value: String, onChange: (String) -> Unit) {
 
 @Composable
 private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
+    var askDelete by remember { mutableStateOf(false) }
     val client = remember(o.address) { AgentClient(o.address) }
     val events = remember(o) { mutableStateListOf<AgentEvent>() }
     var earlier by remember(o) { mutableStateOf<List<Earlier>>(emptyList()) }
@@ -640,6 +651,11 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     val scrolledUp by remember { derivedStateOf { list.firstVisibleItemIndex > 1 } }
 
     val i = info
+    if (askDelete) {
+        DeleteSessionDialog(o.host, o.address,
+            i ?: AgentSession(o.session, "", "idle", 0, false, 0),
+            onDismiss = { askDelete = false }, onDeleted = { askDelete = false; onBack() })
+    }
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).imePadding()) {
         // Header: the name on its own line, the facts under it, then actions.
         Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp)) {
@@ -676,6 +692,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                 if (working) Link("stop", Palette.Rust) {
                     scope.launch(Dispatchers.IO) { runCatching { client.interrupt(o.session) } }
                 }
+                Link("delete", Palette.Ash) { askDelete = true }
             }
             if (connError.isNotEmpty()) {
                 Text("reconnecting — $connError", style = MaterialTheme.typography.labelSmall, color = Palette.Amber,
@@ -1045,3 +1062,53 @@ private val voiceLangs = listOf("cs", "en", "auto")
 fun defaultVoiceLang(): String = if (java.util.Locale.getDefault().language == "cs") "cs" else "en"
 
 fun nextVoiceLang(l: String): String = voiceLangs[(voiceLangs.indexOf(l) + 1) % voiceLangs.size]
+
+/**
+ * Asks before deleting a session, and says what is lost and what is not: the
+ * session goes, the conversation stays (it can be continued again from
+ * "+ session"). A busy session is stopped mid-turn, so that is said too.
+ */
+@Composable
+private fun DeleteSessionDialog(host: String, address: String, s: AgentSession,
+                                onDismiss: () -> Unit, onDeleted: () -> Unit) {
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        containerColor = Palette.Panel,
+        title = { Text("Delete session \"${s.name}\" on $host?", style = MaterialTheme.typography.titleMedium, color = Palette.Bone) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(deleteSessionText(s.state), style = MaterialTheme.typography.bodySmall, color = Palette.Ash)
+                if (error.isNotEmpty()) Text(error, style = MaterialTheme.typography.bodySmall, color = Palette.Rust)
+            }
+        },
+        confirmButton = {
+            Text("DELETE", style = MaterialTheme.typography.labelSmall,
+                color = if (busy) Palette.Ash else Palette.Rust,
+                modifier = Modifier.clickable(enabled = !busy) {
+                    busy = true
+                    scope.launch {
+                        withContext(Dispatchers.IO) { runCatching { AgentClient(address).remove(s.name) } }
+                            .onSuccess { onDeleted() }
+                            .onFailure { error = it.message ?: "could not delete it"; busy = false }
+                    }
+                }.padding(12.dp))
+        },
+        dismissButton = {
+            Text("CANCEL", style = MaterialTheme.typography.labelSmall, color = Palette.Bone,
+                modifier = Modifier.clickable(enabled = !busy) { onDismiss() }.padding(12.dp))
+        },
+    )
+}
+
+/** What deleting a session in this state does, in words. */
+fun deleteSessionText(state: String): String = buildString {
+    append("This stops the session and removes it from the list. ")
+    append("The Claude Code conversation itself is kept on that machine, and can be continued again from \"+ session\".")
+    when (state) {
+        "working" -> append("\n\nIt is working right now: that turn will be cut off.")
+        "waiting" -> append("\n\nIt is waiting for an answer to a permission prompt, which will be dropped.")
+    }
+}

@@ -227,4 +227,9 @@ expect 'SENT="look\n\nAttached from Basecamp (on this machine):\n- /home/x/.loca
 # continued by id — then opened.
 expect "CONVERSATIONS=2 TERMINAL=cl-logos-vpn NAME=shrooms-2" "conversations, or the name for one, are wrong"
 expect "TAKEOVER name=shrooms-2 resume=c-new open=shrooms-2" "taking a conversation over did not continue it by id"
+# Deleting a session: the dialog says what is kept and what is cut off, and
+# the session is removed by its own path, then closed.
+expect "DELETETEXT=true,true" "the delete dialog does not say what is lost and what is kept"
+expect "DIALOG=true" "delete did not ask first"
+expect "DELETED=/v1/sessions/shrooms-2 OPEN=none" "deleting did not remove the open session"
 echo "agents panel OK${AGENTS_SHOT:+ (picture: $shot)}"

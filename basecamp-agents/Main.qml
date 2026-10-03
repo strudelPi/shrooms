@@ -478,6 +478,62 @@ Item {
     }
 
     ListModel { id: chatModel }
+
+    // What deleting a session in this state does, in words: the same as the
+    // phone's (Agents.kt, deleteSessionText).
+    function deleteSessionText(state) {
+        var t = "This stops the session and removes it from the list. The Claude Code conversation itself is kept on that machine, and can be continued again from \"+ session\"."
+        if (state === "working") t += "\n\nIt is working right now: that turn will be cut off."
+        if (state === "waiting") t += "\n\nIt is waiting for an answer to a permission prompt, which will be dropped."
+        return t
+    }
+    function askDelete() { deleteDialog.open() }
+    function deleteDialogOpen() { return deleteDialog.visible }
+    function deleteOpenSession() {
+        if (!agentOpen) return false
+        var r = agentCall("agentDelete", [agentOpen.address, "/v1/sessions/" + agentOpen.session])
+        if (r === null) return false
+        root.said = "deleted session " + agentOpen.session
+        root.saidBad = false
+        root.agentOpen = null
+        chatModel.clear()
+        refreshAgents()
+        return true
+    }
+
+    // Asks before deleting, and says what is lost and what is not.
+    Dialog {
+        id: deleteDialog
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(root.sz(460), root.width - root.sz(40))
+        padding: root.sz(20)
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: Qt.rgba(0, 0, 0, 0.6) }
+        background: Rectangle { color: cPanel; radius: root.sz(12); border.color: cRust }
+        header: Item {}
+        footer: Item {}
+        contentItem: ColumnLayout {
+            spacing: root.sz(14)
+            Text {
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                text: root.agentOpen ? "Delete session \"" + root.agentOpen.session + "\" on " + root.agentOpen.name + "?" : ""
+                color: cBone; font.family: "monospace"; font.pixelSize: root.fs(14)
+            }
+            Text {
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                text: root.deleteSessionText(root.agentInfo ? root.agentInfo.state : "idle")
+                color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(11)
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                spacing: root.sz(20)
+                Lnk { text: "CANCEL"; base: cBone; font.pixelSize: root.fs(12); onClicked: deleteDialog.close() }
+                Lnk { text: "DELETE"; base: cRust; font.pixelSize: root.fs(12)
+                      onClicked: if (root.deleteOpenSession()) deleteDialog.close() }
+            }
+        }
+    }
     // For the harness, which cannot reach an id inside this component.
     function chatModelCount() { return chatModel.count }
     function chatModelAt(i) { return chatModel.get(i) }
@@ -774,6 +830,7 @@ Item {
                             base: on ? cPhosphor : cAsh
                             onClicked: root.setAutoApprove(!on)
                         }
+                        Lnk { text: "delete"; base: cAsh; onClicked: root.askDelete() }
                         Lnk { visible: root.agentWorking; text: "stop"; base: cRust
                               onClicked: root.agentCall("agentPost", [root.agentOpen.address, "/v1/sessions/" + root.agentOpen.session + "/interrupt", ""]) }
                     }

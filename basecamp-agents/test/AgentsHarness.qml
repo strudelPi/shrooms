@@ -47,6 +47,7 @@ Item {
     property var calls: []
     property string lastFind: ""
     property string lastPost: ""
+    property string lastDelete: ""
     property var jobsNow: []
 
     Main {
@@ -81,6 +82,7 @@ Item {
                     { time: "2026-10-03T14:21:00+02:00", role: "user", text: "Can you check **the** tests?" } ] })
                 if (method === "agentPost") { top.lastPost = args[2]; return JSON.stringify({ ok: true }) }
                 if (method === "agentUpload") return JSON.stringify({ job: 1 })
+                if (method === "agentDelete") { top.lastDelete = args[1]; return JSON.stringify({ ok: true }) }
                 if (method === "agentRecord") return JSON.stringify(args[0] === "stop" ? { job: 2 } : { ok: true })
                 if (method === "agentJobs") return JSON.stringify({ recording: false, jobs: top.jobsNow })
                 return JSON.stringify({ error: "unknown " + method })
@@ -131,6 +133,14 @@ Item {
             view.takeOver(view.agentHosts[0], view.conversations[0])
             var took = JSON.parse(top.lastPost)
             console.error("TAKEOVER name=" + took.name + " resume=" + took.resume + " open=" + view.agentOpen.session)
+
+            // Deleting the open session: asks what the phone asks, then goes.
+            console.error("DELETETEXT=" + (view.deleteSessionText("working").indexOf("cut off") > 0)
+                          + "," + (view.deleteSessionText("idle").indexOf("conversation itself is kept") > 0))
+            view.askDelete()
+            console.error("DIALOG=" + view.deleteDialogOpen())
+            view.deleteOpenSession()
+            console.error("DELETED=" + top.lastDelete + " OPEN=" + (view.agentOpen === null ? "none" : view.agentOpen.session))
             console.error("CALLS=" + top.calls.filter(function(c) { return c.indexOf("agent") === 0 })
                           .filter(function(c, i, a) { return a.indexOf(c) === i }).join(","))
             top.grabToImage(function(img) {

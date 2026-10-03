@@ -198,3 +198,14 @@ class TakeOverTest {
         assertEquals("conversation", sessionNameFor("", emptyList()))
     }
 }
+
+class DeleteSessionTest {
+    // Says the conversation survives, and warns when something is cut off.
+    @Test fun theDialogSaysWhatIsLostAndWhatIsNot() {
+        val idle = deleteSessionText("idle")
+        assertTrue(idle.contains("conversation itself is kept"))
+        assertTrue(!idle.contains("cut off") && !idle.contains("permission prompt"))
+        assertTrue(deleteSessionText("working").contains("cut off"))
+        assertTrue(deleteSessionText("waiting").contains("permission prompt"))
+    }
+}

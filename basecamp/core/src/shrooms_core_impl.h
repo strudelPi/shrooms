@@ -389,4 +389,10 @@ public:
      * image and the view should paste its text as usual.
      */
     std::string agentPaste(const std::string& address, const std::string& session);
+
+    /**
+     * @brief One DELETE to an agent's API: removing a session. Returns
+     * {"ok":true} or an object with an error field.
+     */
+    std::string agentDelete(const std::string& address, const std::string& path);
 };

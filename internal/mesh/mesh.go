@@ -454,6 +454,18 @@ func (m *Mesh) SetListenPort(p uint16) {
 		return
 	}
 	m.port.Store(uint32(p))
+	m.NetworkChanged()
+}
+
+// NetworkChanged tells the mesh this node is on a different network now, for
+// example a phone that moved from Wi-Fi to cellular, or a socket that moved to
+// a new port (SetListenPort).
+//
+// It drops the addresses peers reported seeing us at, since those belong to
+// the old network, and announces right away so peers learn the new ones
+// without waiting for the next tick. On Android the app calls this after
+// ProvideLocalAddrs; the desktop daemon notices a move on its own.
+func (m *Mesh) NetworkChanged() {
 	m.prober.ForgetReflexive()
 	m.requestAnnounce()
 }

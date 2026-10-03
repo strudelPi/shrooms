@@ -461,6 +461,7 @@ step "removing the software"
 # from install.sh, or a symlink into /opt from the portable installer. All three
 # live at the same path, and all three simply go.
 zap "$DESTDIR$BINDIR/shrooms"
+zap "$DESTDIR$BINDIR/shrooms-agent"
 zap "$DESTDIR$BINDIR/logos-vpn"
 zap "$DESTDIR$LIBDIR"
 zap "$DESTDIR$OPTDIR"
@@ -469,6 +470,10 @@ for u in shrooms.service shrooms-resolved.service logos-vpn.service; do
     zap "$DESTDIR/etc/systemd/system/$u"
     zap "$DESTDIR/usr/lib/systemd/system/$u"
 done
+# The agent's user unit. Removing the file is enough for a disabled one; a user
+# who enabled it still has a wants-link in their own ~/.config, which is theirs
+# and is left alone — systemd ignores a link to a unit that no longer exists.
+zap "$DESTDIR/etc/systemd/user/shrooms-agent.service"
 
 # Completion lands in whichever of these the installer found, so all are checked.
 for d in /usr/share/bash-completion/completions \

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Plain HTTP is allowed because the Agents screen talks to shrooms-agent on
+  the owner's other machines (docs/agents.md), and those connections run inside
+  the WireGuard tunnel: the tunnel is the encryption, and only mesh members can
+  reach the agent at all.
+
+  A network security config cannot name an address range, so the allowance is
+  app-wide here and narrowed in code instead: AgentClient refuses any address
+  outside the mesh (fd00::/8 and the 198.18.0.0/15 aliases). Nothing else in
+  the app's own code speaks HTTP; the tunnel itself is Go and not subject to
+  this file.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

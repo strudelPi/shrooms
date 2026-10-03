@@ -71,4 +71,9 @@ dependencies {
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // JVM unit tests. org.json in a JVM test is Android's stub, which throws on
+    // every call; the real one stands in for it.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

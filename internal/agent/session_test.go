@@ -419,3 +419,18 @@ func readSSE(t *testing.T, url, lastID string, want int) []Event {
 		}
 	}
 }
+
+// "~" is the agent's own home: the phone cannot know where that is.
+func TestATildeIsThisMachinesHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	os.Mkdir(filepath.Join(home, "proj"), 0o700)
+	m := newTestManager(t, t.TempDir())
+	in, err := m.Create("p", "~/proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Dir != filepath.Join(home, "proj") {
+		t.Errorf("~/proj became %s", in.Dir)
+	}
+}

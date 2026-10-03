@@ -32,6 +32,9 @@ stage() {
              "$root"/etc/logos-vpn "$root"/var/lib/logos-vpn
 
     : > "$root"/usr/local/bin/shrooms                       # make install, or the wrapper
+    : > "$root"/usr/local/bin/shrooms-agent                 # make install, docs/agents.md
+    mkdir -p "$root"/etc/systemd/user
+    : > "$root"/etc/systemd/user/shrooms-agent.service
     : > "$root"/usr/local/bin/logos-vpn                     # the pre-rename name
     : > "$root"/usr/local/lib/shrooms/liblogosdelivery.so
     : > "$root"/usr/local/lib/shrooms/register-dns          # the resolver registrar
@@ -81,6 +84,8 @@ stage_hosts "$H"
 run_uninstall "$R" "$H" --purge --yes
 
 gone "$R/usr/local/bin/shrooms"                              "the binary or wrapper goes"
+gone "$R/usr/local/bin/shrooms-agent"                        "the agent goes"
+gone "$R/etc/systemd/user/shrooms-agent.service"             "the agent's user unit goes"
 gone "$R/usr/local/bin/logos-vpn"                            "the pre-rename binary goes"
 gone "$R/usr/local/lib/shrooms"                              "the library directory goes, registrar and all"
 gone "$R/opt/shrooms"                                        "the portable install goes"

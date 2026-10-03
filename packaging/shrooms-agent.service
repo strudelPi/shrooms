@@ -1,0 +1,25 @@
+# shrooms-agent: this machine's Claude Code sessions, served to the owner's
+# other devices over the mesh (docs/agents.md).
+#
+# A user unit, not a system one: sessions run as the user whose Claude Code
+# they are — that user's settings, permissions, credentials and files. Run
+# as root, every session could do anything on the machine.
+#
+#   systemctl --user enable --now shrooms-agent
+#   loginctl enable-linger $USER    # keep it running while logged out
+#
+# Serves on every mesh this device is in; to limit that, override ExecStart
+# with --meshes office,home (systemctl --user edit shrooms-agent).
+[Unit]
+Description=shrooms-agent: Claude Code sessions over the mesh
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/shrooms-agent
+Restart=on-failure
+RestartSec=10
+# Claude Code is usually installed per user; make sure its usual homes are found.
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

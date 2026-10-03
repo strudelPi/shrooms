@@ -136,6 +136,11 @@ install: check-lib
 	CGO_LDFLAGS="-L$(abspath $(LD_LIB)) -llogosdelivery -Wl,-rpath,$(LIBDIR)" 		$(GO) build -trimpath $(GOTAGS) -ldflags "-X main.version=$(VERSION)" 		-o $(DESTDIR)$(PREFIX)/bin/shrooms ./cmd/shrooms
 	install -d $(DESTDIR)/etc/systemd/system
 	install -m 0644 packaging/shrooms.service $(DESTDIR)/etc/systemd/system/
+	@# shrooms-agent (docs/agents.md): pure Go, no library, and a user unit —
+	@# it runs as the user whose Claude Code sessions it serves, never as root.
+	$(GO) build -trimpath -o $(DESTDIR)$(PREFIX)/bin/shrooms-agent ./cmd/shrooms-agent
+	install -d $(DESTDIR)/etc/systemd/user
+	install -m 0644 packaging/shrooms-agent.service $(DESTDIR)/etc/systemd/user/
 	install -d $(DESTDIR)$(PREFIX)/share/bash-completion/completions
 	install -m 0644 packaging/shrooms.bash $(DESTDIR)$(PREFIX)/share/bash-completion/completions/shrooms
 	@echo
@@ -143,12 +148,16 @@ install: check-lib
 	@echo "  $(PREFIX)/bin/shrooms"
 	@echo "  $(LIBDIR)/"
 	@echo "  /etc/systemd/system/shrooms.service"
+	@echo "  $(PREFIX)/bin/shrooms-agent, /etc/systemd/user/shrooms-agent.service"
 	@echo "  $(PREFIX)/share/bash-completion/completions/shrooms"
 	@echo
 	@echo "next:"
 	@echo "  sudo shrooms init --relay --name $$(hostname)   # or: join <KEY>"
 	@echo "  sudo systemctl daemon-reload"
 	@echo "  sudo systemctl enable --now shrooms"
+	@echo
+	@echo "agents on the mesh (optional, as yourself — not root):"
+	@echo "  systemctl --user enable --now shrooms-agent"
 	@echo
 	@echo "completion applies to new shells; for this one:"
 	@echo "  source $(PREFIX)/share/bash-completion/completions/shrooms"

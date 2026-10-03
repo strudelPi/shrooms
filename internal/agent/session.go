@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -155,6 +156,15 @@ func (m *Manager) save() error {
 func (m *Manager) Create(name, dir string) (Info, error) {
 	if !validName.MatchString(name) {
 		return Info{}, fmt.Errorf("a session name is letters, digits, dot, dash and underscore: %q", name)
+	}
+	// "~" is this machine's home: a phone cannot know where that is, and
+	// shrooms-agent runs as the user whose home it is.
+	if dir == "~" || strings.HasPrefix(dir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return Info{}, err
+		}
+		dir = filepath.Join(home, strings.TrimPrefix(dir, "~"))
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {

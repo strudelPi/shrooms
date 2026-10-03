@@ -96,6 +96,7 @@ class MainActivity : ComponentActivity() {
                 var addingMesh by remember { mutableStateOf(false) }
                 var inSettings by remember { mutableStateOf(false) }
                 var inviting by remember { mutableStateOf(false) }
+                var inAgents by remember { mutableStateOf(false) }
                 // Which picture the graph draws. It is set in settings and read
                 // by the mesh screen, so it belongs to neither of them — and it
                 // is saveable because a rotation that quietly reverts a setting
@@ -171,6 +172,11 @@ class MainActivity : ComponentActivity() {
                             meshLabel = "",
                             onClose = { inviting = false },
                         )
+                    } else if (inAgents) {
+                        // The agents on the owner's other machines
+                        // (docs/agents.md). Back is handled inside, where it
+                        // leaves a conversation before it leaves the list.
+                        AgentsScreen(peers = snap.peers, onClose = { inAgents = false })
                     } else if (inSettings) {
                         // System back leaves settings rather than the app: this
                         // is a screen swapped in by state, not an Activity, so
@@ -200,6 +206,7 @@ class MainActivity : ComponentActivity() {
                             onAddMesh = { addingMesh = true },
                             onSettings = { inSettings = true },
                             onInvite = { inviting = true },
+                            onAgents = { inAgents = true },
                             onLeftMesh = {
                                 // The tunnel is built from the config at
                                 // connect time, so a mesh added, removed or
@@ -610,6 +617,7 @@ private fun MeshScreen(
     onAddMesh: () -> Unit = {},
     onSettings: () -> Unit = {},
     onInvite: () -> Unit = {},
+    onAgents: () -> Unit = {},
     onLeftMesh: () -> Unit = {},
 ) {
     // Leaving edits the config; the running session still holds the mesh it
@@ -1163,6 +1171,13 @@ private fun MeshScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = Palette.Phosphor,
                 modifier = Modifier.clickable { onInvite() },
+            )
+            Spacer(Modifier.width(16.dp))
+            Text(
+                "agents",
+                style = MaterialTheme.typography.bodySmall,
+                color = Palette.Phosphor,
+                modifier = Modifier.clickable { onAgents() },
             )
             Spacer(Modifier.width(16.dp))
             Text(

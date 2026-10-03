@@ -3,7 +3,8 @@
 **Status:** stage 1 (the server, `shrooms-agent`) built 2026-10-03 and run
 end to end: a session on the laptop, driven from the VPS over the office mesh,
 waited on a real Claude Code permission prompt, was approved remotely, and
-finished — every action attributed to `vps.office`. Stage 2 (Android) next.
+finished — every action attributed to `vps.office`. Stage 2 (the Android
+"Agents" screen) built the same day; not yet run on a phone.
 
 Talk to the Claude Code sessions on every machine you own, from the phone,
 over the mesh — and approve what they want to do from there. It replaces `cl`

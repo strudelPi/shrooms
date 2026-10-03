@@ -6,8 +6,6 @@
 
     <group android:pivotX="54" android:pivotY="54" android:scaleX="0.667" android:scaleY="0.667">
     <!-- mycelium: the mesh, where mycelium actually lives -->
-    <path android:pathData="" android:strokeColor="#35F0A0" android:strokeWidth="2.6" android:strokeAlpha="0.35" android:strokeLineCap="round"/>
-    <path android:pathData="" android:strokeColor="#35F0A0" android:strokeWidth="1.1" android:strokeLineCap="round"/>
 
     <path android:pathData="M 4 94.0 L 104 94.0" android:strokeColor="#3A2A1F" android:strokeWidth="1.4"/>
 

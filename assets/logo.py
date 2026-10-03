@@ -542,6 +542,10 @@ def render_vector(path):
     parts.append("    </group>")
     parts.append("</vector>")
 
+    # A path with no data draws nothing — and Android refuses the whole
+    # drawable for it, so a mark without a network (the agents one) lost its
+    # launcher icon entirely (2026-10-03).
+    parts = [p for p in parts if 'android:pathData=""' not in p]
     with open(path, "w") as f:
         f.write("\n".join(parts) + "\n")
     return path
@@ -591,6 +595,8 @@ def render_svg(path):
                      f'fill="{hexa(VIOLET)}"/>')
     parts.append("</svg>")
 
+    # Empty paths, as above: harmless in a browser, but not worth shipping.
+    parts = [p for p in parts if ' d=""' not in p]
     with open(path, "w") as f:
         f.write("\n".join(parts))
     return path

@@ -40,13 +40,24 @@ type proc struct {
 // control requests. Without it, and with --print, anything that would prompt
 // is denied automatically and the model is told the user refused (observed on
 // Claude Code 2.1.287).
-func claudeArgs(resume string) []string {
+//
+// --include-partial-messages streams the reply as it is written, so a phone
+// shows it growing rather than all at once at the end of a turn.
+//
+// autoApprove is the desktop's --dangerously-skip-permissions, per session:
+// nothing asks. The session also answers any prompt that arrives anyway
+// (Session.read), so switching it on mid-turn takes effect at once.
+func claudeArgs(resume string, autoApprove bool) []string {
 	args := []string{
 		"-p",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
+		"--include-partial-messages",
 		"--permission-prompt-tool", "stdio",
+	}
+	if autoApprove {
+		args = append(args, "--dangerously-skip-permissions")
 	}
 	if resume != "" {
 		args = append(args, "--resume", resume)
@@ -54,8 +65,8 @@ func claudeArgs(resume string) []string {
 	return args
 }
 
-func startProc(ctx context.Context, log *slog.Logger, bin, dir, resume string) (*proc, error) {
-	cmd := exec.CommandContext(ctx, bin, claudeArgs(resume)...)
+func startProc(ctx context.Context, log *slog.Logger, bin, dir, resume string, autoApprove bool) (*proc, error) {
+	cmd := exec.CommandContext(ctx, bin, claudeArgs(resume, autoApprove)...)
 	cmd.Dir = dir
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

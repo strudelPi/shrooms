@@ -27,6 +27,9 @@ type Event struct {
 	//   message  a user turn sent from a device: {"text"}
 	//   answer   a permission prompt answered: {"prompt","allow","message"}
 	//   stopped  the process ended: {"reason"}
+	//   partial  reply text as it is written: {"text"}. Live only — never
+	//            kept or numbered (its Seq is the last real event's), since
+	//            the whole message follows as a claude event.
 	Kind string `json:"kind"`
 	// By is the device that caused it, for message and answer.
 	By   string          `json:"by,omitempty"`
@@ -51,6 +54,15 @@ type Info struct {
 	Running  bool      `json:"running"`
 	LastSeq  uint64    `json:"last_seq"`
 	LastTime time.Time `json:"last_time,omitempty"`
+
+	// AutoApprove: nothing asks, as with --dangerously-skip-permissions.
+	AutoApprove bool `json:"auto_approve"`
+	// Context is how much of the model's context window the conversation
+	// fills, as of the last reply: what decides when it will be compacted.
+	ContextUsed   uint64 `json:"context_used,omitempty"`
+	ContextWindow uint64 `json:"context_window,omitempty"`
+	// Preview is the start of the last thing the model said.
+	Preview string `json:"preview,omitempty"`
 }
 
 // Session is one conversation in one directory.
@@ -67,6 +79,11 @@ type Session struct {
 	state    State
 	proc     *proc
 	lastUsed time.Time
+
+	autoApprove bool
+	ctxUsed     uint64
+	ctxWindow   uint64
+	preview     string
 }
 
 // memoryEvents bounds what a session keeps in memory. Older events are on
@@ -92,9 +109,10 @@ type Manager struct {
 }
 
 type record struct {
-	Name     string `json:"name"`
-	Dir      string `json:"dir"`
-	ClaudeID string `json:"claude_id,omitempty"`
+	Name        string `json:"name"`
+	Dir         string `json:"dir"`
+	ClaudeID    string `json:"claude_id,omitempty"`
+	AutoApprove bool   `json:"auto_approve,omitempty"`
 }
 
 // NewManager loads the sessions kept in stateDir.
@@ -117,6 +135,7 @@ func NewManager(ctx context.Context, log *slog.Logger, stateDir, claudeBin strin
 		for _, r := range recs {
 			s := m.newSession(r.Name, r.Dir)
 			s.claudeID = r.ClaudeID
+			s.autoApprove = r.AutoApprove
 			s.loadEvents()
 			m.sessions[r.Name] = s
 		}
@@ -137,7 +156,7 @@ func (m *Manager) save() error {
 	recs := make([]record, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		s.mu.Lock()
-		recs = append(recs, record{Name: s.name, Dir: s.dir, ClaudeID: s.claudeID})
+		recs = append(recs, record{Name: s.name, Dir: s.dir, ClaudeID: s.claudeID, AutoApprove: s.autoApprove})
 		s.mu.Unlock()
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].Name < recs[j].Name })
@@ -260,7 +279,8 @@ func (s *Session) Info() Info {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	in := Info{Name: s.name, Dir: s.dir, State: s.state, Pending: len(s.pending),
-		Running: s.proc != nil, LastSeq: s.seq}
+		Running: s.proc != nil, LastSeq: s.seq, AutoApprove: s.autoApprove,
+		ContextUsed: s.ctxUsed, ContextWindow: s.ctxWindow, Preview: s.preview}
 	if n := len(s.events); n > 0 {
 		in.LastTime = s.events[n-1].Time
 	}
@@ -281,6 +301,9 @@ func (s *Session) loadEvents() {
 			continue
 		}
 		s.seq = e.Seq
+		if e.Kind == "claude" {
+			s.observe(e.Data)
+		}
 		s.events = append(s.events, e)
 		if len(s.events) > memoryEvents {
 			s.events = s.events[len(s.events)-memoryEvents:]
@@ -312,6 +335,12 @@ func (s *Session) record(kind, by string, data any) Event {
 	} else {
 		s.m.log.Warn("could not keep an event", "session", s.name, "err", err)
 	}
+	s.broadcast(e)
+	return e
+}
+
+// broadcast hands an event to every listener. Called with s.mu held.
+func (s *Session) broadcast(e Event) {
 	for ch := range s.subs {
 		select {
 		case ch <- e:
@@ -322,7 +351,61 @@ func (s *Session) record(kind, by string, data any) Event {
 			close(ch)
 		}
 	}
-	return e
+}
+
+// observe keeps what the session list shows about a Claude Code message: how
+// full the context is, and the start of the last reply. Called with s.mu held,
+// for live messages and for those loaded from disk alike.
+func (s *Session) observe(raw json.RawMessage) {
+	var m struct {
+		Type       string  `json:"type"`
+		ParentTool *string `json:"parent_tool_use_id"`
+		Message    struct {
+			Content []struct{ Type, Text string } `json:"content"`
+			Usage   struct {
+				Input       uint64 `json:"input_tokens"`
+				CacheRead   uint64 `json:"cache_read_input_tokens"`
+				CacheCreate uint64 `json:"cache_creation_input_tokens"`
+			} `json:"usage"`
+		} `json:"message"`
+		ModelUsage map[string]struct {
+			ContextWindow uint64 `json:"contextWindow"`
+		} `json:"modelUsage"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return
+	}
+	switch m.Type {
+	case "assistant":
+		// A subagent's messages carry the tool use they belong to; their
+		// usage is the subagent's context, not this conversation's.
+		if m.ParentTool != nil && *m.ParentTool != "" {
+			return
+		}
+		if u := m.Message.Usage; u.Input+u.CacheRead+u.CacheCreate > 0 {
+			s.ctxUsed = u.Input + u.CacheRead + u.CacheCreate
+		}
+		var b strings.Builder
+		for _, c := range m.Message.Content {
+			if c.Type == "text" {
+				b.WriteString(c.Text)
+			}
+		}
+		if t := strings.TrimSpace(b.String()); t != "" {
+			if r := []rune(t); len(r) > 200 {
+				t = string(r[:200]) + "…"
+			}
+			s.preview = t
+		}
+	case "result":
+		// The main model has the largest window; a helper model used for a
+		// quick task is listed too, with a smaller one.
+		for _, u := range m.ModelUsage {
+			if u.ContextWindow > s.ctxWindow {
+				s.ctxWindow = u.ContextWindow
+			}
+		}
+	}
 }
 
 // Since returns the events after seq, and a channel for those that follow.
@@ -379,7 +462,7 @@ func (s *Session) ensureRunning() error {
 	if s.proc != nil {
 		return nil
 	}
-	p, err := startProc(s.m.ctx, s.m.log.With("session", s.name), s.m.claude, s.dir, s.claudeID)
+	p, err := startProc(s.m.ctx, s.m.log.With("session", s.name), s.m.claude, s.dir, s.claudeID, s.autoApprove)
 	if err != nil {
 		return err
 	}
@@ -413,6 +496,11 @@ func (s *Session) Send(text, by string) error {
 func (s *Session) Answer(prompt string, allow bool, message, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.answer(prompt, allow, message, by)
+}
+
+// answer is Answer with s.mu held.
+func (s *Session) answer(prompt string, allow bool, message, by string) error {
 	req, ok := s.pending[prompt]
 	if !ok {
 		return fmt.Errorf("no prompt %q is waiting — it may have been answered already", prompt)
@@ -481,7 +569,14 @@ func (s *Session) read(p *proc) {
 		}
 		json.Unmarshal(raw, &head)
 
+		if head.Type == "stream_event" {
+			s.partial(raw)
+			continue
+		}
+
 		s.mu.Lock()
+		s.observe(raw)
+		autoAnswer := ""
 		switch {
 		case head.Type == "system" && head.Subtype == "init" && head.SessionID != "" && head.SessionID != s.claudeID:
 			// The id to resume by. Saved at once: a crash before the
@@ -501,6 +596,9 @@ func (s *Session) read(p *proc) {
 			json.Unmarshal(raw, &full)
 			s.pending[head.RequestID] = full.Request
 			s.state = Waiting
+			if s.autoApprove {
+				autoAnswer = head.RequestID
+			}
 		case head.Type == "result":
 			s.state = Idle
 		}
@@ -508,6 +606,12 @@ func (s *Session) read(p *proc) {
 			s.lastUsed = time.Now()
 		}
 		s.record("claude", "", raw)
+		if autoAnswer != "" {
+			// Switched on after this process started, so it still asks.
+			if err := s.answer(autoAnswer, true, "", "auto-approve"); err != nil {
+				s.m.log.Warn("could not auto-approve", "session", s.name, "err", err)
+			}
+		}
 		s.mu.Unlock()
 	}
 	<-p.done
@@ -528,6 +632,48 @@ func (s *Session) read(p *proc) {
 	}
 	s.state = Idle
 	s.record("stopped", "", map[string]string{"reason": reason})
+}
+
+// partial passes reply text on to listeners as it is written. Only text: the
+// model's thinking and tool input arrive whole in the message that follows.
+func (s *Session) partial(raw json.RawMessage) {
+	var m struct {
+		Event struct {
+			Type  string                      `json:"type"`
+			Delta struct{ Type, Text string } `json:"delta"`
+		} `json:"event"`
+		ParentTool *string `json:"parent_tool_use_id"`
+	}
+	if json.Unmarshal(raw, &m) != nil || m.Event.Type != "content_block_delta" ||
+		m.Event.Delta.Type != "text_delta" || m.Event.Delta.Text == "" ||
+		(m.ParentTool != nil && *m.ParentTool != "") {
+		return
+	}
+	data, _ := json.Marshal(map[string]string{"text": m.Event.Delta.Text})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.broadcast(Event{Seq: s.seq, Time: time.Now(), Kind: "partial", Data: data})
+}
+
+// SetAutoApprove switches approvals off for this session — the desktop's
+// --dangerously-skip-permissions — or back on. Prompts already waiting are
+// allowed at once; a running process keeps going, and the session answers
+// whatever it still asks (see read).
+func (s *Session) SetAutoApprove(on bool, by string) error {
+	s.mu.Lock()
+	s.autoApprove = on
+	if on {
+		for id := range s.pending {
+			if err := s.answer(id, true, "", "auto-approve"); err != nil {
+				s.m.log.Warn("could not auto-approve", "session", s.name, "err", err)
+			}
+		}
+	}
+	s.record("setting", by, map[string]bool{"auto_approve": on})
+	s.mu.Unlock()
+	s.m.mu.Lock()
+	defer s.m.mu.Unlock()
+	return s.m.save()
 }
 
 // stopIfIdle ends the process if nothing has happened for longer than after.

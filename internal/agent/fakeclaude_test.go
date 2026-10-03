@@ -44,7 +44,10 @@ func fakeClaude() {
 		emit(map[string]any{"type": "result", "subtype": "error", "result": "no permission prompt tool"})
 		os.Exit(3)
 	}
-	emit(map[string]any{"type": "system", "subtype": "init", "session_id": id, "resumed": resumed, "cwd": mustWd()})
+	skip := hasFlag(os.Args, "--dangerously-skip-permissions")
+	stream := hasFlag(os.Args, "--include-partial-messages")
+	emit(map[string]any{"type": "system", "subtype": "init", "session_id": id, "resumed": resumed, "cwd": mustWd(),
+		"skip_permissions": skip})
 
 	in := bufio.NewScanner(os.Stdin)
 	next := func() map[string]any {
@@ -55,11 +58,26 @@ func fakeClaude() {
 		json.Unmarshal(in.Bytes(), &m)
 		return m
 	}
+	// Shaped as Claude Code 2.1.287 sends them: the reply streamed as
+	// text_delta events when asked for, then the whole message with its usage;
+	// the turn's result carries each model's context window.
 	text := func(s string) {
-		emit(map[string]any{"type": "assistant", "message": map[string]any{"role": "assistant",
-			"content": []any{map[string]any{"type": "text", "text": s}}}})
+		if stream {
+			for _, part := range strings.SplitAfter(s, " ") {
+				emit(map[string]any{"type": "stream_event", "parent_tool_use_id": nil, "event": map[string]any{
+					"type": "content_block_delta", "index": 1,
+					"delta": map[string]any{"type": "text_delta", "text": part}}})
+			}
+		}
+		emit(map[string]any{"type": "assistant", "parent_tool_use_id": nil, "message": map[string]any{"role": "assistant",
+			"content": []any{map[string]any{"type": "thinking", "thinking": ""}, map[string]any{"type": "text", "text": s}},
+			"usage":   map[string]any{"input_tokens": 10, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 200}}})
 	}
-	result := func(sub string) { emit(map[string]any{"type": "result", "subtype": sub, "session_id": id}) }
+	result := func(sub string) {
+		emit(map[string]any{"type": "result", "subtype": sub, "session_id": id, "modelUsage": map[string]any{
+			"claude-opus-5[1m]":         map[string]any{"contextWindow": 1000000},
+			"claude-haiku-4-5-20251001": map[string]any{"contextWindow": 200000}}})
+	}
 
 	for {
 		m := next()
@@ -73,6 +91,15 @@ func fakeClaude() {
 			emit(map[string]any{"type": "assistant", "message": map[string]any{"role": "assistant",
 				"content": []any{map[string]any{"type": "tool_use", "id": "toolu_1", "name": "Bash",
 					"input": map[string]any{"command": cmd}}}}})
+			if skip {
+				// --dangerously-skip-permissions: nothing asks.
+				emit(map[string]any{"type": "user", "message": map[string]any{"role": "user",
+					"content": []any{map[string]any{"type": "tool_result", "tool_use_id": "toolu_1",
+						"content": "ran " + cmd}}}})
+				text("done")
+				result("success")
+				continue
+			}
 			emit(map[string]any{"type": "control_request", "request_id": "req-1", "request": map[string]any{
 				"subtype": "can_use_tool", "tool_name": "Bash", "input": map[string]any{"command": cmd},
 				"description": "Run " + cmd}})
@@ -118,6 +145,15 @@ func fakeClaude() {
 func hasArgs(args []string, k, v string) bool {
 	for i := range args {
 		if args[i] == k && i+1 < len(args) && args[i+1] == v {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFlag(args []string, f string) bool {
+	for _, a := range args {
+		if a == f {
 			return true
 		}
 	}

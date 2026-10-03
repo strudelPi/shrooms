@@ -31,6 +31,8 @@ func Handler(log *slog.Logger, m *Manager, who Who) http.Handler {
 	mux.HandleFunc("GET /v1/sessions", h.list)
 	mux.HandleFunc("POST /v1/sessions", h.create)
 	mux.HandleFunc("DELETE /v1/sessions/{name}", h.remove)
+	mux.HandleFunc("PATCH /v1/sessions/{name}", h.update)
+	mux.HandleFunc("GET /v1/sessions/{name}/history", h.history)
 	mux.HandleFunc("GET /v1/sessions/{name}/events", h.events)
 	mux.HandleFunc("POST /v1/sessions/{name}/messages", h.message)
 	mux.HandleFunc("POST /v1/sessions/{name}/prompts/{id}", h.answer)
@@ -79,12 +81,22 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) create(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Name, Dir string }
+	var req struct {
+		Name        string `json:"name"`
+		Dir         string `json:"dir"`
+		AutoApprove *bool  `json:"auto_approve"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
 	in, err := h.m.Create(req.Name, req.Dir)
+	if err == nil && req.AutoApprove != nil {
+		if s, ok := h.m.Get(in.Name); ok {
+			err = s.SetAutoApprove(*req.AutoApprove, h.caller(r))
+			in = s.Info()
+		}
+	}
 	if err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
@@ -100,6 +112,65 @@ func (h *handler) remove(w http.ResponseWriter, r *http.Request) {
 	}
 	h.log.Info("session removed", "session", r.PathValue("name"), "by", h.caller(r))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// update changes a session's settings: for now, whether it asks.
+func (h *handler) update(w http.ResponseWriter, r *http.Request) {
+	s, ok := h.session(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		AutoApprove *bool `json:"auto_approve"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.AutoApprove != nil {
+		if err := s.SetAutoApprove(*req.AutoApprove, h.caller(r)); err != nil {
+			fail(w, http.StatusInternalServerError, err)
+			return
+		}
+		h.log.Info("auto-approve changed", "session", s.name, "on", *req.AutoApprove, "by", h.caller(r))
+	}
+	writeJSON(w, http.StatusOK, s.Info())
+}
+
+// history is the conversation before this agent's own events, from Claude
+// Code's transcript: ?before=<RFC 3339>&limit=N (default 30, at most 200).
+func (h *handler) history(w http.ResponseWriter, r *http.Request) {
+	s, ok := h.session(w, r)
+	if !ok {
+		return
+	}
+	limit := 30
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			fail(w, http.StatusBadRequest, fmt.Errorf("limit: %q", v))
+			return
+		}
+		limit = min(n, 200)
+	}
+	var before time.Time
+	if v := r.URL.Query().Get("before"); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			fail(w, http.StatusBadRequest, fmt.Errorf("before: %w", err))
+			return
+		}
+		before = t
+	}
+	said, err := s.History(before, limit)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	if said == nil {
+		said = []Said{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"history": said})
 }
 
 func (h *handler) message(w http.ResponseWriter, r *http.Request) {
@@ -212,6 +283,16 @@ func (h *handler) events(w http.ResponseWriter, r *http.Request) {
 				// Fell behind: end the stream; the client reconnects with
 				// Last-Event-ID and loses nothing.
 				return
+			}
+			if e.Kind == "partial" {
+				// Live only and unnumbered: no id, so a reconnect does not
+				// resume from it.
+				b, _ := json.Marshal(e)
+				if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+					return
+				}
+				flusher.Flush()
+				continue
 			}
 			if e.Seq <= last {
 				continue // already in the backlog

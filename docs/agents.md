@@ -44,6 +44,9 @@ shrooms (VPN, the mesh) ───┘  the network both run over
     `shrooms_core` — which does all the networking, since Basecamp's sandbox
     forbids it in a view, on threads of its own so no call freezes the window.
 - One repository, one set of tools.
+- **Not only Claude Code.** Sessions run on a pluggable harness: Claude Code,
+  or pi (on any model pi is set up with, a local one included), with more to
+  be added the same way — docs/agents-harnesses.md is the guide.
 
 ## Access: the bind is the access control
 
@@ -99,8 +102,9 @@ On each machine's overlay addresses, port 7387.
 
 | | |
 |---|---|
-| `GET /v1/sessions` | list: name, directory, state (idle / working / waiting), pending prompts, context used and window, model, the last reply, auto-approve |
-| `POST /v1/sessions` | `{name, dir, auto_approve?}` — create; `{name, resume: id}` — continue an existing conversation, in the directory it ran in |
+| `GET /v1/sessions` | list: name, directory, state (idle / working / waiting), pending prompts, context used and window, model, the last reply, auto-approve, `harness` and its `caps` |
+| `GET /v1/harnesses` | `{"harnesses":[{name, title, caps:{approve, takeover}}]}` — the coding agents this machine runs sessions of, Claude Code first (docs/agents-harnesses.md) |
+| `POST /v1/sessions` | `{name, dir, harness?, auto_approve?}` — create, with Claude Code unless `harness` names another; `{name, resume: id}` — continue an existing Claude Code conversation, in the directory it ran in |
 | `DELETE /v1/sessions/{name}` | stop and forget |
 | `PATCH /v1/sessions/{name}`, `POST …/settings` | `{auto_approve}` (POST for clients that cannot send PATCH) |
 | `GET /v1/sessions/{name}/search?q=…[&limit=N]` | `{"found":[{seq, time, role, snippet, text}]}`, newest first (50 by default, at most 200): the turns of the whole conversation containing q — what was typed and the model's text, not tools — ignoring case and Czech diacritics. From the session's events (`seq` to jump to) and, for what came before them, the transcript (`seq` 0, with the whole `text`). About a second on a 190 MB transcript |

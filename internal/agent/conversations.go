@@ -81,8 +81,10 @@ func (m *Manager) Conversations(limit int) ([]Conversation, error) {
 	m.mu.Lock()
 	for _, s := range m.sessions {
 		s.mu.Lock()
-		if s.claudeID != "" {
-			adopted[s.claudeID] = s.name
+		// Conversations listed here are Claude Code's; another harness's
+		// id could only collide by chance.
+		if s.convID != "" && s.harness.Name() == "claude" {
+			adopted[s.convID] = s.name
 		}
 		s.mu.Unlock()
 	}
@@ -99,7 +101,7 @@ func (m *Manager) Conversations(limit int) ([]Conversation, error) {
 		c.AdoptedBy = adopted[c.ID]
 		if fh, err := os.Open(f.path); err == nil {
 			c.Dir = transcriptDir(fh)
-			if said, err := readTail(fh, previewTail, time.Time{}, 0); err == nil {
+			if said, err := readTail(fh, previewTail, time.Time{}, 0, parseTranscriptLine); err == nil {
 				for i := len(said) - 1; i >= 0 && (c.LastUser == "" || c.LastAssistant == ""); i-- {
 					t := clip(said[i].Text, 160)
 					if said[i].Role == "user" && c.LastUser == "" {
@@ -278,7 +280,7 @@ func (m *Manager) Adopt(name, dir, conversation string) (Info, error) {
 	m.mu.Lock()
 	for _, s := range m.sessions {
 		s.mu.Lock()
-		taken := s.claudeID == conversation
+		taken := s.convID == conversation
 		s.mu.Unlock()
 		if taken {
 			m.mu.Unlock()
@@ -291,7 +293,7 @@ func (m *Manager) Adopt(name, dir, conversation string) (Info, error) {
 	}
 	s, _ := m.Get(name)
 	s.mu.Lock()
-	s.claudeID = conversation
+	s.convID = conversation
 	s.mu.Unlock()
 	m.mu.Lock()
 	err = m.save()

@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -63,17 +62,23 @@ type Info struct {
 	ContextWindow uint64 `json:"context_window,omitempty"`
 	// Preview is the start of the last thing the model said.
 	Preview string `json:"preview,omitempty"`
-	// Model is the one the conversation runs on, as Claude Code names it.
+	// Model is the one the conversation runs on, as its harness names it.
 	Model string `json:"model,omitempty"`
+	// Harness runs it ("claude", "pi"), and what that harness can do.
+	Harness string `json:"harness"`
+	Caps    Caps   `json:"caps"`
 }
 
 // Session is one conversation in one directory.
 type Session struct {
 	name, dir string
 	m         *Manager
+	harness   Harness
 
-	mu       sync.Mutex
-	claudeID string
+	mu sync.Mutex
+	// convID is the harness's own id for the conversation, to resume it by:
+	// the session_id of its init message.
+	convID   string
 	events   []Event // in memory: the tail; the whole history is on disk
 	seq      uint64
 	subs     map[chan Event]struct{}
@@ -97,9 +102,13 @@ var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 
 // Manager owns every session on this machine.
 type Manager struct {
-	log    *slog.Logger
-	dir    string // state: sessions.json and one event log per session
-	claude string // the claude binary
+	log *slog.Logger
+	dir string // state: sessions.json and one event log per session
+
+	// harnesses this machine can run sessions of, by name, and the program
+	// each is run as. Claude Code always; others when Register finds them.
+	harnesses map[string]Harness
+	bins      map[string]string
 
 	// IdleStop is how long a session's process may sit with nothing to do
 	// before it is stopped. The conversation is kept and resumed by id.
@@ -115,9 +124,14 @@ type Manager struct {
 }
 
 type record struct {
-	Name        string `json:"name"`
-	Dir         string `json:"dir"`
-	ClaudeID    string `json:"claude_id,omitempty"`
+	Name string `json:"name"`
+	Dir  string `json:"dir"`
+	// Harness is empty for Claude Code, which every session was before
+	// there were others.
+	Harness string `json:"harness,omitempty"`
+	// ConvID is the harness's conversation id. Named for Claude Code, the
+	// only harness when the registry was first written.
+	ConvID      string `json:"claude_id,omitempty"`
 	AutoApprove bool   `json:"auto_approve,omitempty"`
 }
 
@@ -126,8 +140,10 @@ func NewManager(ctx context.Context, log *slog.Logger, stateDir, claudeBin strin
 	if err := os.MkdirAll(filepath.Join(stateDir, "events"), 0o700); err != nil {
 		return nil, err
 	}
-	m := &Manager{log: log, dir: stateDir, claude: claudeBin, IdleStop: 30 * time.Minute,
+	m := &Manager{log: log, dir: stateDir, IdleStop: 30 * time.Minute,
+		harnesses: map[string]Harness{}, bins: map[string]string{},
 		ctx: ctx, sessions: map[string]*Session{}}
+	m.Register(Claude{}, claudeBin)
 	b, err := os.ReadFile(m.registryPath())
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -139,8 +155,18 @@ func NewManager(ctx context.Context, log *slog.Logger, stateDir, claudeBin strin
 			return nil, fmt.Errorf("%s: %w", m.registryPath(), err)
 		}
 		for _, r := range recs {
-			s := m.newSession(r.Name, r.Dir)
-			s.claudeID = r.ClaudeID
+			h, ok := m.harnesses[r.Harness]
+			if r.Harness == "" {
+				h, ok = Claude{}, true
+			}
+			if !ok {
+				// Registered later, when its program is found; until then the
+				// session is listed and its history readable, and starting it
+				// says what is missing.
+				h = missingHarness{name: r.Harness}
+			}
+			s := m.newSession(r.Name, r.Dir, h)
+			s.convID = r.ConvID
 			s.autoApprove = r.AutoApprove
 			s.loadEvents()
 			m.sessions[r.Name] = s
@@ -152,8 +178,48 @@ func NewManager(ctx context.Context, log *slog.Logger, stateDir, claudeBin strin
 
 func (m *Manager) registryPath() string { return filepath.Join(m.dir, "sessions.json") }
 
-func (m *Manager) newSession(name, dir string) *Session {
-	return &Session{name: name, dir: dir, m: m, subs: map[chan Event]struct{}{},
+// Register adds a harness this machine can run sessions of, run as bin.
+// Sessions of it loaded before it was registered take it up.
+func (m *Manager) Register(h Harness, bin string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.harnesses[h.Name()] = h
+	m.bins[h.Name()] = bin
+	for _, s := range m.sessions {
+		s.mu.Lock()
+		if mh, ok := s.harness.(missingHarness); ok && mh.name == h.Name() {
+			s.harness = h
+		}
+		s.mu.Unlock()
+	}
+}
+
+// HarnessInfo is a harness as the apps are told of it.
+type HarnessInfo struct {
+	Name  string `json:"name"`
+	Title string `json:"title"`
+	Caps  Caps   `json:"caps"`
+}
+
+// Harnesses lists those this machine can run, Claude Code first.
+func (m *Manager) Harnesses() []HarnessInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []HarnessInfo{}
+	for _, h := range m.harnesses {
+		out = append(out, HarnessInfo{Name: h.Name(), Title: h.Title(), Caps: h.Caps()})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if (out[i].Name == "claude") != (out[j].Name == "claude") {
+			return out[i].Name == "claude"
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func (m *Manager) newSession(name, dir string, h Harness) *Session {
+	return &Session{name: name, dir: dir, m: m, harness: h, subs: map[chan Event]struct{}{},
 		pending: map[string]json.RawMessage{}, state: Idle}
 }
 
@@ -162,7 +228,11 @@ func (m *Manager) save() error {
 	recs := make([]record, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		s.mu.Lock()
-		recs = append(recs, record{Name: s.name, Dir: s.dir, ClaudeID: s.claudeID, AutoApprove: s.autoApprove})
+		r := record{Name: s.name, Dir: s.dir, ConvID: s.convID, AutoApprove: s.autoApprove}
+		if s.harness.Name() != "claude" {
+			r.Harness = s.harness.Name()
+		}
+		recs = append(recs, r)
 		s.mu.Unlock()
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].Name < recs[j].Name })
@@ -177,8 +247,14 @@ func (m *Manager) save() error {
 	return os.Rename(tmp, m.registryPath())
 }
 
-// Create adds a session for a directory.
-func (m *Manager) Create(name, dir string) (Info, error) {
+// Create adds a Claude Code session for a directory.
+func (m *Manager) Create(name, dir string) (Info, error) { return m.CreateWith(name, dir, "claude") }
+
+// CreateWith adds a session of the named harness for a directory.
+func (m *Manager) CreateWith(name, dir, harness string) (Info, error) {
+	if harness == "" {
+		harness = "claude"
+	}
 	if !validName.MatchString(name) {
 		return Info{}, fmt.Errorf("a session name is letters, digits, dot, dash and underscore: %q", name)
 	}
@@ -200,10 +276,14 @@ func (m *Manager) Create(name, dir string) (Info, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	h, ok := m.harnesses[harness]
+	if !ok {
+		return Info{}, fmt.Errorf("this machine has no %q to run sessions with", harness)
+	}
 	if _, ok := m.sessions[name]; ok {
 		return Info{}, fmt.Errorf("there is already a session called %q", name)
 	}
-	s := m.newSession(name, abs)
+	s := m.newSession(name, abs, h)
 	m.sessions[name] = s
 	if err := m.save(); err != nil {
 		delete(m.sessions, name)
@@ -286,7 +366,8 @@ func (s *Session) Info() Info {
 	defer s.mu.Unlock()
 	in := Info{Name: s.name, Dir: s.dir, State: s.state, Pending: len(s.pending),
 		Running: s.proc != nil, LastSeq: s.seq, AutoApprove: s.autoApprove,
-		ContextUsed: s.ctxUsed, ContextWindow: s.ctxWindow, Preview: s.preview, Model: s.model}
+		ContextUsed: s.ctxUsed, ContextWindow: s.ctxWindow, Preview: s.preview, Model: s.model,
+		Harness: s.harness.Name(), Caps: s.harness.Caps()}
 	if n := len(s.events); n > 0 {
 		in.LastTime = s.events[n-1].Time
 	}
@@ -478,7 +559,14 @@ func (s *Session) ensureRunning() error {
 	if s.proc != nil {
 		return nil
 	}
-	p, err := startProc(s.m.ctx, s.m.log.With("session", s.name), s.m.claude, s.dir, s.claudeID, s.autoApprove)
+	if mh, ok := s.harness.(missingHarness); ok {
+		return fmt.Errorf("this machine has no %s to run this session with", mh.name)
+	}
+	s.m.mu.Lock()
+	bin := s.m.bins[s.harness.Name()]
+	s.m.mu.Unlock()
+	o := StartOptions{Resume: s.convID, AutoApprove: s.autoApprove && s.harness.Caps().Approve}
+	p, err := startProc(s.m.ctx, s.m.log.With("session", s.name), s.harness, bin, s.dir, o)
 	if err != nil {
 		return err
 	}
@@ -497,8 +585,7 @@ func (s *Session) Send(text, by string) error {
 	if err := s.ensureRunning(); err != nil {
 		return err
 	}
-	msg := map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": text}}
-	if err := s.proc.write(msg); err != nil {
+	if err := s.proc.writeAll(s.proc.codec.Turn(text)); err != nil {
 		return err
 	}
 	s.record("message", by, map[string]string{"text": text})
@@ -569,10 +656,7 @@ func (s *Session) answer(prompt string, allow bool, message string, answers map[
 	if s.proc == nil {
 		return errors.New("the session's process has stopped; the prompt can no longer be answered")
 	}
-	if err := s.proc.write(map[string]any{
-		"type":     "control_response",
-		"response": map[string]any{"subtype": "success", "request_id": prompt, "response": resp},
-	}); err != nil {
+	if err := s.proc.writeAll(s.proc.codec.Respond(prompt, resp)); err != nil {
 		return err
 	}
 	delete(s.pending, prompt)
@@ -588,10 +672,6 @@ func (s *Session) answer(prompt string, allow bool, message string, answers map[
 	return nil
 }
 
-// interrupts numbers interrupt requests, which need ids of their own. Not the
-// event counter: a gap there would read to a phone as a lost event.
-var interrupts atomic.Uint64
-
 // Interrupt stops the turn in progress.
 func (s *Session) Interrupt(by string) error {
 	s.mu.Lock()
@@ -599,11 +679,7 @@ func (s *Session) Interrupt(by string) error {
 	if s.proc == nil {
 		return errors.New("nothing is running")
 	}
-	return s.proc.write(map[string]any{
-		"type":       "control_request",
-		"request_id": fmt.Sprintf("interrupt-%d", interrupts.Add(1)),
-		"request":    map[string]string{"subtype": "interrupt"},
-	})
+	return s.proc.writeAll(s.proc.codec.Interrupt())
 }
 
 // read follows the process's output until it ends.
@@ -629,10 +705,10 @@ func (s *Session) read(p *proc) {
 		s.observe(raw)
 		autoAnswer := ""
 		switch {
-		case head.Type == "system" && head.Subtype == "init" && head.SessionID != "" && head.SessionID != s.claudeID:
+		case head.Type == "system" && head.Subtype == "init" && head.SessionID != "" && head.SessionID != s.convID:
 			// The id to resume by. Saved at once: a crash before the
 			// first turn ends would otherwise lose the conversation.
-			s.claudeID = head.SessionID
+			s.convID = head.SessionID
 			s.mu.Unlock()
 			s.m.mu.Lock()
 			if err := s.m.save(); err != nil {

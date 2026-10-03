@@ -24,6 +24,10 @@ import (
 //	anything   → an assistant text echoing it;
 //	each turn ending with a result. EOF on stdin ends the process.
 func TestMain(m *testing.M) {
+	if os.Getenv("FAKE_PI") == "1" {
+		fakePi()
+		return
+	}
 	if os.Getenv("FAKE_CLAUDE") == "1" {
 		fakeClaude()
 		return

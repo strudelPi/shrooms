@@ -68,6 +68,17 @@ class AgentChatTest {
         assertEquals(null, AgentChat.answersFor(qs, mapOf("Also?" to setOf("y")), mapOf("Which?" to "  ")))
     }
 
+    // Claude Code is the usual harness and goes unsaid; another is named.
+    @Test fun aHarnessIsNamedWhenItIsNotClaudeCode() {
+        assertEquals("", harnessLabel("claude"))
+        assertEquals("", harnessLabel(""))
+        assertEquals("pi", harnessLabel("pi"))
+        // An agent from before harnesses: Claude Code, which asks.
+        val old = AgentSession("s", "/x", "idle", 0, false, 0)
+        assertEquals("claude", old.harness)
+        assertTrue(old.approves)
+    }
+
     // A search result jumps to its event: the first of that event's items, in a
     // list laid out from the bottom with the live row as item 0.
     @Test fun aSearchResultIsFoundInTheList() {

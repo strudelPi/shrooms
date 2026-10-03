@@ -34,9 +34,18 @@ data class AgentSession(
     val contextWindow: Long = 0,
     /** The start of the last thing the model said. */
     val preview: String = "",
-    /** The model the conversation runs on, as Claude Code names it. */
+    /** The model the conversation runs on, as its harness names it. */
     val model: String = "",
+    /** What runs it: "claude", "pi", … and whether it ever asks before using tools. */
+    val harness: String = "claude",
+    val approves: Boolean = true,
 )
+
+/** A coding agent a machine can run sessions of (GET /v1/harnesses). */
+data class Harness(val name: String, val title: String, val approves: Boolean)
+
+/** Claude Code alone: what an agent too old to list its harnesses runs. */
+val claudeOnly = listOf(Harness("claude", "Claude Code", true))
 
 /**
  * A Claude Code conversation on an agent's machine — one started in a
@@ -99,13 +108,27 @@ class AgentClient(address: String) {
                 contextWindow = s.optLong("context_window"),
                 preview = s.optString("preview"),
                 model = s.optString("model"),
+                harness = s.optString("harness").ifEmpty { "claude" },
+                // An agent from before harnesses has no caps, and is Claude Code.
+                approves = s.optJSONObject("caps")?.optBoolean("approve") ?: true,
             )
         }
     }
 
-    fun create(name: String, dir: String, autoApprove: Boolean = false) {
+    fun create(name: String, dir: String, autoApprove: Boolean = false, harness: String = "claude") {
         request("POST", "/v1/sessions",
-            JSONObject().put("name", name).put("dir", dir).put("auto_approve", autoApprove).toString())
+            JSONObject().put("name", name).put("dir", dir).put("auto_approve", autoApprove)
+                .put("harness", harness).toString())
+    }
+
+    /** The harnesses this machine runs, Claude Code first. */
+    fun harnesses(): List<Harness> {
+        val a = runCatching { JSONObject(request("GET", "/v1/harnesses", null)).optJSONArray("harnesses") }
+            .getOrNull() ?: return claudeOnly
+        return (0 until a.length()).map { i ->
+            val o = a.getJSONObject(i)
+            Harness(o.optString("name"), o.optString("title"), o.optJSONObject("caps")?.optBoolean("approve") ?: false)
+        }.ifEmpty { claudeOnly }
     }
 
     /** The machine's Claude Code conversations, newest first. */

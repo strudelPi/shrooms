@@ -29,6 +29,9 @@ func Handler(log *slog.Logger, m *Manager, who Who) http.Handler {
 	h := &handler{log: log, m: m, who: who}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/sessions", h.list)
+	mux.HandleFunc("GET /v1/harnesses", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"harnesses": m.Harnesses()})
+	})
 	mux.HandleFunc("POST /v1/sessions", h.create)
 	mux.HandleFunc("DELETE /v1/sessions/{name}", h.remove)
 	mux.HandleFunc("PATCH /v1/sessions/{name}", h.update)
@@ -95,6 +98,8 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request) {
 		// Resume names an existing conversation to continue — one started in
 		// a terminal, say (GET /v1/conversations).
 		Resume string `json:"resume"`
+		// Harness runs it: "claude" (the default), "pi", … (GET /v1/harnesses).
+		Harness string `json:"harness"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fail(w, http.StatusBadRequest, err)
@@ -102,10 +107,13 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	var in Info
 	var err error
-	if req.Resume != "" {
+	switch {
+	case req.Resume != "" && req.Harness != "" && req.Harness != "claude":
+		err = fmt.Errorf("continuing a conversation from elsewhere is only for Claude Code so far")
+	case req.Resume != "":
 		in, err = h.m.Adopt(req.Name, req.Dir, req.Resume)
-	} else {
-		in, err = h.m.Create(req.Name, req.Dir)
+	default:
+		in, err = h.m.CreateWith(req.Name, req.Dir, req.Harness)
 	}
 	if err == nil && req.AutoApprove != nil {
 		if s, ok := h.m.Get(in.Name); ok {

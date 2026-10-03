@@ -39,8 +39,9 @@ func (s *Session) Search(q string, limit int) ([]Found, error) {
 		return nil, nil
 	}
 	s.mu.Lock()
-	id := s.claudeID
+	id, h := s.convID, s.harness
 	s.mu.Unlock()
+	tr, _ := h.(Transcripts)
 
 	var out []Found
 	first := time.Time{}
@@ -72,16 +73,16 @@ func (s *Session) Search(q string, limit int) ([]Found, error) {
 
 	// What was said before the first event: the same rule as the apps use to
 	// show the transcript above the events.
-	if id != "" {
+	if id != "" && tr != nil {
 		var earlier []Found
-		if path, err := transcriptPath(id); err == nil && path != "" {
+		if path, err := tr.TranscriptPath(id); err == nil && path != "" {
 			if f, err := os.Open(path); err == nil {
 				r := bufio.NewReaderSize(f, 1<<20)
 				for {
 					line, err := r.ReadBytes('\n')
 					if !mayHoldTurn(line) {
 						// most of a transcript: tool calls and their output
-					} else if t, ok := parseTranscriptLine(line); ok && (first.IsZero() || t.Time.Before(first)) {
+					} else if t, ok := tr.ParseTranscriptLine(line); ok && (first.IsZero() || t.Time.Before(first)) {
 						if f, ok := match(t, needle); ok {
 							earlier = append(earlier, f)
 						}

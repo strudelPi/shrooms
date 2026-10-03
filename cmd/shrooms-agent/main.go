@@ -49,6 +49,8 @@ func run() error {
 		"ggml model for voice notes, Parakeet or Whisper (docs/speech-to-text.md); voice notes are off when it is missing")
 	sttBin := flag.String("stt-bin", "", "the CLI that runs it (default: parakeet-cli for a Parakeet model, else whisper-cli)")
 	sttThreads := flag.Int("stt-threads", 12, "threads for transcription")
+	piBin := flag.String("pi", "pi", "pi (pi.dev), offered for new sessions when found; \"\" to leave it out")
+	piArgs := flag.String("pi-args", "", "extra arguments for every pi session, e.g. \"--provider ollama --model qwen3\"")
 	flag.Parse()
 
 	level := slog.LevelInfo
@@ -93,6 +95,13 @@ func run() error {
 	m, err := agent.NewManager(ctx, log, *stateDir, *claude)
 	if err != nil {
 		return err
+	}
+	// Other harnesses, when this machine has them (docs/agents-harnesses.md).
+	if *piBin != "" {
+		if bin, err := exec.LookPath(*piBin); err == nil {
+			m.Register(agent.Pi{Extra: strings.Fields(*piArgs)}, bin)
+			log.Info("harness", "name", "pi", "bin", bin)
+		}
 	}
 	if _, err := os.Stat(*sttModel); err != nil {
 		log.Info("voice notes off: no speech-to-text model", "model", *sttModel)

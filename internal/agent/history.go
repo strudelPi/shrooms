@@ -32,12 +32,13 @@ const historyTail = 4 << 20
 // not hold.
 func (s *Session) History(before time.Time, limit int) ([]Said, error) {
 	s.mu.Lock()
-	id := s.claudeID
+	id, h := s.convID, s.harness
 	s.mu.Unlock()
-	if id == "" {
+	tr, ok := h.(Transcripts)
+	if id == "" || !ok {
 		return nil, nil
 	}
-	path, err := transcriptPath(id)
+	path, err := tr.TranscriptPath(id)
 	if err != nil || path == "" {
 		return nil, err
 	}
@@ -46,7 +47,7 @@ func (s *Session) History(before time.Time, limit int) ([]Said, error) {
 		return nil, err
 	}
 	defer f.Close()
-	return readHistory(f, before, limit)
+	return readTail(f, historyTail, before, limit, tr.ParseTranscriptLine)
 }
 
 // transcriptPath finds a conversation's transcript under Claude Code's
@@ -65,11 +66,11 @@ func transcriptPath(id string) (string, error) {
 }
 
 func readHistory(f *os.File, before time.Time, limit int) ([]Said, error) {
-	return readTail(f, historyTail, before, limit)
+	return readTail(f, historyTail, before, limit, parseTranscriptLine)
 }
 
 // readTail reads the exchanges in the last `tail` bytes of a transcript.
-func readTail(f *os.File, tail int64, before time.Time, limit int) ([]Said, error) {
+func readTail(f *os.File, tail int64, before time.Time, limit int, parse func([]byte) (Said, bool)) ([]Said, error) {
 	st, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -89,7 +90,7 @@ func readTail(f *os.File, tail int64, before time.Time, limit int) ([]Said, erro
 	for {
 		line, err := r.ReadBytes('\n')
 		if len(bytes.TrimSpace(line)) > 0 {
-			if s, ok := parseTranscriptLine(line); ok && (before.IsZero() || s.Time.Before(before)) {
+			if s, ok := parse(line); ok && (before.IsZero() || s.Time.Before(before)) {
 				out = append(out, s)
 			}
 		}

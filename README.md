@@ -796,8 +796,9 @@ repo with `make fdroid`.
 
 ## Shrooms Agents
 
-What grows out of the mesh: talk to the Claude Code sessions on your own
-machines from a phone or from Basecamp, and approve what they want to do —
+What grows out of the mesh: talk to the coding-agent sessions on your own
+machines — Claude Code, or [pi](https://pi.dev) on any model including a
+local one — from a phone or from Basecamp, and approve what they want to do —
 streamed replies, permission prompts, files, voice notes transcribed on the
 agent's machine, and conversations taken over from a terminal. Nothing leaves
 the mesh: `shrooms-agent` listens only on each machine's mesh addresses, so
@@ -813,7 +814,8 @@ systemctl --user enable --now shrooms-agent
 ```
 
 Android: `AGENTS=1 scripts/build-apk.sh`. Basecamp: `make basecamp-agents-lgx`.
-How it works and the API: [docs/agents.md](docs/agents.md).
+How it works and the API: [docs/agents.md](docs/agents.md). Adding another
+coding agent: [docs/agents-harnesses.md](docs/agents-harnesses.md).
 
 ## Membership without a shared secret
 
@@ -1528,7 +1530,8 @@ short version:
 | [PROTOTYPE.md](PROTOTYPE.md) | build plan, milestones, what each proved |
 | [SECURITY.md](SECURITY.md) | what is protected, what leaks, what is deferred |
 | [docs/adr/](docs/adr/) | why each significant decision was made (36 records) |
-| [docs/agents.md](docs/agents.md) | Shrooms Agents: Claude Code sessions on your machines, over the mesh |
+| [docs/agents.md](docs/agents.md) | Shrooms Agents: Claude Code and pi sessions on your machines, over the mesh |
+| [docs/agents-harnesses.md](docs/agents-harnesses.md) | Adding a coding agent to Shrooms Agents, by the example of pi; logging a machine in |
 | [docs/stale-tether-nat.md](docs/stale-tether-nat.md) | why an Edge node's WireGuard port moves on every network change |
 | [docs/a-mesh-on-a-card.md](docs/a-mesh-on-a-card.md) | putting a mesh's admin key on a Keycard, and admitting a phone to it |
 | [docs/mesh-labels-are-local.md](docs/mesh-labels-are-local.md) | why the same mesh has a different name on every device, and what that decides |

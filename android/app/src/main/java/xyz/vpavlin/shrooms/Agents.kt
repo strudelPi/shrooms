@@ -203,6 +203,9 @@ fun contextLabel(used: Long, window: Long): String {
 }
 
 /** "claude-opus-5[1m]" → "opus-5 1m". */
+/** The harness, named where it is not the usual one: "pi". */
+fun harnessLabel(h: String): String = if (h == "claude" || h.isEmpty()) "" else h
+
 fun shortModel(m: String): String =
     m.removePrefix("claude-").replace("[", " ").replace("]", "").replace(Regex("""-\d{8}$"""), "")
 
@@ -375,7 +378,8 @@ private fun SessionRow(s: AgentSession, onLongPress: () -> Unit, onOpen: () -> U
                 maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         val meta = listOf(whenSaid(s.lastTime), contextLabel(s.contextUsed, s.contextWindow),
-            shortModel(s.model), if (s.autoApprove) "auto-approve" else "").filter { it.isNotEmpty() }
+            harnessLabel(s.harness), shortModel(s.model), if (s.autoApprove && s.approves) "auto-approve" else "")
+            .filter { it.isNotEmpty() }
         Text((meta + s.dir.replace(Regex("^/home/[^/]+"), "~")).joinToString("  ·  "),
             style = MaterialTheme.typography.labelSmall, color = Palette.Ash,
             maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -392,6 +396,10 @@ private fun NewSession(h: AgentHost, onDone: () -> Unit, onOpen: (String) -> Uni
             .onSuccess { convs = it }
             .onFailure { convError = it.message ?: "could not list them" }
     }
+    var harnesses by remember { mutableStateOf(claudeOnly) }
+    var harness by remember { mutableStateOf("claude") }
+    LaunchedEffect(h.address) { harnesses = withContext(Dispatchers.IO) { AgentClient(h.address).harnesses() } }
+    val chosen = harnesses.firstOrNull { it.name == harness } ?: claudeOnly[0]
     var name by remember { mutableStateOf("") }
     var dir by remember { mutableStateOf("~/") }
     var auto by remember { mutableStateOf(false) }
@@ -404,7 +412,18 @@ private fun NewSession(h: AgentHost, onDone: () -> Unit, onOpen: (String) -> Uni
         Label("A name and a directory on that machine, like a cl session. ~ is that machine's home.")
         Field("name", name) { name = it }
         Field("directory", dir) { dir = it }
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { auto = !auto }) {
+        // Which coding agent, when the machine has more than Claude Code.
+        if (harnesses.size > 1) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (hn in harnesses) {
+                val on = hn.name == harness
+                Text(hn.title, style = MaterialTheme.typography.labelSmall,
+                    color = if (on) Palette.Void else Palette.Bone,
+                    modifier = Modifier.background(if (on) Palette.Phosphor else Color.Transparent, RoundedCornerShape(10.dp))
+                        .border(1.dp, if (on) Palette.Phosphor else Palette.Line, RoundedCornerShape(10.dp))
+                        .clickable { harness = hn.name }.padding(horizontal = 12.dp, vertical = 8.dp))
+            }
+        }
+        if (chosen.approves) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { auto = !auto }) {
             Box(Modifier.size(12.dp).border(1.dp, if (auto) Palette.Phosphor else Palette.Ash, RoundedCornerShape(3.dp))
                 .background(if (auto) Palette.Phosphor else Color.Transparent, RoundedCornerShape(3.dp)))
             Spacer(Modifier.width(10.dp))
@@ -416,7 +435,7 @@ private fun NewSession(h: AgentHost, onDone: () -> Unit, onOpen: (String) -> Uni
             busy = true
             scope.launch {
                 val r = withContext(Dispatchers.IO) {
-                    runCatching { AgentClient(h.address).create(name.trim(), dir.trim(), auto) }
+                    runCatching { AgentClient(h.address).create(name.trim(), dir.trim(), auto && chosen.approves, harness) }
                 }
                 busy = false
                 r.onSuccess { onDone() }.onFailure { error = it.message ?: "could not create it" }
@@ -424,9 +443,10 @@ private fun NewSession(h: AgentHost, onDone: () -> Unit, onOpen: (String) -> Uni
         }
         Link("cancel", Palette.Ash) { onDone() }
 
+        if (harness != "claude") { Spacer(Modifier.height(24.dp)); return@Column }
         // Or carry on one that started somewhere else — in a terminal, under
         // cl. Resuming keeps writing to the same conversation: this continues
-        // it rather than copying it.
+        // it rather than copying it. Claude Code's only, so far.
         Spacer(Modifier.height(8.dp))
         Text("OR CONTINUE A CONVERSATION", style = MaterialTheme.typography.labelSmall, color = Palette.Phosphor)
         Label("Newest first. A terminal still open in the same directory may hold it: stop it first, or the two write over each other's turns.")
@@ -749,7 +769,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                     working -> { Pulse(Palette.Phosphor); Spacer(Modifier.width(6.dp)); Label("WORKING") }
                 }
             }
-            val facts = listOf(o.host, o.mesh, shortModel(i?.model ?: ""),
+            val facts = listOf(o.host, o.mesh, harnessLabel(i?.harness ?: "claude"), shortModel(i?.model ?: ""),
                 contextLabel(i?.contextUsed ?: 0, i?.contextWindow ?: 0)).filter { it.isNotEmpty() }
             Text(facts.joinToString("  ·  "), style = MaterialTheme.typography.labelSmall, color = Palette.Ash,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 30.dp))
@@ -761,7 +781,8 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
             }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 22.dp)) {
                 val auto = i?.autoApprove == true
-                Link(if (auto) "AUTO-APPROVE ON" else "asks first", if (auto) Palette.Phosphor else Palette.Ash) {
+                // A harness that never asks has nothing to approve.
+                if (i?.approves != false) Link(if (auto) "AUTO-APPROVE ON" else "asks first", if (auto) Palette.Phosphor else Palette.Ash) {
                     scope.launch {
                         withContext(Dispatchers.IO) { runCatching { client.setAutoApprove(o.session, !auto) } }
                             .onSuccess { info = i?.copy(autoApprove = !auto) }

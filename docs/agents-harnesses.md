@@ -1,6 +1,7 @@
 # Shrooms Agents: logging in, and harnesses other than Claude Code
 
-**Status:** for discussion, 2026-10-03. Nothing here is built.
+**Status:** section 1 is for discussion; section 2 is built (2026-10-04):
+harnesses are pluggable, and pi is the first one added.
 
 ## 1. A machine whose Claude Code is not logged in
 
@@ -36,58 +37,132 @@ logging in is something done once on the machine, outside any session.
 **Recommendation:** (a) now; (b) only if logging machines in turns out to be
 frequent — for a handful of machines it is a once-a-year chore.
 
-## 2. Harnesses other than Claude Code
+## 2. Harnesses: Claude Code, pi, and the next one
 
-What Shrooms Agents needs from a harness: start a conversation in a directory,
-or resume one by id; send a turn; a stream of what happens (text as it is
-written, whole messages, tool calls and their output, the end of a turn and
-what it cost); permission prompts it can wait on and be answered; questions;
-interrupt; and its transcripts on disk for history, search and taking over a
-terminal's conversation.
+Decided 2026-10-04: the open ones matter — pi and OpenCode — then Claude Code
+and Codex; the agent is pluggable so anybody can add the one they use. Built
+so far: the plug-in point, Claude Code moved behind it, and **pi**, the worked
+example below. OpenCode and Codex are not built.
 
-All of that is Claude Code's stream-json today, in `internal/agent`
-(proc.go starts it, session.go reads it, history.go and search.go read its
-transcripts, conversations.go finds its terminals). The apps read Claude
-Code's messages almost verbatim (AgentChat.kt, Main.qml `chatItems`).
+### How it fits together
 
-### Options
+```
+apps ──HTTP/SSE──▶ shrooms-agent ── Session ── proc ──stdin/stdout──▶ claude -p
+                   (one event shape)            │ Codec                pi --mode rpc
+                                                └─ Harness             …
+```
 
-- **(A) One adapter per harness, behind an interface in the agent.** A
-  `Harness` interface — start/resume, send, interrupt, answer, history,
-  conversations — with Claude Code as the first implementation, and the agent
-  translating each harness's events into one event shape of its own that the
-  apps render. Codex (`codex exec --json`, or its app-server protocol), Gemini
-  CLI (stream-json), OpenCode (an HTTP server with SSE) would each be an
-  adapter. Full control and each harness's best features; one adapter of work
-  per harness, and the apps must move off Claude Code's message shapes first.
+- A **Harness** (`internal/agent/harness.go`) names a coding agent, says how
+  to start its process (`Args`), what it can do (`Caps`), and makes a
+  **Codec** for each process.
+- The **Codec** translates both ways: what to write for a user turn, an
+  interrupt, an answer to a prompt; and what each line the process writes
+  means — as zero or more messages in **the agent's event shape**.
+- **The event shape is Claude Code's stream-json**, the subset listed below.
+  Claude Code's codec passes lines through untouched; every other harness
+  translates into it. That was chosen over a new neutral format because the
+  apps, the event logs already on disk and every test speak it: a new
+  harness costs one translator and no change to either app. The cost is a
+  format named after one vendor; the kind of these events in a session's log
+  is still `claude`, for the same reason.
+- Optional abilities are separate interfaces a harness may also implement:
+  **Transcripts** (its conversations on disk, for history and search of what
+  was said before the agent had a session). Taking over a terminal's
+  conversation is Claude Code's alone so far (`Caps.Takeover`).
+- Each session records its harness (`sessions.json`, empty for Claude Code,
+  so registries from before this read unchanged). A harness the machine no
+  longer has leaves its sessions listed and readable; sending to one says
+  what is missing.
+- `GET /v1/harnesses` lists what the machine runs; `POST /v1/sessions` takes
+  `"harness"`; each session's info carries `harness` and `caps`. The apps
+  offer the choice in "+ session" when there is more than Claude Code, name
+  the harness on its sessions, and hide auto-approve where `caps.approve` is
+  false.
 
-- **(B) ACP, the Agent Client Protocol.** Zed's JSON-RPC-over-stdio protocol
-  for editors to drive coding agents, now community-governed
-  (github.com/agentclientprotocol). Gemini CLI speaks it natively; Claude Code
-  and Codex through adapters (Zed's); OpenCode, Goose and others list support.
-  The agent would become an ACP *client* — speaking one protocol to any of
-  them — and its sessions, prompts (ACP has permission requests) and streaming
-  map onto ACP's. One integration for many harnesses; the cost is the lowest
-  common denominator (does every agent expose context use, cost, model,
-  questions, resume-by-id?) and, for Claude Code, an adapter between us and it
-  that we do not control. Not yet verified hands-on: the state above is from
-  the protocol's site and third-party write-ups, 2026-10-03.
+### The event shape a codec must produce
 
-- **(C) Both:** the interface of (A), with Claude Code kept native (it is the
-  daily driver, and stream-json gives everything) and one *ACP* implementation
-  covering every other harness.
+Everything the agent and the apps read; anything else is kept and ignored.
 
-### What moves regardless
+| message | what reads it |
+|---|---|
+| `{"type":"system","subtype":"init","session_id":ID,"model":M}` | `session_id` is saved as the id to resume by (`StartOptions.Resume` next time); `model` is shown. Send it at the start of every process. |
+| `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":T}}}` | reply text as it is written; shown live, never kept. |
+| `{"type":"assistant","message":{"role":"assistant","model":M,"content":[…],"usage":{…}}}` | content blocks: `{"type":"text","text"}` shown as markdown; `{"type":"thinking"}` hidden; `{"type":"tool_use","id","name","input":{…}}` shown as a tool row, summarised by the first of `command`, `file_path`, `pattern`, `path`, `url`, `query`, `description`, `prompt` in its input. `usage`: `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` is the context in use. |
+| `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id","content","is_error"}]}}` | a tool's output, folded; `content` a string or text blocks. |
+| `{"type":"control_request","request_id":ID,"request":{"subtype":"can_use_tool","tool_name":N,"input":{…},"description":D}}` | a prompt: the session waits, the apps offer allow/deny; the answer comes back through `Codec.Respond(ID, …)`. With `tool_name` `AskUserQuestion` and `input.questions` (`[{question, header, multiSelect, options:[{label, description}]}]`) it is a question, answered with `updatedInput.answers` (question → answer). |
+| `{"type":"result","subtype":S,"total_cost_usd":C,"modelUsage":{M:{"contextWindow":W}}}` | the end of a turn: the session goes idle. `subtype` `success`, or anything else for a turn that failed or was stopped; the largest `contextWindow` is the window. |
 
-- **The apps stop reading Claude Code's messages directly.** The agent
-  normalises events (said, tool, output, prompt, question, done, stopped) and
-  the apps render those. Needed for any option; also makes the apps simpler.
-- **History, search and takeover** are per harness: each keeps its
-  transcripts differently, if at all.
-- **A session records its harness**, and "+ session" offers the ones the
-  machine has.
+A harness's own errors are best shown as an assistant text block ("error:
+…"), so they read as the model's turn ending badly rather than vanishing.
 
-**Recommendation:** (C) — normalise the events first, keep Claude Code
-native, and add ACP for the rest, after a spike that drives Gemini CLI (native
-ACP) and Codex (adapter) from a small Go client to see what they actually
-expose. Decision wanted before any of it is built.
+### Adding one, by the example of pi
+
+pi (`@mariozechner/pi-coding-agent`, pi.dev) is driven in its RPC mode,
+`pi --mode rpc`: JSON commands on stdin, events on stdout (pi's
+`docs/rpc.md`). It runs on any model pi is set up with — a local one
+included, which is why it is first: a machine with a GPU and no Claude
+account, jimmy-crib say, can serve sessions to the whole mesh.
+
+1. **Watch it first.** Run it by hand and keep what it writes:
+   `echo '{"type":"prompt","message":"run echo hi"}' | pi --mode rpc`. pi's
+   real output (pi 0.72.1 on a local qwen3.5, 2026-10-03) is what the
+   adapter and its fake were written against.
+2. **The harness** — `internal/agent/pi.go`, `type Pi`:
+   - `Args`: `--mode rpc`, `--session <id>` to resume, plus `Extra`
+     (`--pi-args`, e.g. `--provider ollama --model qwen3`).
+   - `Caps{}`: pi runs its tools without asking, so there is no auto-approve;
+     no takeover yet.
+   - `Transcripts`: pi keeps sessions as JSONL under
+     `~/.pi/agent/sessions/<dir>/<time>_<id>.jsonl`
+     (`PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR` respected); its
+     message entries are read as history. A pi session is a tree, and lines
+     of an abandoned branch are read too.
+3. **The codec** — `piCodec`, the whole translation:
+   - start: `get_state`; its answer becomes the `init` message (session id,
+     `provider/model`, and the context window, kept for the turn's `result`);
+   - `prompt` for a turn — with `streamingBehavior: "followUp"` while a turn
+     runs, since pi refuses a bare one then; `abort` to interrupt;
+   - `message_update` text deltas → `stream_event`; `message_end` of an
+     assistant message → `assistant` (`toolCall` → `tool_use`, pi's
+     `usage.input/cacheRead/cacheWrite` → Claude's names, `stopReason`
+     `error` → an "error: …" text); of a `toolResult` → `user` with a
+     `tool_result`; `agent_end` → `result` with the turn's summed cost;
+   - an extension's dialog (`extension_ui_request` `select`, `confirm`,
+     `input`, `editor`) → an `AskUserQuestion` prompt, and its answer → the
+     matching `extension_ui_response` (or `cancelled`). So the question card
+     in both apps answers pi's extensions too. Fire-and-forget methods
+     (`notify`, `setStatus`, …) are dropped.
+4. **Register it** in `cmd/shrooms-agent/main.go`: found on PATH (`--pi`,
+   default `pi`; `""` leaves it out), `m.Register(agent.Pi{…}, bin)`.
+5. **A fake and tests** — `fakepi_test.go` is pi as observed, run by
+   re-executing the test binary; `pi_test.go` drives the production session,
+   codec and HTTP code against it: a turn with a tool round-trip, a dialog
+   answered and declined (and a message sent meanwhile queued, not refused),
+   an error, resuming by id, history and search from pi's own file, and the
+   harness choice over HTTP. Each was checked by breaking the code it covers.
+   Then once against the real pi and a local model.
+6. **The apps need nothing** unless the harness can do something new.
+
+Things pi does differently, known:
+
+- Resuming a session from a different directory makes pi ask, on the
+  terminal, whether to fork it into this one — and in RPC mode the next line
+  it reads is taken as the answer. The agent always starts a session in its
+  own directory, so this does not arise; a session whose directory moved
+  would fail to start, and say so in its `stopped` event.
+- pi's model, provider and keys are pi's own settings, as on the command
+  line; the agent adds only `--pi-args`.
+- Cost is pi's own figure (0 for a local model).
+
+### Next: OpenCode and Codex (not built)
+
+Starting points, not yet checked against the programs:
+
+- **Codex** has a JSON-RPC app server over stdio (`codex app-server`) with
+  approvals, which fits a Codec as pi's RPC mode does; `codex exec --json`
+  is the simpler one-shot form, one process per turn, resuming by id.
+- **OpenCode** is built around a local HTTP server (`opencode serve`, with
+  server-sent events). The agent's processes are stdio only today; a harness
+  that is a server needs a second kind of process — start the server, then
+  speak HTTP to it — behind the same Codec idea. That is the one change to
+  the plug-in point these two are likely to ask for.

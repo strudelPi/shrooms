@@ -479,6 +479,28 @@ Item {
         }
     }
     function shortDir(d) { return String(d || "").replace(/^\/home\/[^\/]+/, "~") }
+    // The coding agents a machine runs (GET /v1/harnesses), Claude Code first;
+    // an agent too old to list them runs Claude Code alone.
+    readonly property var claudeOnly: [ { name: "claude", title: "Claude Code", caps: { approve: true } } ]
+    property var harnesses: claudeOnly
+    property string nsHarness: "claude"
+    function loadHarnesses(h) {
+        root.harnesses = claudeOnly
+        root.nsHarness = "claude"
+        if (!h) return
+        var r = unwrap(callCore("agentGet", [h.address, "/v1/harnesses"]))
+        if (r && r.harnesses && r.harnesses.length > 0) root.harnesses = r.harnesses
+    }
+    function harnessApproves(name) {
+        for (var i = 0; i < harnesses.length; i++) if (harnesses[i].name === name) return !!(harnesses[i].caps && harnesses[i].caps.approve)
+        return false
+    }
+    function harnessLabel(h) { return (!h || h === "claude") ? "" : h }
+    function createSession(host, name, dir, auto) {
+        var r = agentCall("agentPost", [host.address, "/v1/sessions",
+            JSON.stringify({ name: name, dir: dir, harness: nsHarness, auto_approve: auto && harnessApproves(nsHarness) })])
+        return r !== null
+    }
     function loadConversations(h) {
         root.conversations = []
         root.conversationsProblem = ""
@@ -801,7 +823,7 @@ Item {
                             Lnk { text: "+ session"; onClicked: {
                                 newSession.host = hostCol.modelData
                                 root.agentCreating = true
-                                Qt.callLater(function() { root.loadConversations(hostCol.modelData) })
+                                Qt.callLater(function() { root.loadHarnesses(hostCol.modelData); root.loadConversations(hostCol.modelData) })
                             } }
                         }
                         Text {
@@ -846,8 +868,8 @@ Item {
                                         width: parent.width
                                         text: [root.clock(root.epoch(srow.modelData.last_time)),
                                                root.contextLabel(srow.modelData.context_used, srow.modelData.context_window),
-                                               root.shortModel(srow.modelData.model),
-                                               srow.modelData.auto_approve ? "auto-approve" : ""].filter(function(x) { return x !== "" }).join("  ·  ")
+                                               root.harnessLabel(srow.modelData.harness), root.shortModel(srow.modelData.model),
+                                               srow.modelData.auto_approve && !(srow.modelData.caps && !srow.modelData.caps.approve) ? "auto-approve" : ""].filter(function(x) { return x !== "" }).join("  ·  ")
                                         color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(9); elide: Text.ElideRight
                                     }
                                 }
@@ -877,14 +899,31 @@ Item {
                     Text { text: "A name and a directory on that machine, like a cl session. ~ is that machine's home."; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
                     TextField { id: nsName; Layout.fillWidth: true; placeholderTextColor: cAsh; placeholderText: "name"; color: cBone; font.family: "monospace"; background: Rectangle { color: cPanel; border.color: nsName.activeFocus ? cPhosphor : cLine; radius: 6 } }
                     TextField { id: nsDir; Layout.fillWidth: true; placeholderTextColor: cAsh; text: "~/"; placeholderText: "directory"; color: cBone; font.family: "monospace"; background: Rectangle { color: cPanel; border.color: nsDir.activeFocus ? cPhosphor : cLine; radius: 6 } }
-                    CheckBox { id: nsAuto; text: "auto-approve — never ask, like --dangerously-skip-permissions"; contentItem: Text { leftPadding: nsAuto.indicator.width + 6; text: nsAuto.text; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10); verticalAlignment: Text.AlignVCenter } }
+                    // Which coding agent, when the machine has more than Claude Code.
+                    Row {
+                        visible: root.harnesses.length > 1
+                        spacing: root.sz(8)
+                        Repeater {
+                            model: root.harnesses
+                            delegate: Rectangle {
+                                id: hchip
+                                required property var modelData
+                                readonly property bool on: root.nsHarness === hchip.modelData.name
+                                width: hText.implicitWidth + root.sz(20); height: hText.implicitHeight + root.sz(10)
+                                radius: root.sz(8)
+                                color: on ? cPhosphor : "transparent"; border.color: on ? cPhosphor : cLine
+                                Text { id: hText; anchors.centerIn: parent; text: hchip.modelData.title
+                                       color: hchip.on ? cVoid : cBone; font.family: "monospace"; font.pixelSize: root.fs(11) }
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.nsHarness = hchip.modelData.name }
+                            }
+                        }
+                    }
+                    CheckBox { id: nsAuto; visible: root.harnessApproves(root.nsHarness); text: "auto-approve — never ask, like --dangerously-skip-permissions"; contentItem: Text { leftPadding: nsAuto.indicator.width + 6; text: nsAuto.text; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10); verticalAlignment: Text.AlignVCenter } }
                     RowLayout {
                         Lnk {
                             text: "create"
                             onClicked: {
-                                var r = root.agentCall("agentPost", [newSession.host.address, "/v1/sessions",
-                                    JSON.stringify({ name: nsName.text.trim(), dir: nsDir.text.trim(), auto_approve: nsAuto.checked })])
-                                if (r !== null) {
+                                if (root.createSession(newSession.host, nsName.text.trim(), nsDir.text.trim(), nsAuto.checked)) {
                                     root.agentCreating = false
                                     root.refreshAgents()
                                     root.openSession(newSession.host, nsName.text.trim())
@@ -899,22 +938,25 @@ Item {
                     // terminal, under cl. Resuming keeps writing to the same
                     // conversation, so this continues it rather than copying it.
                     Text {
+                        visible: root.nsHarness === "claude"
                         Layout.topMargin: root.sz(14)
                         text: "OR CONTINUE A CONVERSATION FROM " + (newSession.host ? newSession.host.name.toUpperCase() : "")
                         color: cPhosphor; font.family: "monospace"; font.pixelSize: root.fs(12); font.letterSpacing: 1.5
                     }
                     Text {
+                        visible: root.nsHarness === "claude"
                         Layout.fillWidth: true; wrapMode: Text.Wrap
                         text: "Newest first. A terminal still open in the same directory may hold it: stop it before carrying on here, or the two will write over each other's turns."
                         color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10)
                     }
                     Text {
-                        visible: root.conversations.length === 0
+                        visible: root.nsHarness === "claude" && root.conversations.length === 0
                         text: root.conversationsProblem !== "" ? root.conversationsProblem : "looking…"
                         color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10)
                     }
                     ListView {
                         id: convList
+                        visible: root.nsHarness === "claude"
                         Layout.fillWidth: true
                         Layout.preferredHeight: Math.min(contentHeight, root.sz(420))
                         clip: true
@@ -985,6 +1027,8 @@ Item {
                         Pulse { visible: root.agentWorking; }
                         Item { Layout.fillWidth: true }
                         Lnk {
+                            // A harness that never asks has nothing to approve.
+                            visible: !(root.agentInfo && root.agentInfo.caps && !root.agentInfo.caps.approve)
                             readonly property bool on: root.agentInfo !== null && !!root.agentInfo.auto_approve
                             text: on ? "AUTO-APPROVE ON" : "asks first"
                             base: on ? cPhosphor : cAsh
@@ -998,6 +1042,7 @@ Item {
                     }
                     Text {
                         text: root.agentOpen ? [root.agentOpen.name, root.agentOpen.mesh,
+                              root.agentInfo ? root.harnessLabel(root.agentInfo.harness) : "",
                               root.agentInfo ? root.shortModel(root.agentInfo.model) : "",
                               root.agentInfo ? root.contextLabel(root.agentInfo.context_used, root.agentInfo.context_window) : "",
                               root.agentConnected ? "" : ("reconnecting" + (root.agentProblem ? " — " + root.agentProblem : ""))

@@ -69,8 +69,8 @@ func TestAConversationIsTakenOverOnce(t *testing.T) {
 		t.Errorf("took it over in %s, it ran in %s", in.Dir, work)
 	}
 	s, _ := m.Get("taken")
-	if s.claudeID != "conv-9" {
-		t.Errorf("claude id %q", s.claudeID)
+	if s.convID != "conv-9" {
+		t.Errorf("claude id %q", s.convID)
 	}
 	cs, _ := m.Conversations(10)
 	if cs[0].AdoptedBy != "taken" {

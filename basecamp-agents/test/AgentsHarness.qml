@@ -80,6 +80,9 @@ Item {
                     return JSON.stringify({ next: upto, more: upto < top.events.length, connected: true, error: "",
                                             events: after >= top.events.length ? [] : top.events.slice(after, upto) })
                 }
+                if (method === "agentGet" && String(args[1]) === "/v1/harnesses") return JSON.stringify({ harnesses: [
+                    { name: "claude", title: "Claude Code", caps: { approve: true, takeover: true } },
+                    { name: "pi", title: "pi", caps: { approve: false, takeover: false } } ] })
                 if (method === "agentGet" && String(args[1]).indexOf("/v1/conversations") === 0) return JSON.stringify({ conversations: [
                     { id: "c-new", dir: "/home/someone/shrooms", modified: "2026-10-03T15:00:00+02:00", size: 1000,
                       last_user: "fix the tether", last_assistant: "Fixed.",
@@ -182,6 +185,17 @@ Item {
             for (i = 0; i < chatCount(); i++) if (view.chatModelAt(i).kind === "question") qrow = view.chatModelAt(i)
             console.error("QUESTION open=" + (qrow !== null) + " before=" + before + " posted=" + JSON.stringify(posted)
                           + " after=" + qrow.open + " [" + qrow.answer + "]")
+
+            // A session of another harness: offered when the machine has it,
+            // created with it, and without auto-approve, which pi has no use for.
+            view.loadHarnesses(view.agentHosts[0])
+            var offered = view.harnesses.map(function(x) { return x.name }).join(",")
+            view.nsHarness = "pi"
+            view.createSession(view.agentHosts[0], "pi-proj", "~/proj", true)
+            var made = JSON.parse(top.lastPost)
+            console.error("HARNESS offered=" + offered + " sent=" + made.harness + " auto=" + made.auto_approve
+                          + " label=[" + view.harnessLabel("pi") + "][" + view.harnessLabel("claude") + "]")
+            view.loadHarnesses(null)
 
             // Taking over a conversation from a terminal.
             view.loadConversations(view.agentHosts[0])

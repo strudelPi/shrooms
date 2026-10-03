@@ -1,14 +1,16 @@
-// Package agent runs Claude Code sessions and serves them to the owner's other
-// devices over the mesh (docs/agents.md).
+// Package agent runs coding-agent sessions — Claude Code, pi, and other
+// harnesses (harness.go) — and serves them to the owner's other devices over
+// the mesh (docs/agents.md).
 //
-// A session is a name and a directory — what `cl` keyed its tmux sessions on —
-// plus the Claude Code conversation id that lets it be resumed. While in use it
-// has one `claude -p` process speaking stream-json; idle, it has none, and the
-// next message resumes it.
+// A session is a name, a directory and a harness — what `cl` keyed its tmux
+// sessions on — plus the conversation id that lets it be resumed. While in use
+// it has one process of its harness; idle, it has none, and the next message
+// resumes it.
 package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,12 +21,15 @@ import (
 	"sync"
 )
 
-// proc is one running `claude -p` process.
+// proc is one running session process — `claude -p`, `pi --mode rpc`, or
+// another harness's.
 //
-// Every line it writes is a JSON message (stream-json), handed to out in
-// order; out is closed when the process has gone, and err then says why.
+// What it writes goes through its harness's codec; the stream-json messages
+// that come out are handed to out in order. out is closed when the process has
+// gone, and err then says why.
 type proc struct {
-	cmd *exec.Cmd
+	cmd   *exec.Cmd
+	codec Codec
 
 	mu    sync.Mutex // serialises writes: lines must not interleave
 	stdin io.WriteCloser
@@ -34,39 +39,8 @@ type proc struct {
 	err  error
 }
 
-// claudeArgs is how a session's process is started.
-//
-// --permission-prompt-tool stdio is what makes permission prompts reach us as
-// control requests. Without it, and with --print, anything that would prompt
-// is denied automatically and the model is told the user refused (observed on
-// Claude Code 2.1.287).
-//
-// --include-partial-messages streams the reply as it is written, so a phone
-// shows it growing rather than all at once at the end of a turn.
-//
-// autoApprove is the desktop's --dangerously-skip-permissions, per session:
-// nothing asks. The session also answers any prompt that arrives anyway
-// (Session.read), so switching it on mid-turn takes effect at once.
-func claudeArgs(resume string, autoApprove bool) []string {
-	args := []string{
-		"-p",
-		"--input-format", "stream-json",
-		"--output-format", "stream-json",
-		"--verbose",
-		"--include-partial-messages",
-		"--permission-prompt-tool", "stdio",
-	}
-	if autoApprove {
-		args = append(args, "--dangerously-skip-permissions")
-	}
-	if resume != "" {
-		args = append(args, "--resume", resume)
-	}
-	return args
-}
-
-func startProc(ctx context.Context, log *slog.Logger, bin, dir, resume string, autoApprove bool) (*proc, error) {
-	cmd := exec.CommandContext(ctx, bin, claudeArgs(resume, autoApprove)...)
+func startProc(ctx context.Context, log *slog.Logger, h Harness, bin, dir string, o StartOptions) (*proc, error) {
+	cmd := exec.CommandContext(ctx, bin, h.Args(o)...)
 	cmd.Dir = dir
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -83,12 +57,12 @@ func startProc(ctx context.Context, log *slog.Logger, bin, dir, resume string, a
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start %s: %w", bin, err)
 	}
-	p := &proc{cmd: cmd, stdin: stdin, out: make(chan json.RawMessage, 64), done: make(chan struct{})}
+	p := &proc{cmd: cmd, codec: h.Codec(), stdin: stdin, out: make(chan json.RawMessage, 64), done: make(chan struct{})}
 
 	go func() {
 		sc := bufio.NewScanner(stderr)
 		for sc.Scan() {
-			log.Debug("claude stderr", "line", sc.Text())
+			log.Debug(h.Name()+" stderr", "line", sc.Text())
 		}
 	}()
 	go func() {
@@ -98,12 +72,14 @@ func startProc(ctx context.Context, log *slog.Logger, bin, dir, resume string, a
 		// would end the session on the first large read.
 		sc.Buffer(make([]byte, 0, 1<<20), 64<<20)
 		for sc.Scan() {
-			line := sc.Bytes()
+			line := bytes.TrimSuffix(sc.Bytes(), []byte("\r"))
 			if !json.Valid(line) {
-				log.Debug("claude wrote a line that is not JSON", "line", string(line))
+				log.Debug(h.Name()+" wrote a line that is not JSON", "line", string(line))
 				continue
 			}
-			p.out <- append(json.RawMessage(nil), line...)
+			for _, m := range p.codec.Decode(append(json.RawMessage(nil), line...)) {
+				p.out <- m
+			}
 		}
 		close(p.out)
 		werr := cmd.Wait()
@@ -114,7 +90,21 @@ func startProc(ctx context.Context, log *slog.Logger, bin, dir, resume string, a
 			p.err = werr
 		}
 	}()
+	if err := p.writeAll(p.codec.Start()); err != nil {
+		p.close()
+		return nil, err
+	}
 	return p, nil
+}
+
+// writeAll sends each of msgs, in order.
+func (p *proc) writeAll(msgs []any) error {
+	for _, m := range msgs {
+		if err := p.write(m); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // write sends one message to the process.

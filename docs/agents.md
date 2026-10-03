@@ -159,6 +159,28 @@ the view in pieces of about half a megabyte and the view reads on until caught
 up: a session's whole backlog in one reply through Basecamp's IPC is the likely
 reason some conversations showed empty after switching to them (not proven).
 
+## On a server
+
+The VPS runs one (2026-10-03), set up the way any server would be:
+
+- **Its own user, `agent`, no sudo.** Sessions run as that user, so
+  auto-approve is safe to switch on and a session cannot touch the relay or
+  anything else root owns; Claude Code also refuses
+  `--dangerously-skip-permissions` as root. Lingering on
+  (`loginctl enable-linger agent`), the user unit as on a desktop, Claude Code
+  from its native installer in `~agent/.local/bin`, logged in once by hand.
+- **The control socket by ACL.** The agent reads the daemon's status for the
+  mesh addresses to serve on and the peers' names — the socket-group tier.
+  The daemon there runs in a container, whose group names are not the
+  host's, so `socket_group` does not fit; instead
+  `/etc/tmpfiles.d/shrooms-agent.conf` puts an ACL on the host's
+  `/run/shrooms` (mounted into the container) that the socket inherits each
+  time the daemon makes it.
+- **Voice notes:** `parakeet-cli` built from whisper.cpp in
+  `~agent/.local/src`, the model in `~agent/.local/share/whisper`,
+  `--stt-threads 4` for its four cores. About real time there (8.7 s for an
+  8.6-second note), against 5–6× on the laptop.
+
 ## Open
 
 - Publishing: the LAN F-Droid and Basecamp repositories live on jimmy-crib,

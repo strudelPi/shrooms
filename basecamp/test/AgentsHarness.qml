@@ -45,6 +45,7 @@ Item {
     ]
 
     property var calls: []
+    property string lastFind: ""
 
     Main {
         id: view
@@ -53,9 +54,12 @@ Item {
         bridge: QtObject {
             function callModule(module, method, args) {
                 top.calls.push(method)
-                if (method === "status") return JSON.stringify({ name: "desk", peers: [
+                if (method === "status") return JSON.stringify({ name: "desk",
+                    meshes: [ { label: "office", overlay: "fdb0:9afc:a5ef:1111:2222:3333:4444:5555" } ], peers: [
                     { name: "laptop", mesh: "office", overlay: "fdb0:9afc:a5ef:388c:8264:7716:36fc:64eb", online: true } ] })
-                if (method === "agentsFind") return JSON.stringify(top.hosts)
+                // The same machine answering on a second mesh address.
+                if (method === "agentsFind") { top.lastFind = args[0]
+                    return JSON.stringify(top.hosts.concat([Object.assign({}, top.hosts[0], { mesh: "home", address: "fd7b::1" })])) }
                 if (method === "agentWatch") return JSON.stringify({ ok: true })
                 if (method === "agentEvents") {
                     top.eventCalls++
@@ -80,6 +84,7 @@ Item {
         interval: 1500; running: true
         onTriggered: {
             console.error("HOSTS=" + view.agentHosts.length + " SESSIONS=" + view.agentHosts[0].sessions.length)
+            console.error("PROBED=" + top.lastFind)
             view.openSession(view.agentHosts[0], "shrooms")
         }
     }

@@ -393,7 +393,10 @@ def render_png(path, size, background=True):
         d.rounded_rectangle([0, 0, size - 1, size - 1], radius=size * 0.22, fill=VOID)
         # The soil, as a wash rather than a hard block: a mark with a visible
         # rectangle in it stops being a mark.
-        d.rectangle([0, HORIZON * s, size, size], fill=EARTH)
+        # Not when it is the background: a block of the same colour still
+        # squares off the rounded corners (the agents mark has no soil).
+        if EARTH != VOID:
+            d.rectangle([0, HORIZON * s, size, size], fill=EARTH)
 
     # Everything that glows is drawn twice: once wide and blurred, once thin
     # and bright. Both the links below the soil and the stems above it, because
@@ -438,7 +441,7 @@ def render_png(path, size, background=True):
         d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=BONE)
 
     # The caps last. Tallest drawn last so it sits in front.
-    for k in ([0] if len(caps) == 1 else [1, 2, 0]):
+    for k in list(range(1, len(caps))) + [0]:
         # The cap: the gasket as line work, in the same idiom as everything
         # else here. It was filled, which made it the only solid shape in a
         # mark otherwise made of glowing lines.

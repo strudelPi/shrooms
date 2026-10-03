@@ -202,9 +202,11 @@ echo "==> the Agents panel"
 cp basecamp/test/AgentsHarness.qml "$work/"
 shot=${AGENTS_SHOT:-$work/agents.png}
 out=$(run "$QML" -I "$work" "$work/AgentsHarness.qml" "$shot")
-echo "$out" | grep -E "^qml: (HOSTS|ROWS|STREAMING|PROMPT|CALLS)" || true
+echo "$out" | grep -E "^qml: (HOSTS|PROBED|ROWS|STREAMING|PROMPT|CALLS)" || true
 expect() { echo "$out" | grep -qF "$1" || { echo "FAIL: $2"; exit 1; }; }
 expect "HOSTS=1 SESSIONS=2" "the agents were not listed"
+# This device first: an agent on the machine Basecamp runs on is no peer of it.
+expect "PROBED=desk|office|fdb0:9afc:a5ef:1111:2222:3333:4444:5555;laptop|office|fdb0:9afc:a5ef:388c" "this device's own agent is not looked for"
 # History before the conversation, the conversation's rows in order, the
 # setting note, and the prompt still open.
 expect "ROWS=you,said,you,said,tool,output,note,note,you,tool,prompt" "the conversation rows are wrong"

@@ -2839,9 +2839,15 @@ Layout.preferredWidth: 0
         return r
     }
 
-    // "name|mesh|address;..." of the peers that can be reached now.
+    // "name|mesh|address;..." of where agents may be: this device first — an
+    // agent on the machine Basecamp runs on is not a peer of it, and was
+    // missed — then the peers that can be reached now.
     function agentPeers() {
         var out = []
+        var ms = (root.st && root.st.meshes) ? root.st.meshes : []
+        for (var m = 0; m < ms.length; m++) {
+            if (ms[m] && ms[m].overlay) out.push((root.st.name || "this device") + "|" + (ms[m].label || "") + "|" + ms[m].overlay)
+        }
         for (var i = 0; i < root.peers.length; i++) {
             var p = root.peers[i]
             if (p.online && p.overlay) out.push(p.name + "|" + (p.mesh || "") + "|" + p.overlay)
@@ -2852,9 +2858,13 @@ Layout.preferredWidth: 0
     function refreshAgents() {
         var r = unwrap(callCore("agentsFind", [agentPeers()]))
         if (!Array.isArray(r)) return
-        var hosts = []
+        var hosts = [], seen = {}
         for (var i = 0; i < r.length; i++) {
             var h = r[i]
+            // One machine on several meshes answers on each of its addresses;
+            // it is one machine with one set of sessions.
+            if (seen[h.name]) continue
+            seen[h.name] = true
             hosts.push({ name: h.name, mesh: h.mesh, address: h.address,
                          sessions: (h.list && h.list.sessions) ? h.list.sessions : [] })
         }

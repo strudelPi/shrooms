@@ -53,13 +53,9 @@ func (s *Session) History(before time.Time, limit int) ([]Said, error) {
 // projects directory, by its id: the directory name is derived from the
 // working directory by rules this should not have to copy.
 func transcriptPath(id string) (string, error) {
-	base := os.Getenv("CLAUDE_CONFIG_DIR")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		base = filepath.Join(home, ".claude")
+	base, err := claudeDir()
+	if err != nil {
+		return "", err
 	}
 	m, err := filepath.Glob(filepath.Join(base, "projects", "*", id+".jsonl"))
 	if err != nil || len(m) == 0 {
@@ -69,11 +65,16 @@ func transcriptPath(id string) (string, error) {
 }
 
 func readHistory(f *os.File, before time.Time, limit int) ([]Said, error) {
+	return readTail(f, historyTail, before, limit)
+}
+
+// readTail reads the exchanges in the last `tail` bytes of a transcript.
+func readTail(f *os.File, tail int64, before time.Time, limit int) ([]Said, error) {
 	st, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
-	start := st.Size() - historyTail
+	start := st.Size() - tail
 	if start < 0 {
 		start = 0
 	}

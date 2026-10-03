@@ -37,6 +37,8 @@ func Handler(log *slog.Logger, m *Manager, who Who) http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{name}/history", h.history)
 	mux.HandleFunc("POST /v1/sessions/{name}/files", h.upload)
 	mux.HandleFunc("POST /v1/sessions/{name}/transcribe", h.transcribe)
+	mux.HandleFunc("GET /v1/conversations", h.conversations)
+	mux.HandleFunc("POST /v1/terminals/{pid}/stop", h.stopTerminal)
 	mux.HandleFunc("GET /v1/sessions/{name}/events", h.events)
 	mux.HandleFunc("POST /v1/sessions/{name}/messages", h.message)
 	mux.HandleFunc("POST /v1/sessions/{name}/prompts/{id}", h.answer)
@@ -89,12 +91,21 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request) {
 		Name        string `json:"name"`
 		Dir         string `json:"dir"`
 		AutoApprove *bool  `json:"auto_approve"`
+		// Resume names an existing conversation to continue — one started in
+		// a terminal, say (GET /v1/conversations).
+		Resume string `json:"resume"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
-	in, err := h.m.Create(req.Name, req.Dir)
+	var in Info
+	var err error
+	if req.Resume != "" {
+		in, err = h.m.Adopt(req.Name, req.Dir, req.Resume)
+	} else {
+		in, err = h.m.Create(req.Name, req.Dir)
+	}
 	if err == nil && req.AutoApprove != nil {
 		if s, ok := h.m.Get(in.Name); ok {
 			err = s.SetAutoApprove(*req.AutoApprove, h.caller(r))
@@ -189,6 +200,39 @@ func (h *handler) transcribe(w http.ResponseWriter, r *http.Request) {
 	h.log.Info("voice note transcribed", "session", s.name, "took", time.Since(start).Round(time.Millisecond),
 		"words", len(strings.Fields(text)), "by", h.caller(r))
 	writeJSON(w, http.StatusOK, map[string]string{"path": path, "text": text})
+}
+
+// conversations lists this machine's Claude Code conversations, newest first,
+// with any terminal claude open in the same directory: ?limit=N (default 30).
+func (h *handler) conversations(w http.ResponseWriter, r *http.Request) {
+	limit := 30
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = min(n, 200)
+		}
+	}
+	cs, err := h.m.Conversations(limit)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conversations": cs})
+}
+
+// stopTerminal ends a terminal's claude so a session can take its conversation
+// over. Only processes Terminals reports: Claude Code run by this user, by hand.
+func (h *handler) stopTerminal(w http.ResponseWriter, r *http.Request) {
+	pid, err := strconv.Atoi(r.PathValue("pid"))
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := StopTerminal(pid); err != nil {
+		fail(w, http.StatusNotFound, err)
+		return
+	}
+	h.log.Info("terminal claude stopped", "pid", pid, "by", h.caller(r))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // history is the conversation before this agent's own events, from Claude

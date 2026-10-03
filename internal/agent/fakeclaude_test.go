@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The tests run the production session and HTTP code against a stand-in for
@@ -23,6 +24,12 @@ import (
 func TestMain(m *testing.M) {
 	if os.Getenv("FAKE_CLAUDE") == "1" {
 		fakeClaude()
+		return
+	}
+	// A process that only sits there, under whatever name it was run as: a
+	// terminal claude, for TestATerminalIsFoundAndStopped.
+	if os.Getenv("FAKE_TERMINAL") == "1" {
+		time.Sleep(time.Minute)
 		return
 	}
 	os.Exit(m.Run())

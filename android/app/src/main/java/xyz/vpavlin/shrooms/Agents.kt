@@ -60,17 +60,42 @@ data class AgentHost(
  * announce, because announcing bound ports is off by default (ADR-026) and an
  * agent should be found with nothing configured.
  */
-suspend fun discoverAgents(peers: List<Peer>): List<AgentHost> = withContext(Dispatchers.IO) {
-    peers.filter { it.online }.groupBy { it.name }.map { (name, ps) ->
-        async {
-            ps.firstNotNullOfOrNull { p ->
-                listOf(p.overlay, p.overlayV4).filter { it.isNotEmpty() }.firstNotNullOfOrNull { a ->
-                    runCatching { AgentHost(name, p.mesh, a, AgentClient(a).sessions(3000)) }.getOrNull()
+suspend fun discoverAgents(peers: List<Peer>, byName: List<String> = emptyList()): List<AgentHost> =
+    withContext(Dispatchers.IO) {
+        val fromPeers = peers.filter { it.online }.groupBy { it.name }.map { (name, ps) ->
+            async {
+                ps.firstNotNullOfOrNull { p ->
+                    listOf(p.overlay, p.overlayV4).filter { it.isNotEmpty() }.firstNotNullOfOrNull { a ->
+                        runCatching { AgentHost(name, p.mesh, a, AgentClient(a).sessions(3000)) }.getOrNull()
+                    }
                 }
             }
         }
-    }.awaitAll().filterNotNull().sortedBy { it.name }
-}
+        val named = byName.filter { n -> peers.none { it.name == n.substringBefore('.') } }.map { n ->
+            async {
+                meshAddressesOf(n).firstNotNullOfOrNull { a ->
+                    runCatching {
+                        AgentHost(n.substringBefore('.'), n.substringAfter('.', "").substringBefore('.'), a,
+                            AgentClient(a).sessions(3000))
+                    }.getOrNull()
+                }
+            }
+        }
+        (fromPeers + named).awaitAll().filterNotNull().distinctBy { it.name }.sortedBy { it.name }
+    }
+
+/**
+ * A machine named rather than found among the peers — `laptop.office.mesh` —
+ * resolved by whatever answers .mesh names on this phone (the shrooms app's
+ * resolver, when its tunnel is up), keeping only answers that are mesh
+ * addresses: a name is not trusted to point inside the tunnel just because it
+ * ends in .mesh.
+ */
+fun meshAddressesOf(name: String): List<String> =
+    runCatching { java.net.InetAddress.getAllByName(name).map { it.hostAddress ?: "" } }
+        .getOrDefault(emptyList())
+        .map { it.substringBefore('%') }
+        .filter { AgentClient.isMeshAddress(it) }
 
 @Composable
 fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit) {
@@ -78,13 +103,18 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit) {
     var open by remember { mutableStateOf<Pair<AgentHost, String>?>(null) }
     var creatingOn by remember { mutableStateOf<AgentHost?>(null) }
     var refresh by remember { mutableStateOf(0) }
+    // Machines added by name, kept across launches.
+    val prefs = androidx.compose.ui.platform.LocalContext.current
+        .getSharedPreferences("agents", android.content.Context.MODE_PRIVATE)
+    var named by remember { mutableStateOf(prefs.getStringSet("named", emptySet())!!.sorted()) }
+    var adding by remember { mutableStateOf("") }
 
     // Refreshed while the list is on screen, so a session that starts waiting
     // for an answer shows it without a pull.
-    LaunchedEffect(refresh, open) {
+    LaunchedEffect(refresh, open, named) {
         if (open != null) return@LaunchedEffect
         while (isActive) {
-            hosts = discoverAgents(peers)
+            hosts = discoverAgents(peers, named)
             delay(10_000)
         }
     }
@@ -117,6 +147,27 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit) {
                     "listening on its mesh address (port $AGENT_PORT). Only online peers are checked.",
                 style = MaterialTheme.typography.bodySmall, color = Palette.Ash,
             )
+        }
+
+        // By name, for a machine the roster does not show — and the only way in
+        // the preview build, which has no roster of its own.
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 10.dp)) {
+            Box(Modifier.weight(1f)) { Field("add a machine, e.g. laptop.office.mesh", adding) { adding = it.trim() } }
+            Text("add", style = MaterialTheme.typography.bodySmall,
+                color = if (adding.isNotEmpty()) Palette.Phosphor else Palette.Ash,
+                modifier = Modifier.clickable(enabled = adding.isNotEmpty()) {
+                    named = (named + adding).distinct().sorted()
+                    prefs.edit().putStringSet("named", named.toSet()).apply()
+                    adding = ""
+                    hosts = null
+                }.padding(10.dp))
+        }
+        if (named.isNotEmpty()) {
+            Text("by name: " + named.joinToString(", ") + "   (clear)", style = MaterialTheme.typography.bodySmall,
+                color = Palette.Ash, modifier = Modifier.clickable {
+                    named = emptyList()
+                    prefs.edit().remove("named").apply()
+                }.padding(vertical = 4.dp))
         }
 
         val c = creatingOn

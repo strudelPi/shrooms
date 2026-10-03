@@ -32,6 +32,19 @@ android {
         // does not leave it; scripts/publish-fdroid.sh signs there. A
         // debug-signed APK would also be skipped by `fdroid update`.
         release { isMinifyEnabled = false }
+        // A test build that installs NEXT TO the real app rather than over it:
+        // another package, signed with the build's own debug key. For when the
+        // release key's host is unreachable (2026-10-03, the office router) and
+        // a feature still needs trying. It opens straight into Agents and never
+        // touches the VPN, which stays with the real app — so the phone keeps
+        // its mesh identity. Build: ./gradlew assemblePreview
+        create("preview") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".preview"
+            versionNameSuffix = "-preview"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "debug"
+        }
     }
 
     compileOptions {

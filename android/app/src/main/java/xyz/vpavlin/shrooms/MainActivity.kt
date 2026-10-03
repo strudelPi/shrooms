@@ -89,6 +89,14 @@ class MainActivity : ComponentActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
+        // The preview build (see build.gradle.kts) is Agents only. It must not
+        // offer to connect: the VPN belongs to the real app installed beside
+        // it, and Android allows one VPN at a time.
+        if (packageName.endsWith(".preview")) {
+            setContent { LogosTheme { AgentsScreen(peers = emptyList(), onClose = { finish() }) } }
+            return
+        }
+
         setContent {
             LogosTheme {
                 val dir = filesDir.absolutePath

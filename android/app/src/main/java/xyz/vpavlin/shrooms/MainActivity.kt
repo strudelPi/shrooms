@@ -59,8 +59,31 @@ class MainActivity : ComponentActivity() {
             i.getStringExtra(AgentWatch.EXTRA_MESH) ?: "", session)
     }
 
+    /**
+     * Opens Shrooms Agents, handing it the peers that can be reached now: it
+     * is no mesh client itself, and this is how it knows where to look.
+     * Not installed: says where it is, rather than doing nothing.
+     */
+    private fun openAgentsApp(peers: List<Peer>) {
+        val i = packageManager.getLaunchIntentForPackage(AGENTS_PACKAGE)
+        if (i == null) {
+            android.widget.Toast.makeText(this,
+                "Install Shrooms Agents — it is in the same F-Droid repository as shrooms",
+                android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        i.putExtra(EXTRA_PEERS, peersForAgents(peers))
+        startActivity(i)
+    }
+
+    companion object {
+        const val AGENTS_PACKAGE = "xyz.vpavlin.shrooms.agents"
+        const val EXTRA_PEERS = "mesh_peers"
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (packageName == AGENTS_PACKAGE) intent.getStringExtra(EXTRA_PEERS)?.let { AgentHosts.savePeers(this, it) }
         agentFrom(intent)?.let { openAgent.value = it }
     }
 
@@ -105,12 +128,16 @@ class MainActivity : ComponentActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        // The preview build (see build.gradle.kts) is Agents only. It must not
-        // offer to connect: the VPN belongs to the real app installed beside
-        // it, and Android allows one VPN at a time.
-        if (packageName.endsWith(".preview")) {
-            // Notifications need something running: the real app has its VPN
-            // service, the preview has this.
+        // Shrooms Agents (the "agents" build, docs/agents.md) is this code
+        // opening into its Agents screens. It must not offer to connect: the
+        // VPN belongs to the shrooms app beside it, and Android allows one VPN
+        // at a time.
+        if (packageName == AGENTS_PACKAGE) {
+            // The mesh as the shrooms app saw it when it opened this one: who
+            // to look for agents on, since this app is no mesh client itself.
+            intent?.getStringExtra(EXTRA_PEERS)?.let { AgentHosts.savePeers(this, it) }
+            // Notifications need something running, and this app has no VPN
+            // service to host them.
             startForegroundService(Intent(this, AgentWatchService::class.java))
             openAgent.value = agentFrom(intent)
             setContent {
@@ -121,7 +148,6 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        openAgent.value = agentFrom(intent)
         setContent {
             LogosTheme {
                 val dir = filesDir.absolutePath
@@ -129,8 +155,6 @@ class MainActivity : ComponentActivity() {
                 var addingMesh by remember { mutableStateOf(false) }
                 var inSettings by remember { mutableStateOf(false) }
                 var inviting by remember { mutableStateOf(false) }
-                var inAgents by remember { mutableStateOf(false) }
-                LaunchedEffect(openAgent.value) { if (openAgent.value != null) inAgents = true }
                 // Which picture the graph draws. It is set in settings and read
                 // by the mesh screen, so it belongs to neither of them — and it
                 // is saveable because a rotation that quietly reverts a setting
@@ -206,12 +230,6 @@ class MainActivity : ComponentActivity() {
                             meshLabel = "",
                             onClose = { inviting = false },
                         )
-                    } else if (inAgents) {
-                        // The agents on the owner's other machines
-                        // (docs/agents.md). Back is handled inside, where it
-                        // leaves a conversation before it leaves the list.
-                        AgentsScreen(peers = snap.peers, onClose = { inAgents = false; openAgent.value = null },
-                            initial = openAgent.value)
                     } else if (inSettings) {
                         // System back leaves settings rather than the app: this
                         // is a screen swapped in by state, not an Activity, so
@@ -241,7 +259,7 @@ class MainActivity : ComponentActivity() {
                             onAddMesh = { addingMesh = true },
                             onSettings = { inSettings = true },
                             onInvite = { inviting = true },
-                            onAgents = { inAgents = true },
+                            onAgents = { openAgentsApp(snap.peers) },
                             onLeftMesh = {
                                 // The tunnel is built from the config at
                                 // connect time, so a mesh added, removed or

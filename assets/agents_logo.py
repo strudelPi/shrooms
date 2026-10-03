@@ -11,7 +11,8 @@ Spores rise from every cap, not just the tallest: that is the agents at work.
 Not a second drawing. It imports logo.py and changes only what differs, so the
 two marks share every stroke, glow and colour and cannot drift apart.
 
-    python3 assets/agents_logo.py [outdir]
+    python3 assets/agents_logo.py            # every output, in place
+    python3 assets/agents_logo.py <dir>      # a preview into <dir>
 """
 import os
 import random
@@ -68,8 +69,29 @@ logo.mycelium = mycelium
 logo.spores = spores
 
 if __name__ == "__main__":
-    out = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))
-    logo.render_png(os.path.join(out, "agents.png"), 512)
-    logo.render_png(os.path.join(out, "agents-48.png"), 48)
-    logo.render_png(os.path.join(out, "agents-96.png"), 96)
-    print("wrote", out)
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(here)
+    if len(sys.argv) > 1:
+        # A preview into a directory of one's choosing.
+        out = sys.argv[1]
+        logo.render_png(os.path.join(out, "agents.png"), 512)
+        logo.render_png(os.path.join(out, "agents-48.png"), 48)
+        sys.exit(0)
+
+    # The Shrooms Agents Android app: its own launcher, as resources of the
+    # build that makes it (android/app/build.gradle.kts, "agents"), overriding
+    # the shrooms ones of the same name.
+    res = os.path.join(root, "android/app/src/agents/res")
+    os.makedirs(os.path.join(res, "drawable"), exist_ok=True)
+    logo.render_vector(os.path.join(res, "drawable/ic_mesh.xml"))
+    for dpi, px in [("mdpi", 48), ("hdpi", 72), ("xhdpi", 96), ("xxxhdpi", 192)]:
+        d = os.path.join(res, f"mipmap-{dpi}")
+        os.makedirs(d, exist_ok=True)
+        logo.render_png(os.path.join(d, "ic_launcher.png"), px)
+        logo.render_png(os.path.join(d, "ic_launcher_round.png"), px)
+    # The Basecamp module, and one for documents and F-Droid.
+    os.makedirs(os.path.join(root, "basecamp-agents"), exist_ok=True)
+    logo.render_png(os.path.join(root, "basecamp-agents/icon.png"), 512)
+    logo.render_png(os.path.join(here, "agents.png"), 512)
+    logo.render_svg(os.path.join(here, "agents.svg"))
+    print("wrote the agents mark: vector drawable, mipmaps, basecamp icon, png, svg")

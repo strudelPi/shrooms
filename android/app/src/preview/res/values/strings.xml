@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- The preview build installs next to the real app (applicationIdSuffix),
-     so it must not look like it. See the preview build type. -->
-<resources>
-    <string name="app_name">shrooms preview</string>
-</resources>

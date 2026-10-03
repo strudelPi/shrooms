@@ -62,6 +62,17 @@ object AgentWatch {
     }
 }
 
+/** "name|mesh|address;..." as hosts, mesh addresses only. Pure, for the tests. */
+fun parsePeers(s: String): List<AgentHosts.Host> =
+    s.split(';').mapNotNull {
+        val p = it.split('|')
+        if (p.size == 3 && AgentClient.isMeshAddress(p[2])) AgentHosts.Host(p[0], p[1], p[2]) else null
+    }
+
+/** The other way: what the shrooms app hands Shrooms Agents. Online peers only. */
+fun peersForAgents(peers: List<Peer>): String =
+    peers.filter { it.online && it.overlay.isNotEmpty() }.joinToString(";") { "${it.name}|${it.mesh}|${it.overlay}" }
+
 /** The machines the Agents screen has found, so the watcher can poll them. */
 object AgentHosts {
     data class Host(val name: String, val mesh: String, val address: String)
@@ -73,6 +84,17 @@ object AgentHosts {
             val p = it.split('|')
             if (p.size == 3 && AgentClient.isMeshAddress(p[2])) Host(p[0], p[1], p[2]) else null
         }
+
+    /**
+     * The peers the shrooms app could reach when it last opened this one, as
+     * "name|mesh|address;..." — where Shrooms Agents looks for agents, since
+     * it is no mesh client itself.
+     */
+    fun savePeers(ctx: Context, peers: String) {
+        prefs(ctx).edit().putString("peers", peers).apply()
+    }
+
+    fun peers(ctx: Context): List<Host> = parsePeers(prefs(ctx).getString("peers", "") ?: "")
 
     fun save(ctx: Context, hosts: List<Host>) {
         prefs(ctx).edit().putStringSet("hosts", hosts.map { "${it.name}|${it.mesh}|${it.address}" }.toSet()).apply()
@@ -133,10 +155,9 @@ class AgentWatcher(private val ctx: Context) {
 }
 
 /**
- * Hosts the watcher in the preview build, which has no VPN service to host it
- * — in the real app it runs inside MeshVpnService, which is already running
- * whenever the mesh is. Foreground, because Android stops anything else in the
- * background within minutes.
+ * Hosts the watcher in Shrooms Agents. Foreground, because Android stops
+ * anything else in the background within minutes; a quiet notification is the
+ * price of hearing that an agent needs you.
  */
 class AgentWatchService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

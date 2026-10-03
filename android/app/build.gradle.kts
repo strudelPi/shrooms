@@ -26,17 +26,20 @@ android {
         ndk { abiFilters += "arm64-v8a" }
     }
 
-    // The preview's own key, kept in android/preview.keystore (not in git).
-    // The debug key will not do: the build runs in a fresh container each
-    // time, which makes a new debug key each time, and Android refuses to
-    // update an app whose signature changed ("conflicts with an existing
-    // package", 2026-10-03).
+    // Shrooms Agents' own key (docs/agents.md). Never in the repository:
+    // whoever holds it can ship an update to an app that drives your agents.
+    // The build is handed it by scripts/build-agents-apk.sh, read-only, from
+    // ~/apk-signing/shrooms-agents; without it the agents build is unsigned.
+    val agentsKey = System.getenv("AGENTS_KEYSTORE")?.let { file(it) }?.takeIf { it.exists() }
     signingConfigs {
-        create("preview") {
-            storeFile = rootProject.file("preview.keystore")
-            storePassword = "android"
-            keyAlias = "preview"
-            keyPassword = "android"
+        if (agentsKey != null) {
+            create("agents") {
+                storeFile = agentsKey
+                storePassword = file(System.getenv("AGENTS_KEYSTORE_PASSWORD_FILE")).readText().trim()
+                keyAlias = "shrooms-agents"
+                keyPassword = storePassword
+                storeType = "pkcs12"
+            }
         }
     }
 
@@ -46,18 +49,17 @@ android {
         // does not leave it; scripts/publish-fdroid.sh signs there. A
         // debug-signed APK would also be skipped by `fdroid update`.
         release { isMinifyEnabled = false }
-        // A test build that installs NEXT TO the real app rather than over it:
-        // another package, signed with its own key (above). For when the
-        // release key's host is unreachable (2026-10-03, the office router) and
-        // a feature still needs trying. It opens straight into Agents and never
-        // touches the VPN, which stays with the real app — so the phone keeps
-        // its mesh identity. Build: ./gradlew assemblePreview
-        create("preview") {
-            initWith(getByName("debug"))
-            applicationIdSuffix = ".preview"
-            versionNameSuffix = "-preview"
-            signingConfig = signingConfigs.getByName("preview")
-            matchingFallbacks += "debug"
+        // Shrooms Agents: a separate app built from the same code — its own
+        // package, name, icon (src/agents/res) and key — that opens into the
+        // Agents screens and never touches the VPN, which stays with the
+        // shrooms app. Separate because the two change at different speeds
+        // and carry different permissions (docs/agents.md).
+        // Build: scripts/build-agents-apk.sh
+        create("agents") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".agents"
+            signingConfig = signingConfigs.findByName("agents")
+            matchingFallbacks += "release"
         }
     }
 

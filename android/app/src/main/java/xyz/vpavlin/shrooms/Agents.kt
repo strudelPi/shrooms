@@ -95,7 +95,8 @@ data class OpenSession(val address: String, val host: String, val mesh: String, 
  * announce, because announcing bound ports is off by default (ADR-026) and an
  * agent should be found with nothing configured.
  */
-suspend fun discoverAgents(peers: List<Peer>, byName: List<String> = emptyList()): List<AgentHost> =
+suspend fun discoverAgents(peers: List<Peer>, byName: List<String> = emptyList(),
+                           known: List<AgentHosts.Host> = emptyList()): List<AgentHost> =
     withContext(Dispatchers.IO) {
         val fromPeers = peers.filter { it.online }.groupBy { it.name }.map { (name, ps) ->
             async {
@@ -105,6 +106,10 @@ suspend fun discoverAgents(peers: List<Peer>, byName: List<String> = emptyList()
                     }
                 }
             }
+        }
+        // The peers the shrooms app handed over, when this is Shrooms Agents.
+        val handed = known.filter { k -> peers.none { it.name == k.name } }.map { k ->
+            async { runCatching { AgentHost(k.name, k.mesh, k.address, AgentClient(k.address).sessions(3000)) }.getOrNull() }
         }
         val named = byName.filter { n -> peers.none { it.name == n.substringBefore('.') } }.map { n ->
             async {
@@ -116,7 +121,7 @@ suspend fun discoverAgents(peers: List<Peer>, byName: List<String> = emptyList()
                 }
             }
         }
-        val found = (fromPeers + named).awaitAll().filterNotNull().distinctBy { it.name }
+        val found = (fromPeers + handed + named).awaitAll().filterNotNull().distinctBy { it.name }
         // Then the mesh as each agent's machine sees it: a phone that knows one
         // agent finds the rest without being told (/v1/peers). One round, not
         // a crawl — every machine sees the same mesh.
@@ -230,7 +235,7 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
     LaunchedEffect(refresh, open, named) {
         if (open != null) return@LaunchedEffect
         while (isActive) {
-            val found = discoverAgents(peers, named)
+            val found = discoverAgents(peers, named, AgentHosts.peers(ctx))
             hosts = found
             if (found.isNotEmpty()) AgentHosts.save(ctx, found.map { AgentHosts.Host(it.name, it.mesh, it.address) })
             delay(10_000)
@@ -295,8 +300,8 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
                 }
                 hs.isEmpty() -> Text(
                     "No agents found. An agent is shrooms-agent running on one of your machines, " +
-                        "on its mesh address, port $AGENT_PORT. Only online peers are checked — " +
-                        "or add a machine by name.",
+                        "on its mesh address, port $AGENT_PORT. Open this from the shrooms app's " +
+                        "\"agents\" link to look on every peer it can reach, or add a machine by name.",
                     style = MaterialTheme.typography.bodySmall, color = Palette.Ash,
                     modifier = Modifier.padding(top = 20.dp),
                 )

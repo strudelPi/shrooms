@@ -19,8 +19,24 @@ if [ -n "$(find mobile internal -name '*.go' -newer android/logosvpn.aar -print 
     echo "WARNING: android/logosvpn.aar is older than the Go sources — run 'make aar'" >&2
 fi
 
+# AGENTS=1 builds Shrooms Agents (docs/agents.md): its own app from this code,
+# signed here with its own key, which never enters the repository and is handed
+# to the build read-only. Kept by default in ~/apk-signing/shrooms-agents, with
+# its password beside it.
+KEYMOUNT=()
+KEYENV=()
+if [ "${AGENTS:-0}" = "1" ]; then
+    KEYS=${AGENTS_KEYS:-$HOME/apk-signing/shrooms-agents}
+    [ -f "$KEYS/shrooms-agents.keystore" ] && [ -f "$KEYS/password" ] ||
+        { echo "no Shrooms Agents key in $KEYS (shrooms-agents.keystore + password)"; exit 1; }
+    TASK=assembleAgents
+    ARGS="-PversionCode=${VERSION_CODE:-1} -PversionName=${VERSION_NAME:-0.1}"
+    BUILT=android/app/build/outputs/apk/agents/app-agents.apk
+    OUTPUT=android/shrooms-agents.apk
+    KEYMOUNT=(-v "$KEYS:/keys:ro")
+    KEYENV=(-e AGENTS_KEYSTORE=/keys/shrooms-agents.keystore -e AGENTS_KEYSTORE_PASSWORD_FILE=/keys/password)
 # RELEASE=1 builds an unsigned release APK for signing elsewhere.
-if [ "${RELEASE:-0}" = "1" ]; then
+elif [ "${RELEASE:-0}" = "1" ]; then
     TASK=assembleRelease
     ARGS="-PversionCode=${VERSION_CODE:-1} -PversionName=${VERSION_NAME:-0.1-prototype}"
     BUILT=android/app/build/outputs/apk/release/app-release-unsigned.apk
@@ -35,7 +51,7 @@ fi
 echo "==> building the APK ($TASK)"
 docker run --rm \
     -v "$PWD:/src" -v "$SDK:/sdk" \
-    -v "$PWD/.gradle-cache:/gradle" \
+    -v "$PWD/.gradle-cache:/gradle" "${KEYMOUNT[@]}" "${KEYENV[@]}" \
     -w /src/android \
     -e ANDROID_HOME=/sdk -e ANDROID_SDK_ROOT=/sdk -e GRADLE_USER_HOME=/gradle \
     -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
@@ -58,7 +74,9 @@ docker run --rm \
 cp "$BUILT" "$OUTPUT"
 echo
 echo "==> $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"
-if [ "${RELEASE:-0}" = "1" ]; then
+if [ "${AGENTS:-0}" = "1" ]; then
+    echo "    Shrooms Agents, signed with its own key"
+elif [ "${RELEASE:-0}" = "1" ]; then
     echo "    unsigned; sign and publish with: make fdroid"
 else
     echo "    install with: adb install -r $OUTPUT"

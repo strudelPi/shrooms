@@ -35,14 +35,6 @@ class MeshVpnService : VpnService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // Agents need you or have replied: notified from here, since this service
-    // runs whenever the mesh does — which is the only time an agent is
-    // reachable anyway (AgentWatch.kt).
-    override fun onCreate() {
-        super.onCreate()
-        scope.launch { AgentWatcher(this@MeshVpnService).run() }
-    }
-
     /**
      * One session transition at a time.
      *

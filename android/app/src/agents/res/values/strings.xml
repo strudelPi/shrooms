@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shrooms Agents, the separate app built from this code (the "agents" build
+     type): what grows out of the mesh. -->
+<resources>
+    <string name="app_name">Shrooms Agents</string>
+</resources>

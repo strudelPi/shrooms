@@ -485,10 +485,13 @@ def render_vector(path):
     # does not touch its stems.
     parts.append('    <group android:pivotX="54" android:pivotY="54" '
                  f'android:scaleX="{SAFE:.3f}" android:scaleY="{SAFE:.3f}">')
-    parts.append("    <!-- the soil -->")
-    parts.append(f'    <path android:pathData="M -20 {HORIZON} L 128 {HORIZON} '
-                 f'L 128 148 L -20 148 Z" android:fillColor="{hexa(EARTH)}"/>')
-    parts.append("")
+    # The soil block only when it differs from the background: in a themed
+    # (monochrome) launcher icon it would otherwise be a solid slab.
+    if EARTH != VOID:
+        parts.append("    <!-- the soil -->")
+        parts.append(f'    <path android:pathData="M -20 {HORIZON} L 128 {HORIZON} '
+                     f'L 128 148 L -20 148 Z" android:fillColor="{hexa(EARTH)}"/>')
+        parts.append("")
     parts.append("    <!-- mycelium: the mesh, where mycelium actually lives -->")
 
     hyphae = _lines(links)
@@ -559,7 +562,8 @@ def render_svg(path):
              '<defs><filter id="g" x="-50%" y="-50%" width="200%" height="200%">'
              '<feGaussianBlur stdDeviation="1.8"/></filter></defs>',
              f'<rect width="108" height="108" rx="24" fill="{hexa(VOID)}"/>',
-             f'<path d="M 0 {HORIZON} L 108 {HORIZON} L 108 108 L 0 108 Z" fill="{hexa(EARTH)}"/>',
+             (f'<path d="M 0 {HORIZON} L 108 {HORIZON} L 108 108 L 0 108 Z" fill="{hexa(EARTH)}"/>'
+              if EARTH != VOID else ""),
              f'<g filter="url(#g)" opacity="0.85"><path d="{sx.escape(hyphae)}" '
              f'stroke="{hexa(PHOSPHOR)}" stroke-width="2.6" fill="none" stroke-linecap="round"/></g>',
              f'<path d="{sx.escape(hyphae)}" stroke="{hexa(PHOSPHOR)}" stroke-width="1.0" '

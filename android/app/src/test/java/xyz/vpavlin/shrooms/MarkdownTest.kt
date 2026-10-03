@@ -163,3 +163,28 @@ class VoiceLangTest {
         assertEquals("cs", nextVoiceLang("de"))
     }
 }
+
+/**
+ * Shrooms Agents is no mesh client, so the shrooms app hands it the peers it
+ * can reach when it opens it. What goes over and what comes back.
+ */
+class PeerHandoverTest {
+    private fun peer(name: String, mesh: String, overlay: String, online: Boolean) =
+        Peer(name, "$name.$mesh.mesh", overlay, "", online, online, false, false, 0, 0, 0, 0, 0.0, mesh = mesh)
+
+    @Test fun onlineMeshPeersAreHandedOverAndReadBack() {
+        val s = peersForAgents(listOf(
+            peer("laptop", "office", "fdb0:9afc:a5ef:388c:8264:7716:36fc:64eb", true),
+            peer("k11", "home", "fd7b:15fb:5ec1:fc97:20a3:9b5c:9fc4:7348", false),
+            peer("pi5", "office", "", true),
+        ))
+        assertEquals("laptop|office|fdb0:9afc:a5ef:388c:8264:7716:36fc:64eb", s)
+        assertEquals(listOf(AgentHosts.Host("laptop", "office", "fdb0:9afc:a5ef:388c:8264:7716:36fc:64eb")), parsePeers(s))
+    }
+
+    // What arrives in an intent is not trusted to point inside the tunnel.
+    @Test fun anAddressOutsideTheMeshIsDropped() {
+        assertEquals(listOf("ok"), parsePeers("evil|x|128.140.55.128;ok|office|fd00::1;bad|x;|||").map { it.name })
+        assertTrue(parsePeers("").isEmpty())
+    }
+}

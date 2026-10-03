@@ -188,3 +188,13 @@ class PeerHandoverTest {
         assertTrue(parsePeers("").isEmpty())
     }
 }
+
+class TakeOverTest {
+    @Test fun aSessionIsNamedAfterItsDirectoryAndNeverCollides() {
+        assertEquals("logos-vpn", sessionNameFor("/home/x/devel/logos-vpn", emptyList()))
+        assertEquals("logos-vpn-2", sessionNameFor("/home/x/devel/logos-vpn/", listOf("logos-vpn")))
+        assertEquals("logos-vpn-3", sessionNameFor("/home/x/logos-vpn", listOf("logos-vpn", "logos-vpn-2")))
+        assertEquals("my-project", sessionNameFor("/home/x/my project", emptyList()))
+        assertEquals("conversation", sessionNameFor("", emptyList()))
+    }
+}

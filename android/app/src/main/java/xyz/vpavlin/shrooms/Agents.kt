@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -289,7 +290,8 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
 
             val c = creatingOn
             if (c != null) {
-                NewSession(c, onDone = { creatingOn = null; refresh++ })
+                NewSession(c, onDone = { creatingOn = null; refresh++ },
+                onOpen = { n -> creatingOn = null; open = OpenSession(c.address, c.name, c.mesh, n) })
                 return@Column
             }
 
@@ -368,14 +370,23 @@ private fun SessionRow(s: AgentSession, onOpen: () -> Unit) {
 }
 
 @Composable
-private fun NewSession(h: AgentHost, onDone: () -> Unit) {
+private fun NewSession(h: AgentHost, onDone: () -> Unit, onOpen: (String) -> Unit) {
+    var convs by remember { mutableStateOf<List<Conversation>?>(null) }
+    var convError by remember { mutableStateOf("") }
+    var reload by remember { mutableStateOf(0) }
+    LaunchedEffect(h.address, reload) {
+        withContext(Dispatchers.IO) { runCatching { AgentClient(h.address).conversations() } }
+            .onSuccess { convs = it }
+            .onFailure { convError = it.message ?: "could not list them" }
+    }
     var name by remember { mutableStateOf("") }
     var dir by remember { mutableStateOf("~/") }
     var auto by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 16.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.padding(top = 16.dp).verticalScroll(rememberScrollState())) {
         Text("NEW SESSION ON ${h.name.uppercase()}", style = MaterialTheme.typography.labelSmall, color = Palette.Phosphor)
         Label("A name and a directory on that machine, like a cl session. ~ is that machine's home.")
         Field("name", name) { name = it }
@@ -399,7 +410,77 @@ private fun NewSession(h: AgentHost, onDone: () -> Unit) {
             }
         }
         Link("cancel", Palette.Ash) { onDone() }
+
+        // Or carry on one that started somewhere else — in a terminal, under
+        // cl. Resuming keeps writing to the same conversation: this continues
+        // it rather than copying it.
+        Spacer(Modifier.height(8.dp))
+        Text("OR CONTINUE A CONVERSATION", style = MaterialTheme.typography.labelSmall, color = Palette.Phosphor)
+        Label("Newest first. A terminal still open in the same directory may hold it: stop it first, or the two write over each other's turns.")
+        when {
+            convError.isNotEmpty() -> Text(convError, style = MaterialTheme.typography.bodySmall, color = Palette.Rust)
+            convs == null -> Row(verticalAlignment = Alignment.CenterVertically) { Pulse(Palette.Amber); Spacer(Modifier.width(8.dp)); Label("looking…") }
+        }
+        for (c in convs.orEmpty()) {
+            val taken = c.adoptedBy.isNotEmpty()
+            Column(
+                Modifier.fillMaxWidth()
+                    .background(Palette.Panel, RoundedCornerShape(10.dp))
+                    .border(1.dp, Palette.Line, RoundedCornerShape(10.dp))
+                    .clickable(enabled = !taken && !busy) {
+                        busy = true
+                        val n = sessionNameFor(c.dir, h.sessions.map { it.name })
+                        scope.launch {
+                            val r = withContext(Dispatchers.IO) { runCatching { AgentClient(h.address).takeOver(n, c.id, auto) } }
+                            busy = false
+                            r.onSuccess { onOpen(n) }.onFailure { error = it.message ?: "could not take it over" }
+                        }
+                    }
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Row {
+                    Text(c.dir.replace(Regex("^/home/[^/]+"), "~"), style = MaterialTheme.typography.bodyMedium,
+                        color = if (taken) Palette.Ash else Palette.Bone, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f))
+                    Label(whenSaid(c.modified))
+                }
+                if (c.lastUser.isNotEmpty()) Text("you: " + c.lastUser, style = MaterialTheme.typography.bodySmall,
+                    color = Palette.Ash, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (c.lastAssistant.isNotEmpty()) Text("claude: " + c.lastAssistant, style = MaterialTheme.typography.bodySmall,
+                    color = Palette.Ash, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (taken) Text("continued here as \"${c.adoptedBy}\"", style = MaterialTheme.typography.labelSmall, color = Palette.Phosphor)
+                for ((pid, where) in c.terminals) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Pulse(Palette.Amber); Spacer(Modifier.width(8.dp))
+                        Text("open in a terminal: $where", style = MaterialTheme.typography.labelSmall, color = Palette.Amber,
+                            modifier = Modifier.weight(1f))
+                        Link("stop it", Palette.Rust) {
+                            scope.launch {
+                                withContext(Dispatchers.IO) { runCatching { AgentClient(h.address).stopTerminal(pid) } }
+                                    .onFailure { error = it.message ?: "could not stop it" }
+                                reload++
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(24.dp))
     }
+}
+
+/**
+ * A session name from the directory a conversation ran in, made unique among
+ * the machine's sessions: "logos-vpn", then "logos-vpn-2".
+ */
+fun sessionNameFor(dir: String, taken: List<String>): String {
+    val base = dir.trimEnd('/').substringAfterLast('/')
+        .replace(Regex("[^a-zA-Z0-9._-]"), "-").trimStart('-', '.', '_').take(40).ifEmpty { "conversation" }
+    var name = base
+    var n = 2
+    while (name in taken) name = "$base-${n++}"
+    return name
 }
 
 @Composable

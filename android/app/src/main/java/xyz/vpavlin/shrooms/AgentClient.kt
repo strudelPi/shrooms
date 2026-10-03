@@ -38,6 +38,22 @@ data class AgentSession(
     val model: String = "",
 )
 
+/**
+ * A Claude Code conversation on an agent's machine — one started in a
+ * terminal, say — that a session can take over. [terminals] are claude
+ * processes open in the same directory: one may hold it, and two writers on
+ * one conversation split it.
+ */
+data class Conversation(
+    val id: String,
+    val dir: String,
+    val modified: Long,
+    val lastUser: String,
+    val lastAssistant: String,
+    val adoptedBy: String,
+    val terminals: List<Pair<Int, String>>,
+)
+
 /** A line of the conversation from before the agent had it (the transcript). */
 data class Earlier(val time: Long, val role: String, val text: String)
 
@@ -84,6 +100,36 @@ class AgentClient(address: String) {
     fun create(name: String, dir: String, autoApprove: Boolean = false) {
         request("POST", "/v1/sessions",
             JSONObject().put("name", name).put("dir", dir).put("auto_approve", autoApprove).toString())
+    }
+
+    /** The machine's Claude Code conversations, newest first. */
+    fun conversations(limit: Int = 15): List<Conversation> {
+        val a = JSONObject(request("GET", "/v1/conversations?limit=$limit", null)).optJSONArray("conversations")
+            ?: return emptyList()
+        return (0 until a.length()).map { i ->
+            val o = a.getJSONObject(i)
+            val ts = o.optJSONArray("terminals")
+            Conversation(
+                id = o.optString("id"), dir = o.optString("dir"), modified = parseTime(o.optString("modified")),
+                lastUser = o.optString("last_user"), lastAssistant = o.optString("last_assistant"),
+                adoptedBy = o.optString("adopted_by"),
+                terminals = (0 until (ts?.length() ?: 0)).map { j ->
+                    val t = ts!!.getJSONObject(j)
+                    t.optInt("pid") to t.optString("tmux").ifEmpty { "pid " + t.optInt("pid") }
+                },
+            )
+        }
+    }
+
+    /** A session continuing a conversation, in the directory it ran in. */
+    fun takeOver(name: String, conversation: String, autoApprove: Boolean) {
+        request("POST", "/v1/sessions",
+            JSONObject().put("name", name).put("resume", conversation).put("auto_approve", autoApprove).toString())
+    }
+
+    /** Ends a terminal's claude, so its conversation can be carried on here. */
+    fun stopTerminal(pid: Int) {
+        request("POST", "/v1/terminals/$pid/stop", null)
     }
 
     /** Whether a session asks before running things — the desktop's --dangerously-skip-permissions. */

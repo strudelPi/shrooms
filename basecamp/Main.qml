@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 
 // A monitoring view for logos-vpn.
 //
@@ -232,6 +233,8 @@ Item {
         prefsLoaded = true
         var w = String(callCore("getPref", ["whole_mesh"]) || "").trim()
         if (w === "1" || w === "0") root.wholeMesh = (w === "1")
+        var vl = String(callCore("getPref", ["voice_lang"]) || "").trim()
+        if (vl === "cs" || vl === "en" || vl === "auto") root.voiceLang = vl
         var n = parseFloat(String(callCore("getPref", ["ui_nudge"]) || ""))
         if (!isNaN(n)) root.uiNudge = Math.max(-0.4, Math.min(1.0, n))
     }
@@ -2820,6 +2823,15 @@ Layout.preferredWidth: 0
     property bool agentConnected: false
     property string agentProblem: ""
     property bool agentCreating: false
+    // Follow new messages while at the bottom; stop once scrolled up.
+    property bool chatStick: true
+    // Files sent to the session's machine, named in the next message.
+    property var agentAttached: []
+    property var agentJobsSeen: ({})
+    property string agentSending: ""
+    property bool agentRecording: false
+    property bool agentTranscribing: false
+    property string voiceLang: "cs"
 
     function unwrap(raw) {
         var r = raw
@@ -2889,6 +2901,8 @@ Layout.preferredWidth: 0
         root.agentEarlier = []
         root.agentStreaming = ""
         root.agentNext = 0
+        root.chatStick = true
+        root.agentAttached = []
         chatModel.clear()
         agentCall("agentWatch", [h.address, s])
         // After the first paint: a call during construction of what it fills
@@ -3010,7 +3024,6 @@ Layout.preferredWidth: 0
     // arriving after the events is the one case that rebuilds it.
     function rebuildChat() {
         var items = chatItems()
-        var atEnd = chatList.atYEnd || chatModel.count === 0
         var i = 0
         for (; i < chatModel.count && i < items.length; i++) {
             if (chatModel.get(i).key !== items[i].key) break
@@ -3022,7 +3035,7 @@ Layout.preferredWidth: 0
             i = 0
         }
         for (; i < items.length; i++) chatModel.append(row(items[i]))
-        if (atEnd) Qt.callLater(function() { chatList.positionViewAtEnd() })
+        if (root.chatStick) Qt.callLater(function() { chatList.positionViewAtEnd() })
     }
     function row(it) {
         return { key: it.key, kind: it.kind, text: it.text || "", by: it.by || "", time: it.time || 0,
@@ -3042,11 +3055,65 @@ Layout.preferredWidth: 0
                !(last.data.type === "control_request")
     }
 
+    // A message with the files sent alongside it named at the end, by their
+    // path on the agent's machine — the same words the phone uses.
+    function withAttachments(text, paths) {
+        if (paths.length === 0) return text
+        return (text === "" ? "" : text + "\n\n") + "Attached from Basecamp (on this machine):\n"
+               + paths.map(function(p) { return "- " + p }).join("\n")
+    }
     function sendToAgent(text) {
-        if (!agentOpen || text.trim() === "") return false
+        if (!agentOpen || (text.trim() === "" && agentAttached.length === 0) || agentSending !== "") return false
         var r = agentCall("agentPost", [agentOpen.address, "/v1/sessions/" + agentOpen.session + "/messages",
-                                        JSON.stringify({ text: text.trim() })])
+                                        JSON.stringify({ text: withAttachments(text.trim(), agentAttached) })])
+        if (r !== null) { root.agentAttached = []; root.chatStick = true }
         return r !== null
+    }
+    function localPath(url) {
+        var u = String(url)
+        return u.indexOf("file://") === 0 ? decodeURIComponent(u.slice(7)) : u
+    }
+    function attachFile(url) {
+        if (!agentOpen) return
+        agentCall("agentUpload", [agentOpen.address, agentOpen.session, localPath(url)])
+        pumpJobs()
+    }
+    function toggleRecording() {
+        if (!agentOpen || agentTranscribing) return
+        if (!agentRecording) {
+            if (agentCall("agentRecord", ["start", "", "", ""]) !== null) root.agentRecording = true
+        } else {
+            root.agentRecording = false
+            if (agentCall("agentRecord", ["stop", agentOpen.address, agentOpen.session, voiceLang]) !== null)
+                root.agentTranscribing = true
+        }
+    }
+    function cycleVoiceLang() {
+        var ls = ["cs", "en", "auto"]
+        root.voiceLang = ls[(ls.indexOf(voiceLang) + 1) % ls.length]
+        savePref("voice_lang", voiceLang)
+    }
+    // Uploads and voice notes finish in the core's own time: picked up here.
+    function pumpJobs() {
+        var r = unwrap(callCore("agentJobs", []))
+        if (!r || !r.jobs) return
+        root.agentRecording = !!r.recording
+        var sending = [], transcribing = false
+        for (var i = 0; i < r.jobs.length; i++) {
+            var j = r.jobs[i]
+            if (j.state === "pending") {
+                if (j.kind === "upload") sending.push(j.name)
+                else transcribing = true
+                continue
+            }
+            if (agentJobsSeen[j.id]) continue
+            agentJobsSeen[j.id] = true
+            if (j.state === "failed") { root.said = j.name + ": " + j.error; root.saidBad = true; continue }
+            if (j.kind === "upload" && j.path) root.agentAttached = agentAttached.concat([j.path])
+            if (j.kind === "voice" && j.text) composer.text = composer.text.trim() === "" ? j.text : composer.text.trim() + " " + j.text
+        }
+        root.agentSending = sending.join(", ")
+        root.agentTranscribing = transcribing
     }
     function answerPrompt(id, allow) {
         if (!agentOpen) return
@@ -3063,6 +3130,7 @@ Layout.preferredWidth: 0
     // For the harness, which cannot reach an id inside this component.
     function chatModelCount() { return chatModel.count }
     function chatModelAt(i) { return chatModel.get(i) }
+    function composerText() { return composer.text }
 
     Timer {
         // Finding agents: cheap, since the core probes in the background and
@@ -3078,7 +3146,7 @@ Layout.preferredWidth: 0
         interval: 300
         running: root.agentsOpen && root.agentOpen !== null && root.haveCore
         repeat: true
-        onTriggered: root.pumpAgent()
+        onTriggered: { root.pumpAgent(); root.pumpJobs() }
     }
 
     component Lnk: Text {
@@ -3312,7 +3380,36 @@ Layout.preferredWidth: 0
                     clip: true
                     spacing: root.sz(10)
                     model: chatModel
-                    ScrollBar.vertical: ScrollBar {}
+                    ScrollBar.vertical: ScrollBar {
+                        onPressedChanged: if (!pressed) root.chatStick = chatList.atYEnd
+                    }
+                    // Messages measure themselves after they are added, so
+                    // the height keeps growing after a scroll to the end: it
+                    // is followed for as long as the reader is down there.
+                    onContentHeightChanged: if (root.chatStick) Qt.callLater(chatList.positionViewAtEnd)
+                    onMovementEnded: root.chatStick = chatList.atYEnd
+                    onAtYEndChanged: if (atYEnd) root.chatStick = true
+
+                    // Files dropped on the conversation are sent like 📎 ones.
+                    DropArea {
+                        anchors.fill: parent
+                        onDropped: function(drop) {
+                            if (!drop.hasUrls) return
+                            for (var i = 0; i < drop.urls.length; i++) root.attachFile(drop.urls[i])
+                            drop.accept()
+                        }
+                    }
+
+                    Rectangle {
+                        visible: !root.chatStick
+                        anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: root.sz(12)
+                        width: root.sz(34); height: width; radius: width / 2
+                        color: cPanel; border.color: cPhosphor
+                        z: 5
+                        Text { anchors.centerIn: parent; text: "↓"; color: cPhosphor; font.pixelSize: root.fs(16) }
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: { root.chatStick = true; chatList.positionViewAtEnd() } }
+                    }
                     footer: Item {
                         width: chatList.width
                         height: liveCol.implicitHeight + root.sz(8)
@@ -3483,11 +3580,72 @@ Layout.preferredWidth: 0
                     }
                 }
 
+                FileDialog {
+                    id: attachDialog
+                    title: "Send a file to the agent"
+                    onAccepted: root.attachFile(selectedFile)
+                }
+
+                // What goes with the next message, and what is still on its way.
+                Flow {
+                    visible: !root.agentCreating && root.agentOpen !== null && (root.agentAttached.length > 0 || root.agentSending !== "" || root.agentTranscribing)
+                    Layout.fillWidth: true
+                    spacing: root.sz(8)
+                    Repeater {
+                        model: root.agentAttached
+                        delegate: Rectangle {
+                            id: chip
+                            required property string modelData
+                            height: chipText.implicitHeight + root.sz(10)
+                            width: chipText.implicitWidth + root.sz(20)
+                            radius: height / 2; color: "transparent"; border.color: cSky
+                            Text {
+                                id: chipText
+                                anchors.centerIn: parent
+                                text: "📎 " + chip.modelData.split("/").pop().replace(/^\d{8}-\d{6}-(\d+-)?/, "") + "  ×"
+                                color: cSky; font.family: "monospace"; font.pixelSize: root.fs(10)
+                            }
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.agentAttached = root.agentAttached.filter(function(x) { return x !== chip.modelData }) }
+                        }
+                    }
+                    RowLayout {
+                        visible: root.agentSending !== ""
+                        Pulse { tint: cSky }
+                        Text { text: "sending " + root.agentSending + "…"; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                    }
+                    RowLayout {
+                        visible: root.agentTranscribing
+                        Pulse { tint: cSky }
+                        Text { text: "transcribing on " + (root.agentOpen ? root.agentOpen.name : "") + "…"; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                    }
+                }
+
                 // Composer: Enter sends, Shift+Enter is a new line.
                 RowLayout {
                     visible: !root.agentCreating && root.agentOpen !== null
                     Layout.fillWidth: true
                     spacing: root.sz(10)
+                    Lnk { text: "📎"; font.pixelSize: root.fs(16); onClicked: attachDialog.open() }
+                    Item {
+                        width: root.sz(26); height: root.sz(26)
+                        Pulse { anchors.centerIn: parent; visible: root.agentRecording; tint: cRust; width: root.sz(18) }
+                        Text {
+                            anchors.centerIn: parent
+                            text: root.agentRecording ? "■" : "🎤"
+                            color: root.agentRecording ? cBone : (root.agentTranscribing ? cAsh : cPhosphor)
+                            font.pixelSize: root.fs(root.agentRecording ? 11 : 16)
+                        }
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleRecording() }
+                    }
+                    // The language to transcribe in: naming it halves the time,
+                    // since detecting it costs the model a whole extra pass.
+                    Lnk {
+                        text: root.voiceLang.toUpperCase()
+                        base: root.voiceLang === "auto" ? cAsh : cSky
+                        font.pixelSize: root.fs(10)
+                        onClicked: root.cycleVoiceLang()
+                    }
                     ScrollView {
                         Layout.fillWidth: true
                         Layout.preferredHeight: Math.min(root.sz(140), Math.max(root.sz(40), composer.implicitHeight))
@@ -3507,7 +3665,7 @@ Layout.preferredWidth: 0
                     }
                     Lnk {
                         text: "SEND"; font.pixelSize: root.fs(12)
-                        base: composer.text.trim() !== "" ? cPhosphor : cAsh
+                        base: (composer.text.trim() !== "" || root.agentAttached.length > 0) ? cPhosphor : cAsh
                         onClicked: if (root.sendToAgent(composer.text)) composer.text = ""
                     }
                 }

@@ -363,4 +363,23 @@ public:
      * had none, or an object with an error field.
      */
     std::string agentPost(const std::string& address, const std::string& path, const std::string& body);
+
+    /**
+     * @brief Sends a local file to a session's machine, in the background.
+     * Returns {"job":N}; agentJobs() reports when it is there and its path.
+     */
+    std::string agentUpload(const std::string& address, const std::string& session, const std::string& localPath);
+
+    /**
+     * @brief Voice notes: action "start" records from the default microphone;
+     * "stop" sends the note to be transcribed on that machine, in the
+     * background, and returns {"job":N}; "cancel" drops it.
+     */
+    std::string agentRecord(const std::string& action, const std::string& address, const std::string& session, const std::string& lang);
+
+    /**
+     * @brief Uploads and voice notes in progress or finished, and whether the
+     * microphone is recording.
+     */
+    std::string agentJobs();
 };

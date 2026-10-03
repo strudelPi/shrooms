@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 
@@ -58,6 +59,47 @@ int main(int argc, char** argv)
     long long next = std::atoll(ev.c_str() + 8);
     std::string more = hub.events(next);
     CHECK(more.find("\"events\":[]") != std::string::npos, "events after next: %s", more.substr(0, 120).c_str());
+
+    // Go escapes <, > and & as \u sequences: they must come back as written.
+    CHECK(field("{\"text\":\"A \\u0026 B \\u003cx\\u003e \\\"q\\\" Vašek\"}", "text") == "A & B <x> \"q\" Vašek",
+          "%s", field("{\"text\":\"A \\u0026 B \\u003cx\\u003e\"}", "text").c_str());
+
+    // A file, in the background, to the session's machine.
+    std::string local = "/tmp/agents-check-upload.txt";
+    { FILE* f = std::fopen(local.c_str(), "w"); std::fputs("hello from the check\n", f); std::fclose(f); }
+    long id = hub.upload(addr, session, local);
+    std::string jobs;
+    for (int i = 0; i < 50; i++) {
+        jobs = hub.jobs();
+        if (jobs.find("\"state\":\"pending\"") == std::string::npos) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    CHECK(id > 0 && jobs.find("\"state\":\"done\"") != std::string::npos && jobs.find("/uploads/" + session + "/") != std::string::npos,
+          "%s", jobs.c_str());
+    std::remove(local.c_str());
+    hub.upload(addr, session, "/nonexistent");
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK(hub.jobs().find("is not a file") != std::string::npos, "%s", hub.jobs().c_str());
+
+    // A voice note: two seconds from the real microphone, transcribed on the
+    // agent's machine. Only whether it went through is checked; what the room
+    // said is not printed.
+    if (std::getenv("AGENTS_CHECK_VOICE")) {
+        std::string why = hub.recordStart();
+        CHECK(why.empty() && hub.jobs().find("\"recording\":true") != std::string::npos, "%s", why.c_str());
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        std::string err;
+        long vid = hub.recordStop(addr, session, "en", err);
+        CHECK(vid > 0, "%s", err.c_str());
+        for (int i = 0; i < 300; i++) {
+            jobs = hub.jobs();
+            if (jobs.find("\"kind\":\"voice\",\"state\":\"pending\"") == std::string::npos) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        CHECK(jobs.find("\"kind\":\"voice\",\"state\":\"done\"") != std::string::npos &&
+              jobs.find("voice.wav") != std::string::npos && jobs.find("\"recording\":false") != std::string::npos,
+              "voice job did not finish: %s", jobs.substr(jobs.find("voice") == std::string::npos ? 0 : jobs.find("voice")).substr(0, 200).c_str());
+    }
 
     std::printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

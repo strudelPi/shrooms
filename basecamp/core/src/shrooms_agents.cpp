@@ -4,13 +4,22 @@
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <fstream>
+#include <sstream>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+
+extern "C" char** environ;
 
 namespace agents {
 
@@ -389,6 +398,256 @@ std::string Hub::events(long long after)
         if (!first) out += ",";
         out += events_[static_cast<size_t>(i)];
         first = false;
+    }
+    return out + "]}";
+}
+
+namespace {
+
+constexpr long long kMaxUpload = 50LL * 1024 * 1024;
+
+std::string urlEncode(const std::string& s)
+{
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : s) {
+        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            out += static_cast<char>(c);
+        } else {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 15];
+        }
+    }
+    return out;
+}
+
+std::string baseName(const std::string& path)
+{
+    auto k = path.find_last_of('/');
+    return k == std::string::npos ? path : path.substr(k + 1);
+}
+
+bool readFile(const std::string& path, std::string& out, std::string& err)
+{
+    struct stat st{};
+    if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+        err = path + " is not a file";
+        return false;
+    }
+    if (st.st_size > kMaxUpload) {
+        err = "the file is larger than 50 MB";
+        return false;
+    }
+    std::ifstream f(path, std::ios::binary);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    out = ss.str();
+    if (out.empty()) {
+        err = "the file is empty";
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+// A string field of a small JSON reply; enough for {"path":..,"text":..}.
+std::string field(const std::string& json, const std::string& key)
+{
+    auto k = json.find("\"" + key + "\":\"");
+    if (k == std::string::npos) return "";
+    std::string out;
+    for (size_t i = k + key.size() + 4; i < json.size(); i++) {
+        char c = json[i];
+        if (c == '"') break;
+        if (c == '\\' && i + 1 < json.size()) {
+            char n = json[++i];
+            switch (n) {
+            case 'n': out += '\n'; break;
+            case 't': out += '\t'; break;
+            case 'u': {
+                // Go escapes <, > and & this way, and control characters:
+                // decoded, so "A & B" comes back as said. A surrogate pair is
+                // not combined; Go sends non-BMP text as UTF-8, not escaped.
+                if (i + 4 >= json.size()) break;
+                unsigned cp = static_cast<unsigned>(std::strtoul(json.substr(i + 1, 4).c_str(), nullptr, 16));
+                i += 4;
+                if (cp < 0x80) {
+                    out += static_cast<char>(cp);
+                } else if (cp < 0x800) {
+                    out += static_cast<char>(0xC0 | (cp >> 6));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                } else {
+                    out += static_cast<char>(0xE0 | (cp >> 12));
+                    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                }
+                break;
+            }
+            default: out += n;
+            }
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+long Hub::addJob(const std::string& kind, const std::string& name)
+{
+    std::lock_guard<std::mutex> g(mu_);
+    Job j{nextJob_++, kind, "pending", name, "", "", ""};
+    jobs_.push_back(j);
+    if (jobs_.size() > 50) jobs_.erase(jobs_.begin());
+    return j.id;
+}
+
+void Hub::finishJob(long id, bool ok, const std::string& path, const std::string& text, const std::string& error)
+{
+    std::lock_guard<std::mutex> g(mu_);
+    for (auto& j : jobs_) {
+        if (j.id != id) continue;
+        j.state = ok ? "done" : "failed";
+        j.path = path;
+        j.text = text;
+        j.error = error;
+    }
+}
+
+long Hub::upload(const std::string& address, const std::string& session, const std::string& localPath)
+{
+    std::string name = baseName(localPath);
+    long id = addJob("upload", name);
+    std::thread([this, id, address, session, localPath, name]() {
+        std::string body, out, err;
+        if (!readFile(localPath, body, err)) {
+            finishJob(id, false, "", "", err);
+            return;
+        }
+        bool ok = request(address, "POST", "/v1/sessions/" + session + "/files?name=" + urlEncode(name),
+                          body, 120, out, err);
+        finishJob(id, ok, ok ? field(out, "path") : "", "", err);
+    }).detach();
+    return id;
+}
+
+std::string Hub::recordStart()
+{
+    std::lock_guard<std::mutex> g(mu_);
+    if (recorder_ > 0) return "already recording";
+    char tmpl[] = "/tmp/shrooms-voice-XXXXXX";
+    int fd = ::mkstemp(tmpl);
+    if (fd < 0) return std::string("mkstemp: ") + std::strerror(errno);
+    ::close(fd);
+    std::string path = std::string(tmpl) + ".wav";
+    ::rename(tmpl, path.c_str());
+
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    // Speech for a model that resamples to 16 kHz mono anyway.
+    std::vector<std::vector<std::string>> tries = {
+        {"pw-record", "--rate", "16000", "--channels", "1", path},
+        {"parecord", "--file-format=wav", "--rate=16000", "--channels=1", path},
+        {"arecord", "-q", "-f", "S16_LE", "-r", "16000", "-c", "1", path},
+    };
+    std::string why = "no recorder found (pw-record, parecord, arecord)";
+    for (auto& t : tries) {
+        std::vector<char*> argv;
+        for (auto& a : t) argv.push_back(const_cast<char*>(a.c_str()));
+        argv.push_back(nullptr);
+        pid_t pid;
+        int rc = posix_spawnp(&pid, argv[0], &fa, nullptr, argv.data(), environ);
+        if (rc == 0) {
+            recorder_ = pid;
+            recording_ = path;
+            posix_spawn_file_actions_destroy(&fa);
+            return "";
+        }
+        why = std::string(argv[0]) + ": " + std::strerror(rc);
+    }
+    posix_spawn_file_actions_destroy(&fa);
+    ::unlink(path.c_str());
+    return why;
+}
+
+namespace {
+
+// Stops a recorder the way it expects, so it finishes the file's header, and
+// does not wait forever for it.
+void stopRecorder(int pid)
+{
+    ::kill(pid, SIGINT);
+    for (int i = 0; i < 30; i++) {
+        if (::waitpid(pid, nullptr, WNOHANG) == pid) return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ::kill(pid, SIGKILL);
+    ::waitpid(pid, nullptr, 0);
+}
+
+}  // namespace
+
+void Hub::recordCancel()
+{
+    int pid;
+    std::string path;
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        pid = recorder_;
+        path = recording_;
+        recorder_ = -1;
+        recording_.clear();
+    }
+    if (pid > 0) stopRecorder(pid);
+    if (!path.empty()) ::unlink(path.c_str());
+}
+
+long Hub::recordStop(const std::string& address, const std::string& session, const std::string& lang,
+                     std::string& err)
+{
+    int pid;
+    std::string path;
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        pid = recorder_;
+        path = recording_;
+        recorder_ = -1;
+        recording_.clear();
+    }
+    if (pid <= 0) {
+        err = "not recording";
+        return -1;
+    }
+    long id = addJob("voice", "voice note");
+    std::thread([this, id, pid, path, address, session, lang]() {
+        stopRecorder(pid);
+        std::string body, out, err;
+        bool ok = readFile(path, body, err);
+        ::unlink(path.c_str());
+        if (ok) {
+            // A transcription takes a while on a laptop CPU: a minute of
+            // speech is most of one.
+            ok = request(address, "POST", "/v1/sessions/" + session + "/transcribe?name=voice.wav&lang=" +
+                         urlEncode(lang), body, 300, out, err);
+        }
+        finishJob(id, ok, ok ? field(out, "path") : "", ok ? field(out, "text") : "", err);
+    }).detach();
+    return id;
+}
+
+std::string Hub::jobs()
+{
+    std::lock_guard<std::mutex> g(mu_);
+    std::string out = std::string("{\"recording\":") + (recorder_ > 0 ? "true" : "false") + ",\"jobs\":[";
+    for (size_t i = 0; i < jobs_.size(); i++) {
+        const Job& j = jobs_[i];
+        if (i) out += ",";
+        out += "{\"id\":" + std::to_string(j.id) + ",\"kind\":\"" + j.kind + "\",\"state\":\"" + j.state +
+               "\",\"name\":\"" + jsonEscape(j.name) + "\",\"path\":\"" + jsonEscape(j.path) +
+               "\",\"text\":\"" + jsonEscape(j.text) + "\",\"error\":\"" + jsonEscape(j.error) + "\"}";
     }
     return out + "]}";
 }

@@ -34,6 +34,9 @@ constexpr int kPort = 7387;
  */
 bool safePath(const std::string& path);
 
+/** A string field of a small JSON reply, with its escapes decoded. */
+std::string field(const std::string& json, const std::string& key);
+
 /** Whether an address is a literal mesh address. */
 bool isMeshAddress(const std::string& address);
 
@@ -68,7 +71,42 @@ public:
      */
     std::string events(long long after);
 
+    /**
+     * Sends a local file to a session's machine in the background (an agent
+     * keeps it and returns its path there). Returns the job's id.
+     */
+    long upload(const std::string& address, const std::string& session, const std::string& localPath);
+
+    /**
+     * Starts recording a voice note from the default microphone, with the
+     * system's own recorder (pw-record, else parecord, else arecord): Basecamp
+     * ships no Qt Multimedia, and a view that imports a missing module does
+     * not load at all. Returns an empty string or why it could not start.
+     */
+    std::string recordStart();
+
+    /**
+     * Stops recording and, in the background, sends the note to be
+     * transcribed on that machine (whisper.cpp, docs/agents.md). Returns the
+     * job's id, or -1 with why in err. cancel drops the recording.
+     */
+    long recordStop(const std::string& address, const std::string& session, const std::string& lang,
+                    std::string& err);
+    void recordCancel();
+
+    /**
+     * Background jobs, as {"recording":bool,"jobs":[{"id","kind","state",
+     * "name","path","text","error"}]}. state is pending, done or failed.
+     */
+    std::string jobs();
+
 private:
+    struct Job {
+        long id;
+        std::string kind, state, name, path, text, error;
+    };
+    long addJob(const std::string& kind, const std::string& name);
+    void finishJob(long id, bool ok, const std::string& path, const std::string& text, const std::string& error);
     void follow(std::string address, std::string session, unsigned generation);
     void stopFollower();
 
@@ -83,6 +121,11 @@ private:
     long long base_ = 0;
     bool connected_ = false;
     std::string error_;
+
+    std::vector<Job> jobs_;
+    long nextJob_ = 1;
+    int recorder_ = -1;
+    std::string recording_;
 };
 
 }  // namespace agents

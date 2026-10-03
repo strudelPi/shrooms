@@ -46,6 +46,8 @@ Item {
 
     property var calls: []
     property string lastFind: ""
+    property string lastPost: ""
+    property var jobsNow: []
 
     Main {
         id: view
@@ -73,7 +75,10 @@ Item {
                     // The transcript holds the phone's own turns too: this one
                     // is event 1 and must not be shown twice.
                     { time: "2026-10-03T14:21:00+02:00", role: "user", text: "Can you check **the** tests?" } ] })
-                if (method === "agentPost") return JSON.stringify({ ok: true })
+                if (method === "agentPost") { top.lastPost = args[2]; return JSON.stringify({ ok: true }) }
+                if (method === "agentUpload") return JSON.stringify({ job: 1 })
+                if (method === "agentRecord") return JSON.stringify(args[0] === "stop" ? { job: 2 } : { ok: true })
+                if (method === "agentJobs") return JSON.stringify({ recording: false, jobs: top.jobsNow })
                 return JSON.stringify({ error: "unknown " + method })
             }
         }
@@ -102,6 +107,17 @@ Item {
                 if (r.kind === "prompt") console.error("PROMPT open=" + r.open + " id=" + r.pid + " text=" + r.text)
             }
             view.answerPrompt("p1", true)
+
+            // A file and a voice note, finishing in the core's own time.
+            top.jobsNow = [
+                { id: 1, kind: "upload", state: "done", name: "shot.png", path: "/home/x/.local/share/shrooms-agent/uploads/shrooms/20261003-150000-shot.png", text: "", error: "" },
+                { id: 2, kind: "voice", state: "done", name: "voice note", path: "/x/voice.wav", text: "ahoj, tady Vašek", error: "" } ]
+            view.pumpJobs()
+            view.pumpJobs()
+            console.error("ATTACHED=" + view.agentAttached.length + " STICK=" + view.chatStick)
+            console.error("COMPOSER=[" + view.composerText() + "]")
+            view.sendToAgent("look")
+            console.error("SENT=" + JSON.stringify(JSON.parse(top.lastPost).text) + " ATTACHED_AFTER=" + view.agentAttached.length)
             console.error("CALLS=" + top.calls.filter(function(c) { return c.indexOf("agent") === 0 })
                           .filter(function(c, i, a) { return a.indexOf(c) === i }).join(","))
             top.grabToImage(function(img) {

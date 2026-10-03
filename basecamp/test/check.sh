@@ -202,7 +202,7 @@ echo "==> the Agents panel"
 cp basecamp/test/AgentsHarness.qml "$work/"
 shot=${AGENTS_SHOT:-$work/agents.png}
 out=$(run "$QML" -I "$work" "$work/AgentsHarness.qml" "$shot")
-echo "$out" | grep -E "^qml: (HOSTS|PROBED|ROWS|STREAMING|PROMPT|CALLS)" || true
+echo "$out" | grep -E "^qml: (HOSTS|PROBED|ROWS|STREAMING|PROMPT|CALLS|ATTACHED|SENT)" || true
 expect() { echo "$out" | grep -qF "$1" || { echo "FAIL: $2"; exit 1; }; }
 expect "HOSTS=1 SESSIONS=2" "the agents were not listed"
 # This device first: an agent on the machine Basecamp runs on is no peer of it.
@@ -213,5 +213,10 @@ expect "ROWS=you,said,you,said,tool,output,note,note,you,tool,prompt" "the conve
 expect "STREAMING=[Pushing **now**…] WORKING=true" "the streamed reply is not shown as it grows"
 expect "CONTEXT=67% of 1M MODEL=opus-5 1m" "context and model are not read from the session"
 expect "PROMPT open=true id=p1" "the waiting prompt is not offered"
-expect "CALLS=agentsFind,agentWatch,agentGet,agentEvents,agentPost" "the core was not called as expected"
+expect "CALLS=agentsFind,agentWatch,agentGet,agentEvents,agentJobs,agentPost" "the core was not called as expected"
+# A file and a voice note: the file is named in the next message, once, and
+# the transcript lands in the composer, not sent on its own.
+expect "ATTACHED=1 STICK=true" "a finished upload was not attached, or attached twice"
+expect "COMPOSER=[ahoj, tady Vašek]" "the voice note's text did not land in the message box"
+expect 'SENT="look\n\nAttached from Basecamp (on this machine):\n- /home/x/.local/share/shrooms-agent/uploads/shrooms/20261003-150000-shot.png" ATTACHED_AFTER=0' "the attachment was not sent with the message"
 echo "agents panel OK${AGENTS_SHOT:+ (picture: $shot)}"

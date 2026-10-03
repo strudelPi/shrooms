@@ -822,3 +822,34 @@ std::string ShroomsCoreImpl::agentPost(const std::string& address, const std::st
     if (!agents::request(address, "POST", path, body, 8, out, err)) return errorJson("agent", err);
     return out.empty() ? "{\"ok\":true}" : out;
 }
+
+std::string ShroomsCoreImpl::agentUpload(const std::string& address, const std::string& session, const std::string& localPath)
+{
+    if (!agents::isMeshAddress(address)) return errorJson("not a mesh address", address);
+    if (!safeSession(session)) return errorJson("not a session name", session);
+    return "{\"job\":" + std::to_string(hub().upload(address, session, localPath)) + "}";
+}
+
+std::string ShroomsCoreImpl::agentRecord(const std::string& action, const std::string& address, const std::string& session, const std::string& lang)
+{
+    if (action == "start") {
+        std::string why = hub().recordStart();
+        return why.empty() ? "{\"ok\":true}" : errorJson("cannot record", why);
+    }
+    if (action == "cancel") {
+        hub().recordCancel();
+        return "{\"ok\":true}";
+    }
+    if (action != "stop") return errorJson("unknown action", action);
+    if (!agents::isMeshAddress(address)) return errorJson("not a mesh address", address);
+    if (!safeSession(session)) return errorJson("not a session name", session);
+    std::string err;
+    long id = hub().recordStop(address, session, lang.empty() ? "auto" : lang, err);
+    if (id < 0) return errorJson("cannot stop", err);
+    return "{\"job\":" + std::to_string(id) + "}";
+}
+
+std::string ShroomsCoreImpl::agentJobs()
+{
+    return hub().jobs();
+}

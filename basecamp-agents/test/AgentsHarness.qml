@@ -186,6 +186,16 @@ Item {
             console.error("QUESTION open=" + (qrow !== null) + " before=" + before + " posted=" + JSON.stringify(posted)
                           + " after=" + qrow.open + " [" + qrow.answer + "]")
 
+            // Starring: first in the list, out of its machine's, and kept on the agent.
+            var h0 = view.agentHosts[0]
+            view.setStarred(h0, "shrooms", true)
+            var starBody = top.lastPost
+            console.error("STARRED=" + view.starredSessions.map(function(x) { return x.host.name + "/" + x.sess.name }).join(",")
+                          + " rest=" + view.unstarred(view.agentHosts[0]).map(function(x) { return x.name }).join(",")
+                          + " sent=" + starBody)
+            view.setStarred(view.agentHosts[0], "shrooms", false)
+            console.error("UNSTARRED=" + view.starredSessions.length + " sent=" + top.lastPost)
+
             // A session of another harness: offered when the machine has it,
             // created with it, and without auto-approve, which pi has no use for.
             view.loadHarnesses(view.agentHosts[0])

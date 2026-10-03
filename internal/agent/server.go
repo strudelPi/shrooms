@@ -146,6 +146,7 @@ func (h *handler) update(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		AutoApprove *bool `json:"auto_approve"`
+		Starred     *bool `json:"starred"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fail(w, http.StatusBadRequest, err)
@@ -157,6 +158,12 @@ func (h *handler) update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.log.Info("auto-approve changed", "session", s.name, "on", *req.AutoApprove, "by", h.caller(r))
+	}
+	if req.Starred != nil {
+		if err := s.SetStarred(*req.Starred); err != nil {
+			fail(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, s.Info())
 }

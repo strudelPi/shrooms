@@ -52,6 +52,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -90,6 +91,20 @@ data class AgentHost(
     val address: String,
     val sessions: List<AgentSession>,
 )
+
+/**
+ * The list as shown: starred sessions first, from every machine, by name;
+ * then each machine with the rest of its sessions.
+ */
+fun starredFirst(hosts: List<AgentHost>): Pair<List<Pair<AgentHost, AgentSession>>, List<AgentHost>> {
+    val starred = hosts.flatMap { h -> h.sessions.filter { it.starred }.map { h to it } }
+        .sortedWith(compareBy({ it.second.name }, { it.first.name }))
+    return starred to hosts.map { h -> h.copy(sessions = h.sessions.filterNot { it.starred }) }
+}
+
+/** The hosts with one session's star set as asked: shown at once, before the agent answers. */
+fun withStar(hosts: List<AgentHost>, host: String, session: String, on: Boolean): List<AgentHost> =
+    hosts.map { h -> if (h.name != host) h else h.copy(sessions = h.sessions.map { if (it.name == session) it.copy(starred = on) else it }) }
 
 /** A session to open straight away — from a notification. */
 data class OpenSession(val address: String, val host: String, val mesh: String, val session: String)
@@ -238,6 +253,7 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
     var addingMachine by remember { mutableStateOf(false) }
     // A session awaiting confirmation that it should be deleted.
     var deleting by remember { mutableStateOf<Pair<AgentHost, AgentSession>?>(null) }
+    val scope = rememberCoroutineScope()
 
     // Refreshed while the list is on screen, so a session that starts waiting
     // for an answer shows it without a pull. What is found is remembered for
@@ -323,8 +339,27 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
             }
 
             val meshes = hs.orEmpty().map { it.mesh }.distinct().sorted()
+            val (starred, rest) = starredFirst(hs.orEmpty())
+            fun star(h: AgentHost, sess: AgentSession) {
+                hosts = withStar(hosts.orEmpty(), h.name, sess.name, !sess.starred)
+                scope.launch {
+                    withContext(Dispatchers.IO) { runCatching { AgentClient(h.address).setStarred(sess.name, !sess.starred) } }
+                        .onFailure { hosts = withStar(hosts.orEmpty(), h.name, sess.name, sess.starred) }
+                }
+            }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
-                for (h in hs.orEmpty()) {
+                if (starred.isNotEmpty()) {
+                    item(key = "starred") {
+                        Text("🍄  STARRED", style = MaterialTheme.typography.labelSmall, color = Palette.Phosphor,
+                            modifier = Modifier.padding(top = 14.dp))
+                    }
+                    itemsIndexed(starred, key = { _, p -> "s-" + p.first.name + "/" + p.second.name }) { _, (h, sess) ->
+                        SessionRow(sess, where = h.name, onStar = { star(h, sess) }, onLongPress = { deleting = h to sess }) {
+                            open = OpenSession(h.address, h.name, h.mesh, sess.name)
+                        }
+                    }
+                }
+                for (h in rest) {
                     item(key = "h-" + h.name) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 14.dp)) {
                             Box(Modifier.size(10.dp).border(2.dp, meshColour(h.mesh, meshes), CircleShape))
@@ -337,10 +372,11 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
                         }
                     }
                     if (h.sessions.isEmpty()) {
-                        item(key = "e-" + h.name) { Label("no sessions yet") }
+                        val all = hs.orEmpty().firstOrNull { it.name == h.name }?.sessions.orEmpty()
+                        item(key = "e-" + h.name) { Label(if (all.isEmpty()) "no sessions yet" else "all starred") }
                     }
                     itemsIndexed(h.sessions, key = { _, s -> h.name + "/" + s.name }) { _, s ->
-                        SessionRow(s, onLongPress = { deleting = h to s }) {
+                        SessionRow(s, onStar = { star(h, s) }, onLongPress = { deleting = h to s }) {
                             open = OpenSession(h.address, h.name, h.mesh, s.name)
                         }
                     }
@@ -353,7 +389,7 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
 
 @Composable
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-private fun SessionRow(s: AgentSession, onLongPress: () -> Unit, onOpen: () -> Unit) {
+private fun SessionRow(s: AgentSession, where: String = "", onStar: () -> Unit, onLongPress: () -> Unit, onOpen: () -> Unit) {
     val (badge, colour) = when (s.state) {
         "waiting" -> "NEEDS YOU" to Palette.Amber
         "working" -> "WORKING" to Palette.Phosphor
@@ -369,9 +405,17 @@ private fun SessionRow(s: AgentSession, onLongPress: () -> Unit, onOpen: () -> U
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(s.name, style = MaterialTheme.typography.titleMedium, color = Palette.Bone,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+            if (where.isNotEmpty()) {
+                Spacer(Modifier.width(8.dp))
+                Text(where, style = MaterialTheme.typography.labelSmall, color = Palette.Ash, maxLines = 1)
+            }
+            Spacer(Modifier.weight(1f))
             if (s.state != "idle") { Pulse(colour); Spacer(Modifier.width(6.dp)) }
             Text(badge, style = MaterialTheme.typography.labelSmall, color = colour)
+            // Starred: listed first. Faint until it is.
+            Text("🍄", modifier = Modifier.padding(start = 10.dp).alpha(if (s.starred) 1f else 0.25f)
+                .clickable(onClick = onStar).padding(4.dp))
         }
         if (s.preview.isNotEmpty()) {
             Text(s.preview, style = MaterialTheme.typography.bodySmall, color = Palette.Ash,

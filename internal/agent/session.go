@@ -67,6 +67,9 @@ type Info struct {
 	// Harness runs it ("claude", "pi"), and what that harness can do.
 	Harness string `json:"harness"`
 	Caps    Caps   `json:"caps"`
+	// Starred sessions are listed first, above every machine's others. Kept
+	// here, not in an app, so a star set on the phone shows in Basecamp.
+	Starred bool `json:"starred,omitempty"`
 }
 
 // Session is one conversation in one directory.
@@ -88,6 +91,7 @@ type Session struct {
 	lastUsed time.Time
 
 	autoApprove bool
+	starred     bool
 	ctxUsed     uint64
 	ctxWindow   uint64
 	preview     string
@@ -133,6 +137,7 @@ type record struct {
 	// only harness when the registry was first written.
 	ConvID      string `json:"claude_id,omitempty"`
 	AutoApprove bool   `json:"auto_approve,omitempty"`
+	Starred     bool   `json:"starred,omitempty"`
 }
 
 // NewManager loads the sessions kept in stateDir.
@@ -168,6 +173,7 @@ func NewManager(ctx context.Context, log *slog.Logger, stateDir, claudeBin strin
 			s := m.newSession(r.Name, r.Dir, h)
 			s.convID = r.ConvID
 			s.autoApprove = r.AutoApprove
+			s.starred = r.Starred
 			s.loadEvents()
 			m.sessions[r.Name] = s
 		}
@@ -228,7 +234,7 @@ func (m *Manager) save() error {
 	recs := make([]record, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		s.mu.Lock()
-		r := record{Name: s.name, Dir: s.dir, ConvID: s.convID, AutoApprove: s.autoApprove}
+		r := record{Name: s.name, Dir: s.dir, ConvID: s.convID, AutoApprove: s.autoApprove, Starred: s.starred}
 		if s.harness.Name() != "claude" {
 			r.Harness = s.harness.Name()
 		}
@@ -367,7 +373,7 @@ func (s *Session) Info() Info {
 	in := Info{Name: s.name, Dir: s.dir, State: s.state, Pending: len(s.pending),
 		Running: s.proc != nil, LastSeq: s.seq, AutoApprove: s.autoApprove,
 		ContextUsed: s.ctxUsed, ContextWindow: s.ctxWindow, Preview: s.preview, Model: s.model,
-		Harness: s.harness.Name(), Caps: s.harness.Caps()}
+		Harness: s.harness.Name(), Caps: s.harness.Caps(), Starred: s.starred}
 	if n := len(s.events); n > 0 {
 		in.LastTime = s.events[n-1].Time
 	}
@@ -742,6 +748,7 @@ func (s *Session) read(p *proc) {
 		s.mu.Unlock()
 	}
 	<-p.done
+	defer close(p.read)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -806,6 +813,16 @@ func (s *Session) SetAutoApprove(on bool, by string) error {
 	return s.m.save()
 }
 
+// SetStarred stars or unstars the session, and keeps that.
+func (s *Session) SetStarred(on bool) error {
+	s.mu.Lock()
+	s.starred = on
+	s.mu.Unlock()
+	s.m.mu.Lock()
+	defer s.m.mu.Unlock()
+	return s.m.save()
+}
+
 // stopIfIdle ends the process if nothing has happened for longer than after.
 // A turn in progress or a prompt waiting is not idle, however long it takes.
 func (s *Session) stopIfIdle(now time.Time, after time.Duration) {
@@ -825,9 +842,10 @@ func (s *Session) stop() {
 		p.close()
 		if p.cmd.Process != nil {
 			select {
-			case <-p.done:
+			case <-p.read:
 			case <-time.After(10 * time.Second):
 				p.cmd.Process.Kill()
+				<-p.read
 			}
 		}
 	}

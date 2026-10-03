@@ -248,3 +248,51 @@ func TestHarnessesOverHTTP(t *testing.T) {
 		t.Errorf("a pi session on a machine without pi should say so")
 	}
 }
+
+// A star is kept on the agent, over HTTP, and survives a restart.
+func TestAStarIsKept(t *testing.T) {
+	state := t.TempDir()
+	m := newTestManager(t, state)
+	m.Create("proj", t.TempDir())
+	srv := httptest.NewServer(Handler(slog.New(slog.DiscardHandler), m, nil))
+	t.Cleanup(srv.Close)
+	r, err := http.Post(srv.URL+"/v1/sessions/proj/settings", "application/json", strings.NewReader(`{"starred":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var in Info
+	json.NewDecoder(r.Body).Decode(&in)
+	r.Body.Close()
+	if !in.Starred {
+		t.Errorf("not starred: %+v", in)
+	}
+	m2, _ := NewManager(t.Context(), slog.New(slog.DiscardHandler), state, "claude")
+	if s, _ := m2.Get("proj"); !s.Info().Starred || s.Info().AutoApprove {
+		t.Errorf("after a restart: %+v", s.Info())
+	}
+	r, _ = http.Post(srv.URL+"/v1/sessions/proj/settings", "application/json", strings.NewReader(`{"starred":false}`))
+	r.Body.Close()
+	if s, _ := m.Get("proj"); s.Info().Starred {
+		t.Error("still starred")
+	}
+}
+
+// A removed session leaves no event log behind: the process's last event
+// ("stopped") used to be written after removal, recreating it.
+func TestARemovedSessionLeavesNoLog(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		m := newTestManager(t, t.TempDir())
+		m.Create("proj", t.TempDir())
+		s, _ := m.Get("proj")
+		s.Send("hello", "")
+		waitFor(t, s, 0, func(e Event) bool { return claudeType(e) == "result/success" })
+		path := s.eventsPath()
+		if err := m.Remove("proj"); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("round %d: the log of a removed session is back", i)
+		}
+	}
+}

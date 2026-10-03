@@ -39,6 +39,8 @@ data class AgentSession(
     /** What runs it: "claude", "pi", … and whether it ever asks before using tools. */
     val harness: String = "claude",
     val approves: Boolean = true,
+    /** Listed first, above every machine's others; kept on the agent. */
+    val starred: Boolean = false,
 )
 
 /** A coding agent a machine can run sessions of (GET /v1/harnesses). */
@@ -111,6 +113,7 @@ class AgentClient(address: String) {
                 harness = s.optString("harness").ifEmpty { "claude" },
                 // An agent from before harnesses has no caps, and is Claude Code.
                 approves = s.optJSONObject("caps")?.optBoolean("approve") ?: true,
+                starred = s.optBoolean("starred"),
             )
         }
     }
@@ -162,6 +165,11 @@ class AgentClient(address: String) {
     }
 
     /** Whether a session asks before running things — the desktop's --dangerously-skip-permissions. */
+    /** Stars a session, or unstars it: kept on the agent, so every device lists it first. */
+    fun setStarred(session: String, on: Boolean) {
+        request("POST", "/v1/sessions/${enc(session)}/settings", JSONObject().put("starred", on).toString())
+    }
+
     fun setAutoApprove(session: String, on: Boolean) {
         // POST rather than PATCH: HttpURLConnection refuses PATCH outright.
         request("POST", "/v1/sessions/${enc(session)}/settings", JSONObject().put("auto_approve", on).toString())

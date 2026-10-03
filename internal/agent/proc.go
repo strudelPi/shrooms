@@ -37,6 +37,11 @@ type proc struct {
 	out  chan json.RawMessage
 	done chan struct{}
 	err  error
+	// read is closed when the session has finished with the process: its
+	// last event, "stopped", is written. Stopping waits for this, not done —
+	// a session removed once done is closed had its log recreated by that
+	// last write (2026-10-04).
+	read chan struct{}
 }
 
 func startProc(ctx context.Context, log *slog.Logger, h Harness, bin, dir string, o StartOptions) (*proc, error) {
@@ -57,7 +62,8 @@ func startProc(ctx context.Context, log *slog.Logger, h Harness, bin, dir string
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start %s: %w", bin, err)
 	}
-	p := &proc{cmd: cmd, codec: h.Codec(), stdin: stdin, out: make(chan json.RawMessage, 64), done: make(chan struct{})}
+	p := &proc{cmd: cmd, codec: h.Codec(), stdin: stdin, out: make(chan json.RawMessage, 64),
+		done: make(chan struct{}), read: make(chan struct{})}
 
 	go func() {
 		sc := bufio.NewScanner(stderr)

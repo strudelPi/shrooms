@@ -616,6 +616,30 @@ Item {
                                        JSON.stringify({ allow: true, answers: a })]) !== null
     }
 
+    // Starred sessions: first, from every machine, by name (the phone's
+    // starredFirst). The star is kept on the agent, so the phone shows it too.
+    readonly property var starredSessions: {
+        var out = []
+        for (var i = 0; i < agentHosts.length; i++) {
+            var ss = agentHosts[i].sessions || []
+            for (var j = 0; j < ss.length; j++) if (ss[j].starred) out.push({ host: agentHosts[i], sess: ss[j] })
+        }
+        out.sort(function(a, b) { return a.sess.name === b.sess.name ? (a.host.name < b.host.name ? -1 : 1) : (a.sess.name < b.sess.name ? -1 : 1) })
+        return out
+    }
+    function unstarred(h) { return (h.sessions || []).filter(function(x) { return !x.starred }) }
+    function setStarred(h, name, on) {
+        // Shown at once; the agent's answer is the next refresh's.
+        var hs = agentHosts.map(function(x) {
+            if (x.address !== h.address) return x
+            var c = Object.assign({}, x)
+            c.sessions = (x.sessions || []).map(function(y) { return y.name === name ? Object.assign({}, y, { starred: on }) : y })
+            return c
+        })
+        root.agentHosts = hs
+        agentCall("agentPost", [h.address, "/v1/sessions/" + name + "/settings", JSON.stringify({ starred: on })])
+    }
+
     function setAutoApprove(on) {
         if (!agentOpen) return
         if (agentCall("agentPost", [agentOpen.address, "/v1/sessions/" + agentOpen.session + "/settings",
@@ -742,6 +766,65 @@ Item {
         onTriggered: { root.pumpAgent(); root.pumpJobs(); root.pumpSearch() }
     }
 
+    // One session in the list: in its machine's group, or among the starred
+    // ones, where the machine is named.
+    component SessionCard: Rectangle {
+        id: srow
+        required property var host
+        required property var sess
+        property bool showHost: false
+
+        readonly property bool isOpen: root.agentOpen !== null && root.agentOpen.address === srow.host.address && root.agentOpen.session === srow.sess.name
+        height: sCol.implicitHeight + root.sz(16)
+        radius: root.sz(8)
+        color: isOpen ? Qt.rgba(0.21, 0.94, 0.63, 0.08) : cPanel
+        border.width: 1
+        border.color: srow.sess.state === "waiting" ? cAmber : (isOpen ? cPhosphor : cLine)
+        Column {
+            id: sCol
+            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+            anchors.margins: root.sz(8)
+            spacing: 3
+            RowLayout {
+                width: parent.width
+                Text { text: srow.sess.name; color: cBone; font.family: "monospace"; font.pixelSize: root.fs(12); elide: Text.ElideRight; Layout.fillWidth: !srow.showHost }
+                Text { visible: srow.showHost; text: srow.host.name; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10); Layout.fillWidth: true }
+                Pulse { visible: srow.sess.state !== "idle"; tint: srow.sess.state === "waiting" ? cAmber : cPhosphor }
+                Text {
+                    Layout.rightMargin: root.sz(22)
+                    text: srow.sess.state === "waiting" ? "NEEDS YOU" : (srow.sess.state === "working" ? "WORKING" : (srow.sess.running ? "idle" : "asleep"))
+                    color: srow.sess.state === "waiting" ? cAmber : (srow.sess.state === "working" ? cPhosphor : cAsh)
+                    font.family: "monospace"; font.pixelSize: root.fs(9); font.letterSpacing: 1
+                }
+            }
+            Text {
+                visible: (srow.sess.preview || "") !== ""
+                width: parent.width
+                text: srow.sess.preview || ""
+                color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10)
+                wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
+            }
+            Text {
+                width: parent.width
+                text: [root.clock(root.epoch(srow.sess.last_time)),
+                       root.contextLabel(srow.sess.context_used, srow.sess.context_window),
+                       root.harnessLabel(srow.sess.harness), root.shortModel(srow.sess.model),
+                       srow.sess.auto_approve && !(srow.sess.caps && !srow.sess.caps.approve) ? "auto-approve" : ""].filter(function(x) { return x !== "" }).join("  ·  ")
+                color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(9); elide: Text.ElideRight
+            }
+        }
+        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.openSession(srow.host, srow.sess.name) }
+        // Starred: listed first. Faint until it is. Above the row's own area.
+        Text {
+            anchors.right: parent.right; anchors.top: parent.top; anchors.margins: root.sz(6)
+            z: 2
+            text: "🍄"; font.pixelSize: root.fs(13)
+            opacity: srow.sess.starred ? 1 : (starMouse.containsMouse ? 0.6 : 0.25)
+            MouseArea { id: starMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: root.setStarred(srow.host, srow.sess.name, !srow.sess.starred) }
+        }
+    }
+
     component Lnk: Text {
         id: lnk
         signal clicked()
@@ -811,6 +894,25 @@ Item {
                     clip: true
                     spacing: root.sz(6)
                     model: root.agentHosts
+                    header: Column {
+                        width: hostList.width
+                        spacing: root.sz(6)
+                        bottomPadding: root.starredSessions.length > 0 ? root.sz(10) : 0
+                        Text {
+                            visible: root.starredSessions.length > 0
+                            text: "🍄  STARRED"; color: cPhosphor; font.family: "monospace"; font.pixelSize: root.fs(11); font.letterSpacing: 1.5
+                        }
+                        Repeater {
+                            model: root.starredSessions
+                            delegate: SessionCard {
+                                required property var modelData
+                                width: hostList.width
+                                host: modelData.host
+                                sess: modelData.sess
+                                showHost: true
+                            }
+                        }
+                    }
                     delegate: Column {
                         id: hostCol
                         required property var modelData
@@ -833,50 +935,17 @@ Item {
                             visible: hostCol.modelData.sessions.length === 0
                             text: "no sessions yet"; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10)
                         }
+                        Text {
+                            visible: hostCol.modelData.sessions.length > 0 && root.unstarred(hostCol.modelData).length === 0
+                            text: "all starred"; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10)
+                        }
                         Repeater {
-                            model: hostCol.modelData.sessions
-                            delegate: Rectangle {
-                                id: srow
+                            model: root.unstarred(hostCol.modelData)
+                            delegate: SessionCard {
                                 required property var modelData
-                                readonly property bool isOpen: root.agentOpen !== null && root.agentOpen.address === hostCol.modelData.address && root.agentOpen.session === srow.modelData.name
                                 width: hostCol.width
-                                height: sCol.implicitHeight + root.sz(16)
-                                radius: root.sz(8)
-                                color: isOpen ? Qt.rgba(0.21, 0.94, 0.63, 0.08) : cPanel
-                                border.width: 1
-                                border.color: srow.modelData.state === "waiting" ? cAmber : (isOpen ? cPhosphor : cLine)
-                                Column {
-                                    id: sCol
-                                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                                    anchors.margins: root.sz(8)
-                                    spacing: 3
-                                    RowLayout {
-                                        width: parent.width
-                                        Text { text: srow.modelData.name; color: cBone; font.family: "monospace"; font.pixelSize: root.fs(12); elide: Text.ElideRight; Layout.fillWidth: true }
-                                        Pulse { visible: srow.modelData.state !== "idle"; tint: srow.modelData.state === "waiting" ? cAmber : cPhosphor }
-                                        Text {
-                                            text: srow.modelData.state === "waiting" ? "NEEDS YOU" : (srow.modelData.state === "working" ? "WORKING" : (srow.modelData.running ? "idle" : "asleep"))
-                                            color: srow.modelData.state === "waiting" ? cAmber : (srow.modelData.state === "working" ? cPhosphor : cAsh)
-                                            font.family: "monospace"; font.pixelSize: root.fs(9); font.letterSpacing: 1
-                                        }
-                                    }
-                                    Text {
-                                        visible: (srow.modelData.preview || "") !== ""
-                                        width: parent.width
-                                        text: srow.modelData.preview || ""
-                                        color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10)
-                                        wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
-                                    }
-                                    Text {
-                                        width: parent.width
-                                        text: [root.clock(root.epoch(srow.modelData.last_time)),
-                                               root.contextLabel(srow.modelData.context_used, srow.modelData.context_window),
-                                               root.harnessLabel(srow.modelData.harness), root.shortModel(srow.modelData.model),
-                                               srow.modelData.auto_approve && !(srow.modelData.caps && !srow.modelData.caps.approve) ? "auto-approve" : ""].filter(function(x) { return x !== "" }).join("  ·  ")
-                                        color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(9); elide: Text.ElideRight
-                                    }
-                                }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.openSession(hostCol.modelData, srow.modelData.name) }
+                                host: hostCol.modelData
+                                sess: modelData
                             }
                         }
                     }

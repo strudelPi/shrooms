@@ -79,6 +79,22 @@ class AgentChatTest {
         assertTrue(old.approves)
     }
 
+    // Starred sessions come first, from every machine, and leave their machine's list.
+    @Test fun starredSessionsAreListedFirst() {
+        fun sess(n: String, star: Boolean = false) = AgentSession(n, "/x", "idle", 0, false, 0, starred = star)
+        val hosts = listOf(
+            AgentHost("vps", "home", "fd::1", listOf(sess("web"), sess("shrooms", true))),
+            AgentHost("atlas", "office", "fd::2", listOf(sess("agents", true), sess("misc"))),
+        )
+        val (starred, rest) = starredFirst(hosts)
+        assertEquals(listOf("atlas/agents", "vps/shrooms"), starred.map { it.first.name + "/" + it.second.name })
+        assertEquals(listOf(listOf("web"), listOf("misc")), rest.map { h -> h.sessions.map { it.name } })
+        // Starring shows at once, on that machine's session only.
+        val after = withStar(hosts, "vps", "web", true)
+        assertEquals(listOf(true, true), after[0].sessions.map { it.starred })
+        assertEquals(listOf(true, false), after[1].sessions.map { it.starred })
+    }
+
     // A search result jumps to its event: the first of that event's items, in a
     // list laid out from the bottom with the live row as item 0.
     @Test fun aSearchResultIsFoundInTheList() {

@@ -106,7 +106,7 @@ On each machine's overlay addresses, port 7387.
 | `GET /v1/harnesses` | `{"harnesses":[{name, title, caps:{approve, takeover}}]}` — the coding agents this machine runs sessions of, Claude Code first (docs/agents-harnesses.md) |
 | `POST /v1/sessions` | `{name, dir, harness?, auto_approve?}` — create, with Claude Code unless `harness` names another; `{name, resume: id}` — continue an existing Claude Code conversation, in the directory it ran in |
 | `DELETE /v1/sessions/{name}` | stop and forget |
-| `PATCH /v1/sessions/{name}`, `POST …/settings` | `{auto_approve}` (POST for clients that cannot send PATCH) |
+| `PATCH /v1/sessions/{name}`, `POST …/settings` | `{auto_approve?, starred?}` (POST for clients that cannot send PATCH). A star is kept on the agent, so every device lists starred sessions first, above each machine's others |
 | `GET /v1/sessions/{name}/search?q=…[&limit=N]` | `{"found":[{seq, time, role, snippet, text}]}`, newest first (50 by default, at most 200): the turns of the whole conversation containing q — what was typed and the model's text, not tools — ignoring case and Czech diacritics. From the session's events (`seq` to jump to) and, for what came before them, the transcript (`seq` 0, with the whole `text`). About a second on a 190 MB transcript |
 | `GET /v1/sessions/{name}/events?after=N[&tail=T]` | the session's events, then a live stream (SSE); `partial` events carry reply text as it is written, unnumbered and never kept. `tail=T` with `after=0` starts at the last T events instead of the first: both apps open a session at its last 300 and offer to load the rest |
 | `GET /v1/sessions/{name}/history?limit=N` | what was said before this agent had the conversation, from Claude Code's transcript (its last 4 MB) |
@@ -169,6 +169,15 @@ up: a session's whole backlog in one reply through Basecamp's IPC is the likely
 reason some conversations showed empty after switching to them (not proven).
 
 ## On a server
+
+Running: the laptop, the VPS, atlas and jimmy-crib (2026-10-04). On atlas
+and jimmy-crib it runs as the owner (vpavlin), as on a desktop: they are the
+owner's machines, with Claude Code and pi already logged in there. Both run
+the shrooms daemon in a container, so the socket is reached by ACL as on the
+VPS below. atlas also runs firewalld, whose default zone takes the mesh
+interface and dropped port 7387; one rich rule opens it to atlas's own mesh
+address only:
+`rule family=ipv6 destination address=<its overlay>/128 port port=7387 protocol=tcp accept`.
 
 The VPS runs one (2026-10-03), set up the way any server would be:
 

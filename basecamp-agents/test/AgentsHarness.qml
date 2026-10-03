@@ -196,6 +196,9 @@ Item {
             console.error("HARNESS offered=" + offered + " sent=" + made.harness + " auto=" + made.auto_approve
                           + " label=[" + view.harnessLabel("pi") + "][" + view.harnessLabel("claude") + "]")
             view.loadHarnesses(null)
+            view.agentCreating = true
+            view.openSession(view.agentHosts[0], "shrooms")
+            console.error("FORMCLOSED=" + !view.agentCreating)
 
             // Taking over a conversation from a terminal.
             view.loadConversations(view.agentHosts[0])

@@ -226,6 +226,7 @@ expect "READING=true TEXT=Earlier: the tests, in a terminal." "a result from bef
 # Row 3: two earlier lines from the transcript, the first message, then it.
 expect "JUMP lit=3 row=3 kind=said searchOpen=false stick=false reach=521,0" "a search result does not jump to its message"
 expect 'QUESTION open=true before=null posted={"allow":true,"answers":{"Which user?":"agent","What else?":"voice, logs"}} after=false [answered: agent; voice, logs from desk]' "a question is not offered, answered or closed"
+expect "FORMCLOSED=true" "opening a session leaves the new-session form in front of it"
 expect "HARNESS offered=claude,pi sent=pi auto=false label=[pi][]" "another harness is not offered, or a session of it not asked for"
 expect "STREAMING=[Pushing **now**…] WORKING=true" "the streamed reply is not shown as it grows"
 expect "CONTEXT=67% of 1M MODEL=opus-5 1m" "context and model are not read from the session"

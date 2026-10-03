@@ -215,6 +215,9 @@ Item {
         var t = (tail === undefined || tail === null) ? agentTail : tail
         root.agentTailNow = t
         root.searchOpen = false
+        // Picking a session in the list leaves the "+ session" form, which
+        // otherwise stayed in front of it (2026-10-04).
+        root.agentCreating = false
         root.agentOpen = { address: h.address, name: h.name, mesh: h.mesh, session: s }
         root.agentEventsList = []
         root.agentEarlier = []

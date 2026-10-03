@@ -15,11 +15,13 @@ Description=shrooms-agent: Claude Code sessions over the mesh
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/shrooms-agent
+# Through a login shell, so sessions find what the user's terminal finds —
+# nix, go, cargo, Claude Code itself — rather than a unit's bare PATH. A
+# session that cannot run `nix build` is a worse agent, and says so only by
+# failing (2026-10-03).
+ExecStart=/bin/bash -lc 'exec /usr/local/bin/shrooms-agent'
 Restart=on-failure
 RestartSec=10
-# Claude Code is usually installed per user; make sure its usual homes are found.
-Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=default.target

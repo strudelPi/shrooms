@@ -83,3 +83,4 @@ dist/
 # The preview build's signing key (android/app/build.gradle.kts). Local only:
 # whoever holds it can ship an update to an app that drives your agents.
 android/preview.keystore
+result-agents

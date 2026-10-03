@@ -205,7 +205,7 @@ mkdir -p "$work/agents"
 cp basecamp-agents/Main.qml basecamp-agents/test/AgentsHarness.qml "$work/agents/"
 shot=${AGENTS_SHOT:-$work/agents.png}
 out=$(run "$QML" -I "$work/agents" "$work/agents/AgentsHarness.qml" "$shot")
-echo "$out" | grep -E "^qml: (HOSTS|PROBED|ROWS|STREAMING|PROMPT|CALLS|ATTACHED|SENT)" || true
+echo "$out" | grep -E "^qml: (HOSTS|PROBED|ROWS|STREAMING|PROMPT|CALLS|ATTACHED|SENT|CONVERSATIONS|TAKEOVER)" || true
 expect() { echo "$out" | grep -qF "$1" || { echo "FAIL: $2"; exit 1; }; }
 expect "HOSTS=1 SESSIONS=2" "the agents were not listed"
 # This device first: an agent on the machine Basecamp runs on is no peer of it.
@@ -222,4 +222,9 @@ expect "CALLS=agentsFind,agentWatch,agentGet,agentEvents,agentJobs,agentPost" "t
 expect "ATTACHED=1 STICK=true" "a finished upload was not attached, or attached twice"
 expect "COMPOSER=[ahoj, tady Vašek]" "the voice note's text did not land in the message box"
 expect 'SENT="look\n\nAttached from Basecamp (on this machine):\n- /home/x/.local/share/shrooms-agent/uploads/shrooms/20261003-150000-shot.png" ATTACHED_AFTER=0' "the attachment was not sent with the message"
+# Taking over a terminal's conversation: listed with the terminal that may
+# hold it, named after its directory without colliding with "shrooms", and
+# continued by id — then opened.
+expect "CONVERSATIONS=2 TERMINAL=cl-logos-vpn NAME=shrooms-2" "conversations, or the name for one, are wrong"
+expect "TAKEOVER name=shrooms-2 resume=c-new open=shrooms-2" "taking a conversation over did not continue it by id"
 echo "agents panel OK${AGENTS_SHOT:+ (picture: $shot)}"

@@ -638,6 +638,99 @@ long Hub::recordStop(const std::string& address, const std::string& session, con
     return id;
 }
 
+namespace {
+
+// Runs a command with its stdout to a file, waiting at most `secs`. Returns
+// the exit status, or -1 if it could not be started (not installed).
+int runTo(const std::vector<std::string>& cmd, const std::string& outPath, int secs)
+{
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 1, outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    std::vector<char*> argv;
+    for (auto& a : cmd) argv.push_back(const_cast<char*>(a.c_str()));
+    argv.push_back(nullptr);
+    pid_t pid;
+    int rc = posix_spawnp(&pid, argv[0], &fa, nullptr, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&fa);
+    if (rc != 0) return -1;
+    int status = 0;
+    for (int i = 0; i < secs * 20; i++) {
+        if (::waitpid(pid, &status, WNOHANG) == pid) return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    ::kill(pid, SIGKILL);
+    ::waitpid(pid, nullptr, 0);
+    return 1;
+}
+
+std::string slurp(const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+}  // namespace
+
+long Hub::pasteImage(const std::string& address, const std::string& session, std::string& err)
+{
+    char tmpl[] = "/tmp/shrooms-paste-XXXXXX";
+    int fd = ::mkstemp(tmpl);
+    if (fd < 0) {
+        err = std::string("mkstemp: ") + std::strerror(errno);
+        return -1;
+    }
+    ::close(fd);
+    std::string types = std::string(tmpl) + ".types";
+    ::unlink(tmpl);
+
+    // Which tool, and whether the clipboard holds an image at all: asked
+    // first, so text is left to the ordinary paste.
+    bool wayland = std::getenv("WAYLAND_DISPLAY") != nullptr;
+    std::vector<std::string> list = wayland ? std::vector<std::string>{"wl-paste", "--list-types"}
+                                            : std::vector<std::string>{"xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"};
+    int rc = runTo(list, types, 3);
+    std::string have = slurp(types);
+    ::unlink(types.c_str());
+    if (rc == -1) {
+        err = wayland ? "pasting images needs wl-paste: sudo apt install wl-clipboard"
+                      : "pasting images needs xclip: sudo apt install xclip";
+        return -1;
+    }
+    std::string mime;
+    for (const char* m : {"image/png", "image/jpeg", "image/webp", "image/gif"}) {
+        if (have.find(m) != std::string::npos) {
+            mime = m;
+            break;
+        }
+    }
+    if (mime.empty()) return 0;
+
+    std::vector<std::string> get = wayland ? std::vector<std::string>{"wl-paste", "--type", mime}
+                                           : std::vector<std::string>{"xclip", "-selection", "clipboard", "-t", mime, "-o"};
+    std::string ext = mime.substr(6);
+    std::string file = std::string(tmpl) + "." + ext;
+    if (runTo(get, file, 5) != 0) {
+        ::unlink(file.c_str());
+        err = "could not read the image from the clipboard";
+        return -1;
+    }
+    long id = addJob("upload", "pasted." + ext);
+    std::thread([this, id, address, session, file, ext]() {
+        std::string body, out, e;
+        bool ok = readFile(file, body, e);
+        ::unlink(file.c_str());
+        if (ok) {
+            ok = request(address, "POST", "/v1/sessions/" + session + "/files?name=pasted." + ext, body, 120, out, e);
+        }
+        finishJob(id, ok, ok ? field(out, "path") : "", "", e);
+    }).detach();
+    return id;
+}
+
 std::string Hub::jobs()
 {
     std::lock_guard<std::mutex> g(mu_);

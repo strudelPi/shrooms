@@ -68,6 +68,11 @@ Item {
                     return JSON.stringify({ next: top.events.length, connected: true, error: "",
                                             events: after >= top.events.length ? [] : top.events.slice(after) })
                 }
+                if (method === "agentGet" && String(args[1]).indexOf("/v1/conversations") === 0) return JSON.stringify({ conversations: [
+                    { id: "c-new", dir: "/home/someone/shrooms", modified: "2026-10-03T15:00:00+02:00", size: 1000,
+                      last_user: "fix the tether", last_assistant: "Fixed.",
+                      terminals: [ { pid: 23173, dir: "/home/someone/shrooms", tmux: "cl-logos-vpn", args: "claude --continue" } ] },
+                    { id: "c-taken", dir: "/home/someone/notes", modified: "2026-10-02T09:00:00+02:00", size: 10, adopted_by: "notes" } ] })
                 if (method === "agentGet") return JSON.stringify({ history: [
                     { time: "2026-10-02T10:00:00+02:00", role: "user", text: "Earlier, in a terminal." },
                     { time: "2026-10-02T10:01:00+02:00", role: "assistant", text: "And *my* answer then." },
@@ -115,7 +120,17 @@ Item {
             console.error("ATTACHED=" + view.agentAttached.length + " STICK=" + view.chatStick)
             console.error("COMPOSER=[" + view.composerText() + "]")
             view.sendToAgent("look")
+
             console.error("SENT=" + JSON.stringify(JSON.parse(top.lastPost).text) + " ATTACHED_AFTER=" + view.agentAttached.length)
+
+            // Taking over a conversation from a terminal.
+            view.loadConversations(view.agentHosts[0])
+            console.error("CONVERSATIONS=" + view.conversations.length
+                          + " TERMINAL=" + view.conversations[0].terminals[0].tmux
+                          + " NAME=" + view.nameFor(view.agentHosts[0], view.conversations[0]))
+            view.takeOver(view.agentHosts[0], view.conversations[0])
+            var took = JSON.parse(top.lastPost)
+            console.error("TAKEOVER name=" + took.name + " resume=" + took.resume + " open=" + view.agentOpen.session)
             console.error("CALLS=" + top.calls.filter(function(c) { return c.indexOf("agent") === 0 })
                           .filter(function(c, i, a) { return a.indexOf(c) === i }).join(","))
             top.grabToImage(function(img) {

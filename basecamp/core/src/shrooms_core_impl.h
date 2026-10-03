@@ -382,4 +382,11 @@ public:
      * microphone is recording.
      */
     std::string agentJobs();
+
+    /**
+     * @brief Sends an image on the clipboard to the session's machine, in the
+     * background: {"job":N}, or {"none":true} when the clipboard holds no
+     * image and the view should paste its text as usual.
+     */
+    std::string agentPaste(const std::string& address, const std::string& session);
 };

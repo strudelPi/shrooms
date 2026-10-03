@@ -853,3 +853,14 @@ std::string ShroomsCoreImpl::agentJobs()
 {
     return hub().jobs();
 }
+
+std::string ShroomsCoreImpl::agentPaste(const std::string& address, const std::string& session)
+{
+    if (!agents::isMeshAddress(address)) return errorJson("not a mesh address", address);
+    if (!safeSession(session)) return errorJson("not a session name", session);
+    std::string err;
+    long id = hub().pasteImage(address, session, err);
+    if (id < 0) return errorJson("cannot paste", err);
+    if (id == 0) return "{\"none\":true}";
+    return "{\"job\":" + std::to_string(id) + "}";
+}

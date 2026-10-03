@@ -144,6 +144,9 @@ Item {
     property bool agentRecording: false
     property bool agentTranscribing: false
     property string voiceLang: "cs"
+    // Conversations on the host a new session is being made on.
+    property var conversations: []
+    property string conversationsProblem: ""
 
     function unwrap(raw) {
         var r = raw
@@ -400,6 +403,42 @@ Item {
                 root.agentTranscribing = true
         }
     }
+    function shortDir(d) { return String(d || "").replace(/^\/home\/[^\/]+/, "~") }
+    function loadConversations(h) {
+        root.conversations = []
+        root.conversationsProblem = ""
+        if (!h) return
+        var r = unwrap(callCore("agentGet", [h.address, "/v1/conversations?limit=15"]))
+        if (r && r.conversations) root.conversations = r.conversations
+        else root.conversationsProblem = (r && (r.detail || r.error)) || "the agent does not list conversations — update shrooms-agent"
+    }
+    // A session name from the directory the conversation ran in, unique on
+    // that machine.
+    function nameFor(h, conv) {
+        var base = String(conv.dir || "conversation").split("/").pop().replace(/[^a-zA-Z0-9._-]/g, "-").replace(/^[^a-zA-Z0-9]+/, "") || "conversation"
+        base = base.slice(0, 40)
+        var taken = {}
+        for (var i = 0; i < h.sessions.length; i++) taken[h.sessions[i].name] = true
+        var name = base, n = 2
+        while (taken[name]) name = base + "-" + (n++)
+        return name
+    }
+    function takeOver(h, conv) {
+        var name = nameFor(h, conv)
+        var r = agentCall("agentPost", [h.address, "/v1/sessions",
+                          JSON.stringify({ name: name, resume: conv.id, auto_approve: nsAuto.checked })])
+        if (r === null) return
+        root.agentCreating = false
+        refreshAgents()
+        openSession(h, name)
+    }
+    function stopTerminal(h, pid) {
+        if (agentCall("agentPost", [h.address, "/v1/terminals/" + pid + "/stop", ""]) !== null) {
+            root.said = "stopped the terminal's claude"
+            root.saidBad = false
+            Qt.callLater(function() { root.loadConversations(h) })
+        }
+    }
     function cycleVoiceLang() {
         var ls = ["cs", "en", "auto"]
         root.voiceLang = ls[(ls.indexOf(voiceLang) + 1) % ls.length]
@@ -443,6 +482,7 @@ Item {
     function chatModelCount() { return chatModel.count }
     function chatModelAt(i) { return chatModel.get(i) }
     function composerText() { return composer.text }
+    function nsAutoChecked() { return nsAuto.checked }
 
     Timer {
         // Finding agents: cheap, since the core probes in the background and
@@ -542,7 +582,11 @@ Item {
                             Text { text: hostCol.modelData.name; color: cBone; font.family: "monospace"; font.pixelSize: root.fs(14) }
                             Text { text: hostCol.modelData.mesh; color: root.meshTint(hostCol.modelData.mesh); font.family: "monospace"; font.pixelSize: root.fs(10) }
                             Item { Layout.fillWidth: true }
-                            Lnk { text: "+ session"; onClicked: { newSession.host = hostCol.modelData; root.agentCreating = true } }
+                            Lnk { text: "+ session"; onClicked: {
+                                newSession.host = hostCol.modelData
+                                root.agentCreating = true
+                                Qt.callLater(function() { root.loadConversations(hostCol.modelData) })
+                            } }
                         }
                         Text {
                             visible: hostCol.modelData.sessions.length === 0
@@ -634,6 +678,78 @@ Item {
                         }
                         Lnk { text: "cancel"; base: cAsh; onClicked: root.agentCreating = false }
                     }
+
+                    // Or carry on one that started somewhere else — in a
+                    // terminal, under cl. Resuming keeps writing to the same
+                    // conversation, so this continues it rather than copying it.
+                    Text {
+                        Layout.topMargin: root.sz(14)
+                        text: "OR CONTINUE A CONVERSATION FROM " + (newSession.host ? newSession.host.name.toUpperCase() : "")
+                        color: cPhosphor; font.family: "monospace"; font.pixelSize: root.fs(12); font.letterSpacing: 1.5
+                    }
+                    Text {
+                        Layout.fillWidth: true; wrapMode: Text.Wrap
+                        text: "Newest first. A terminal still open in the same directory may hold it: stop it before carrying on here, or the two will write over each other's turns."
+                        color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10)
+                    }
+                    Text {
+                        visible: root.conversations.length === 0
+                        text: root.conversationsProblem !== "" ? root.conversationsProblem : "looking…"
+                        color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10)
+                    }
+                    ListView {
+                        id: convList
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.min(contentHeight, root.sz(420))
+                        clip: true
+                        spacing: root.sz(6)
+                        model: root.conversations
+                        delegate: Rectangle {
+                            id: conv
+                            required property var modelData
+                            readonly property bool taken: (conv.modelData.adopted_by || "") !== ""
+                            width: convList.width
+                            height: convCol.implicitHeight + root.sz(16)
+                            radius: root.sz(8)
+                            color: cPanel
+                            border.color: convMouse.containsMouse && !taken ? cPhosphor : cLine
+                            opacity: taken ? 0.6 : 1
+                            MouseArea {
+                                id: convMouse
+                                anchors.fill: parent; hoverEnabled: true
+                                cursorShape: conv.taken ? Qt.ArrowCursor : Qt.PointingHandCursor
+                                onClicked: if (!conv.taken) root.takeOver(newSession.host, conv.modelData)
+                            }
+                            Column {
+                                id: convCol
+                                x: root.sz(10); y: root.sz(8); width: parent.width - root.sz(20)
+                                spacing: 3
+                                RowLayout {
+                                    width: parent.width
+                                    Text { text: root.shortDir(conv.modelData.dir || "?"); color: cBone; font.family: "monospace"; font.pixelSize: root.fs(12); elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                    Text { text: root.clock(root.epoch(conv.modelData.modified)); color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(9) }
+                                }
+                                Text { visible: (conv.modelData.last_user || "") !== ""; width: parent.width; elide: Text.ElideRight
+                                       text: "you: " + (conv.modelData.last_user || ""); color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                                Text { visible: (conv.modelData.last_assistant || "") !== ""; width: parent.width; elide: Text.ElideRight
+                                       text: "claude: " + (conv.modelData.last_assistant || ""); color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                                Text { visible: conv.taken; text: "continued here as \"" + (conv.modelData.adopted_by || "") + "\""; color: cPhosphor; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                                Repeater {
+                                    model: conv.modelData.terminals || []
+                                    delegate: RowLayout {
+                                        id: term
+                                        required property var modelData
+                                        spacing: 8
+                                        Pulse { tint: cAmber }
+                                        Text { text: "open in a terminal: " + (term.modelData.tmux ? "tmux " + term.modelData.tmux : "pid " + term.modelData.pid)
+                                               color: cAmber; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                                        Lnk { text: "stop it"; base: cRust; font.pixelSize: root.fs(10)
+                                              onClicked: root.stopTerminal(newSession.host, term.modelData.pid) }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 Text {
@@ -698,6 +814,14 @@ Item {
                     onContentHeightChanged: if (root.chatStick) Qt.callLater(chatList.positionViewAtEnd)
                     onMovementEnded: root.chatStick = chatList.atYEnd
                     onAtYEndChanged: if (atYEnd) root.chatStick = true
+                    // Scrolling up by any means — the wheel included, which
+                    // reports no movement — stops the following. Content
+                    // growing never moves the view up, so this is the reader.
+                    property real lastY: 0
+                    onContentYChanged: {
+                        if (contentY < lastY - 2 && !atYEnd) root.chatStick = false
+                        lastY = contentY
+                    }
 
                     // Files dropped on the conversation are sent like 📎 ones.
                     DropArea {
@@ -710,7 +834,7 @@ Item {
                     }
 
                     Rectangle {
-                        visible: !root.chatStick
+                        visible: !chatList.atYEnd && chatModel.count > 0
                         anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: root.sz(12)
                         width: root.sz(34); height: width; radius: width / 2
                         color: cPanel; border.color: cPhosphor
@@ -966,6 +1090,14 @@ Item {
                             color: cBone
                             font.family: "monospace"; font.pixelSize: root.fs(12)
                             background: Rectangle { color: cPanel; radius: root.sz(10); border.color: composer.activeFocus ? cPhosphor : cLine }
+                            // An image on the clipboard goes to the agent like a
+                            // file; anything else pastes as usual.
+                            Keys.onPressed: function(ev) {
+                                if (!ev.matches(StandardKey.Paste) || !root.agentOpen) return
+                                var r = root.unwrap(root.callCore("agentPaste", [root.agentOpen.address, root.agentOpen.session]))
+                                if (r && r.job) { ev.accepted = true; root.pumpJobs() }
+                                else if (r && r.error) { root.said = r.detail || r.error; root.saidBad = true }
+                            }
                             Keys.onReturnPressed: function(ev) {
                                 if (ev.modifiers & Qt.ShiftModifier) { ev.accepted = false; return }
                                 if (root.sendToAgent(composer.text)) composer.text = ""

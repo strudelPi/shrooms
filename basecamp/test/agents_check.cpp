@@ -81,6 +81,17 @@ int main(int argc, char** argv)
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     CHECK(hub.jobs().find("is not a file") != std::string::npos, "%s", hub.jobs().c_str());
 
+    // Pasting an image: says what to install when the clipboard tool is
+    // missing, and reports no image (so text pastes as usual) when there is
+    // none — never a silent nothing.
+    {
+        std::string perr;
+        long pid = hub.pasteImage(addr, session, perr);
+        CHECK(pid == 0 || (pid < 0 && perr.find("sudo apt install") != std::string::npos) || pid > 0,
+              "paste: %ld %s", pid, perr.c_str());
+        std::printf("     paste: %s\n", pid > 0 ? "an image went" : (pid == 0 ? "no image on the clipboard" : perr.c_str()));
+    }
+
     // A voice note: two seconds from the real microphone, transcribed on the
     // agent's machine. Only whether it went through is checked; what the room
     // said is not printed.

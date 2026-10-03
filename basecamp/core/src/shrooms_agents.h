@@ -95,6 +95,14 @@ public:
     void recordCancel();
 
     /**
+     * An image on the clipboard, sent like a file: Basecamp's QML can paste
+     * text only. Read with wl-paste (Wayland) or xclip (X11). Returns the
+     * job's id, 0 when the clipboard holds no image (the caller pastes its
+     * text as usual), or -1 with why in err.
+     */
+    long pasteImage(const std::string& address, const std::string& session, std::string& err);
+
+    /**
      * Background jobs, as {"recording":bool,"jobs":[{"id","kind","state",
      * "name","path","text","error"}]}. state is pending, done or failed.
      */

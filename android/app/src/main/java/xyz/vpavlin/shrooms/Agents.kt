@@ -562,8 +562,6 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     val recorder = remember { VoiceRecorder(ctx) }
     var recording by remember { mutableStateOf(false) }
     var transcribing by remember { mutableStateOf(false) }
-    val prefs = remember { ctx.getSharedPreferences("agents", android.content.Context.MODE_PRIVATE) }
-    var lang by remember { mutableStateOf(prefs.getString("voice_lang", null) ?: defaultVoiceLang()) }
     DisposableEffect(Unit) { onDispose { recorder.cancel() } }
     fun startRecording() {
         runCatching { recorder.start() }
@@ -579,7 +577,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
         transcribing = true
         scope.launch {
             withContext(Dispatchers.IO) {
-                runCatching { client.transcribe(o.session, f.name, f.readBytes(), lang) }.also { f.delete() }
+                runCatching { client.transcribe(o.session, f.name, f.readBytes()) }.also { f.delete() }
             }.onSuccess { text ->
                 if (text.isNotBlank()) input = if (input.isBlank()) text else input.trimEnd() + " " + text
             }.onFailure { actionError = it.message ?: "could not transcribe" }
@@ -916,14 +914,6 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                     if (has) startRecording() else askMic.launch(android.Manifest.permission.RECORD_AUDIO)
                 }
             }
-            // The language to transcribe in: naming it halves the time, since
-            // detecting it costs the model a whole extra pass.
-            Text(lang.uppercase(), style = MaterialTheme.typography.labelSmall,
-                color = if (lang == "auto") Palette.Ash else Palette.Sky,
-                modifier = Modifier.clickable {
-                    lang = nextVoiceLang(lang)
-                    prefs.edit().putString("voice_lang", lang).apply()
-                }.padding(horizontal = 4.dp, vertical = 12.dp))
             Box(Modifier.weight(1f)) {
                 OutlinedTextField(
                     value = input, onValueChange = { input = it },
@@ -1193,13 +1183,6 @@ fun withAttachments(text: String, paths: List<String>): String =
     if (paths.isEmpty()) text
     else (if (text.isEmpty()) "" else "$text\n\n") +
         "Attached from my phone (on this machine):\n" + paths.joinToString("\n") { "- $it" }
-
-private val voiceLangs = listOf("cs", "en", "auto")
-
-/** Czech on a Czech phone, English otherwise; tap to change. */
-fun defaultVoiceLang(): String = if (java.util.Locale.getDefault().language == "cs") "cs" else "en"
-
-fun nextVoiceLang(l: String): String = voiceLangs[(voiceLangs.indexOf(l) + 1) % voiceLangs.size]
 
 /**
  * Asks before deleting a session, and says what is lost and what is not: the

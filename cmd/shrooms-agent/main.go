@@ -45,9 +45,9 @@ func run() error {
 	claude := flag.String("claude", "claude", "the claude binary")
 	sock := flag.String("socket", "/run/shrooms/shrooms.sock", "the shrooms daemon's control socket")
 	verbose := flag.Bool("verbose", false, "log Claude Code's stderr")
-	sttModel := flag.String("stt-model", filepath.Join(home, ".local", "share", "whisper", "ggml-large-v3-turbo-q5_0.bin"),
-		"whisper.cpp model for voice notes; voice notes are off when it is missing")
-	sttBin := flag.String("stt-bin", "whisper-cli", "whisper.cpp's CLI")
+	sttModel := flag.String("stt-model", filepath.Join(home, ".local", "share", "whisper", "ggml-parakeet-tdt-0.6b-v3-q4_k.bin"),
+		"ggml model for voice notes, Parakeet or Whisper (docs/speech-to-text.md); voice notes are off when it is missing")
+	sttBin := flag.String("stt-bin", "", "the CLI that runs it (default: parakeet-cli for a Parakeet model, else whisper-cli)")
 	sttThreads := flag.Int("stt-threads", 12, "threads for transcription")
 	flag.Parse()
 
@@ -96,11 +96,11 @@ func run() error {
 	}
 	if _, err := os.Stat(*sttModel); err != nil {
 		log.Info("voice notes off: no speech-to-text model", "model", *sttModel)
-	} else if bin, err := exec.LookPath(*sttBin); err != nil {
-		log.Info("voice notes off: whisper.cpp not found", "bin", *sttBin)
+	} else if bin, err := exec.LookPath(sttEngine(*sttBin, *sttModel)); err != nil {
+		log.Info("voice notes off: its CLI was not found", "bin", sttEngine(*sttBin, *sttModel))
 	} else {
-		m.STT = &agent.Transcriber{Whisper: bin, Model: *sttModel, FFmpeg: "ffmpeg", FFprobe: "ffprobe", Threads: *sttThreads}
-		log.Info("voice notes on", "model", filepath.Base(*sttModel))
+		m.STT = &agent.Transcriber{Bin: bin, Model: *sttModel, FFmpeg: "ffmpeg", FFprobe: "ffprobe", Threads: *sttThreads}
+		log.Info("voice notes on", "model", filepath.Base(*sttModel), "bin", bin)
 	}
 
 	names := &peerNames{}
@@ -258,4 +258,13 @@ func (p *peerNames) who(a netip.Addr) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.by[a]
+}
+
+// sttEngine is the CLI to run a model with: the one asked for, or the one the
+// model takes.
+func sttEngine(bin, model string) string {
+	if bin != "" {
+		return bin
+	}
+	return agent.EngineFor(model)
 }

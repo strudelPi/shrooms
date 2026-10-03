@@ -92,8 +92,6 @@ Item {
     function loadPrefs() {
         if (prefsLoaded || !haveCore) return
         prefsLoaded = true
-        var vl = String(callCore("getPref", ["voice_lang"]) || "").trim()
-        if (vl === "cs" || vl === "en" || vl === "auto") root.voiceLang = vl
         var n = parseFloat(String(callCore("getPref", ["ui_nudge"]) || ""))
         if (!isNaN(n)) root.uiNudge = Math.max(-0.4, Math.min(1.0, n))
     }
@@ -143,7 +141,6 @@ Item {
     property string agentSending: ""
     property bool agentRecording: false
     property bool agentTranscribing: false
-    property string voiceLang: "cs"
     // Conversations on the host a new session is being made on.
     property var conversations: []
     property string conversationsProblem: ""
@@ -468,7 +465,7 @@ Item {
             if (agentCall("agentRecord", ["start", "", "", ""]) !== null) root.agentRecording = true
         } else {
             root.agentRecording = false
-            if (agentCall("agentRecord", ["stop", agentOpen.address, agentOpen.session, voiceLang]) !== null)
+            if (agentCall("agentRecord", ["stop", agentOpen.address, agentOpen.session, "auto"]) !== null)
                 root.agentTranscribing = true
         }
     }
@@ -507,11 +504,6 @@ Item {
             root.saidBad = false
             Qt.callLater(function() { root.loadConversations(h) })
         }
-    }
-    function cycleVoiceLang() {
-        var ls = ["cs", "en", "auto"]
-        root.voiceLang = ls[(ls.indexOf(voiceLang) + 1) % ls.length]
-        savePref("voice_lang", voiceLang)
     }
     // Uploads and voice notes finish in the core's own time: picked up here.
     function pumpJobs() {
@@ -1320,14 +1312,6 @@ Item {
                             font.pixelSize: root.fs(root.agentRecording ? 11 : 16)
                         }
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleRecording() }
-                    }
-                    // The language to transcribe in: naming it halves the time,
-                    // since detecting it costs the model a whole extra pass.
-                    Lnk {
-                        text: root.voiceLang.toUpperCase()
-                        base: root.voiceLang === "auto" ? cAsh : cSky
-                        font.pixelSize: root.fs(10)
-                        onClicked: root.cycleVoiceLang()
                     }
                     ScrollView {
                         Layout.fillWidth: true

@@ -201,10 +201,11 @@ class AgentClient(address: String) {
 
     /**
      * Sends a voice note and returns its text, transcribed on the agent's
-     * machine. Long timeout: a minute of speech takes the model a while.
+     * machine, which detects the language. Long timeout: a minute of speech
+     * takes the model a while.
      */
-    fun transcribe(session: String, name: String, bytes: ByteArray, lang: String): String {
-        val c = open("POST", "/v1/sessions/${enc(session)}/transcribe?name=${enc(name)}&lang=${enc(lang)}", 180_000)
+    fun transcribe(session: String, name: String, bytes: ByteArray): String {
+        val c = open("POST", "/v1/sessions/${enc(session)}/transcribe?name=${enc(name)}&lang=auto", 180_000)
         try {
             c.doOutput = true
             c.setRequestProperty("Content-Type", "audio/mp4")

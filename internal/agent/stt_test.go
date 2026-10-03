@@ -27,7 +27,7 @@ func fakeTools(t *testing.T, duration string) (*Transcriber, string) {
 		// ffmpeg's last argument is the output: make it exist.
 		FFmpeg:  script("ffmpeg", `for a; do out=$a; done; : > "$out"`+"\n"),
 		FFprobe: script("ffprobe", "echo "+duration+"\n"),
-		Whisper: script("whisper", "echo '  ahoj, tady   Vašek  '\necho 'progress noise' >&2\n"),
+		Bin:     script("whisper", "echo '  ahoj, tady   Vašek  '\necho 'progress noise' >&2\n"),
 		Model:   "/models/turbo.bin",
 		Threads: 4,
 	}, log
@@ -54,6 +54,42 @@ func TestTranscribeAsksForTheLanguageAndAWindowAsLongAsTheClip(t *testing.T) {
 	}
 	if _, err := os.Stat(strings.TrimSuffix(audio, ".m4a") + ".16k.wav"); !os.IsNotExist(err) {
 		t.Error("the converted wav was left behind")
+	}
+}
+
+// Parakeet: the same conversion, but no language and no window — it takes
+// neither, and detects the language itself.
+func TestParakeetIsGivenNoLanguage(t *testing.T) {
+	tr, calls := fakeTools(t, "11.008")
+	tr.Model = "/models/ggml-parakeet-tdt-0.6b-v3-q4_k.bin"
+	audio := filepath.Join(t.TempDir(), "note.m4a")
+	os.WriteFile(audio, []byte("aac"), 0o600)
+	text, err := tr.Transcribe(context.Background(), audio, "cs")
+	if err != nil || text != "ahoj, tady Vašek" {
+		t.Fatalf("%q %v", text, err)
+	}
+	b, _ := os.ReadFile(calls)
+	log := string(b)
+	if !strings.Contains(log, "-m /models/ggml-parakeet-tdt-0.6b-v3-q4_k.bin -f ") || !strings.Contains(log, "-t 4") {
+		t.Errorf("calls:\n%s", log)
+	}
+	for _, not := range []string{"-l ", "-ac 679", "-nt", "ffprobe"} {
+		if strings.Contains(log, not) {
+			t.Errorf("parakeet was given %q:\n%s", not, log)
+		}
+	}
+}
+
+func TestTheEngineFollowsTheModel(t *testing.T) {
+	for model, want := range map[string]string{
+		"/x/ggml-parakeet-tdt-0.6b-v3-q4_k.bin": "parakeet-cli",
+		"/x/GGML-Parakeet.bin":                  "parakeet-cli",
+		"/x/ggml-large-v3-turbo-q5_0.bin":       "whisper-cli",
+		"/parakeet/ggml-small.bin":              "whisper-cli",
+	} {
+		if got := EngineFor(model); got != want {
+			t.Errorf("%s: %s, want %s", model, got, want)
+		}
 	}
 }
 

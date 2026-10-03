@@ -14,28 +14,45 @@ import (
 	"time"
 )
 
-// Transcriber turns a voice note into text on this machine, with whisper.cpp:
-// the audio never leaves the owner's devices, whatever speech engine the phone
-// happens to ship (docs/agents.md).
+// Transcriber turns a voice note into text on this machine, with whisper.cpp's
+// tools: the audio never leaves the owner's devices, whatever speech engine the
+// phone happens to ship (docs/agents.md).
+//
+// Two engines, told apart by the model: Parakeet v3 (parakeet-cli), the
+// default since 2026-10-03 — five to eight times faster than Whisper turbo on
+// this laptop, Czech included, and it detects the language itself — and
+// Whisper (whisper-cli). docs/speech-to-text.md has the measurements.
 type Transcriber struct {
-	Whisper string // whisper-cli
+	Bin     string // parakeet-cli or whisper-cli
 	Model   string // a ggml model file
 	FFmpeg  string
 	FFprobe string
 	Threads int
 }
 
+// IsParakeet reports whether a model file is a Parakeet one, which takes
+// parakeet-cli and no language.
+func IsParakeet(model string) bool {
+	return strings.Contains(strings.ToLower(filepath.Base(model)), "parakeet")
+}
+
+// EngineFor is the CLI that runs a model.
+func EngineFor(model string) string {
+	if IsParakeet(model) {
+		return "parakeet-cli"
+	}
+	return "whisper-cli"
+}
+
 var validLang = regexp.MustCompile(`^(auto|[a-z]{2,3})$`)
 
 // Transcribe returns the text of an audio file in any format ffmpeg reads.
 //
-// lang is a language code, or "auto" to let the model detect it — which costs
-// a whole extra pass of the encoder, doubling the time (measured 2026-10-03:
-// 19 s against 6 s for an 11-second clip), so the phone names it.
-//
-// The encoder is given a window as long as the clip rather than the 30
-// seconds whisper always pads to (--audio-ctx): 13 s → 5.4 s on the same clip,
-// the same words.
+// lang is a language code or "auto". Parakeet ignores it: it detects the
+// language as it goes, at no cost. For Whisper, detecting costs a whole extra
+// pass of the encoder, doubling the time (19 s against 6 s for an 11-second
+// clip), and its encoder is given a window as long as the clip rather than the
+// 30 seconds it always pads to (--audio-ctx): 13 s → 5.4 s, the same words.
 func (t *Transcriber) Transcribe(ctx context.Context, audio, lang string) (string, error) {
 	if lang == "" {
 		lang = "auto"
@@ -53,12 +70,15 @@ func (t *Transcriber) Transcribe(ctx context.Context, audio, lang string) (strin
 		return "", fmt.Errorf("converting the audio: %v: %s", err, bytes.TrimSpace(out))
 	}
 
-	args := []string{"-m", t.Model, "-f", wav, "-l", lang, "-nt", "-np", "-t", strconv.Itoa(t.threads())}
-	if secs, err := t.duration(ctx, wav); err == nil {
-		args = append(args, "-ac", strconv.Itoa(audioCtx(secs)))
+	args := []string{"-m", t.Model, "-f", wav, "-np", "-t", strconv.Itoa(t.threads())}
+	if !IsParakeet(t.Model) {
+		args = append(args, "-l", lang, "-nt")
+		if secs, err := t.duration(ctx, wav); err == nil {
+			args = append(args, "-ac", strconv.Itoa(audioCtx(secs)))
+		}
 	}
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, t.Whisper, args...)
+	cmd := exec.CommandContext(ctx, t.Bin, args...)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("transcribing: %v: %s", err, lastLine(stderr.String()))

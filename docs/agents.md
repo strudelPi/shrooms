@@ -110,7 +110,7 @@ On each machine's overlay addresses, port 7387.
 | `POST /v1/sessions/{name}/prompts/{id}` | `{allow, message?}` — answer a permission prompt |
 | `POST /v1/sessions/{name}/interrupt` | stop the current turn |
 | `POST /v1/sessions/{name}/files?name=` | the bytes of a file (50 MB at most); kept under the agent's own directory; returns `{path}` for the next message to name |
-| `POST /v1/sessions/{name}/transcribe?name=&lang=` | a voice note, kept like a file and transcribed by whisper.cpp; returns `{path, text}`. Naming the language halves the time |
+| `POST /v1/sessions/{name}/transcribe?name=&lang=` | a voice note, kept like a file and transcribed on this machine; returns `{path, text}`. Parakeet v3 (the default) detects the language and ignores `lang`; with a Whisper model (`--stt-model`), naming it halves the time |
 | `GET /v1/conversations?limit=N` | this machine's Claude Code conversations, newest first: where each ran, its last exchange, the session continuing it, and any terminal `claude` open in the same directory (with its tmux session) |
 | `POST /v1/terminals/{pid}/stop` | end a terminal's `claude` so its conversation can be continued here; only Claude Code run by this user by hand |
 | `GET /v1/peers` | the mesh as this machine sees it, so a client that knows one agent finds the rest |
@@ -137,7 +137,11 @@ with the command in full, auto-approve per session (the desktop's
 --dangerously-skip-permissions), stop, new sessions, copy; files (📎, or dropped
 on Basecamp) kept on the agent's machine and named by path in the next
 message; voice notes, recorded on the device and transcribed on the agent's
-machine by whisper.cpp, so no audio reaches a speech service. The phone
+machine — by Parakeet v3 through whisper.cpp's `parakeet-cli`, which works out
+the language itself (docs/speech-to-text.md) — so no audio reaches a speech
+service. Voice notes are on when the agent finds the model
+(`~/.local/share/whisper/ggml-parakeet-tdt-0.6b-v3-q4_k.bin`, from
+`ggml-org/parakeet-GGUF`) and `parakeet-cli` on its PATH. The phone
 notifies when a session needs you or replied.
 
 Search (both apps) finds words anywhere in a conversation, on the agent's

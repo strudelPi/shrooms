@@ -154,16 +154,6 @@ class LinksTest {
     }
 }
 
-class VoiceLangTest {
-    @Test fun theLanguageCyclesThroughCzechEnglishAndAuto() {
-        assertEquals("en", nextVoiceLang("cs"))
-        assertEquals("auto", nextVoiceLang("en"))
-        assertEquals("cs", nextVoiceLang("auto"))
-        // Something unknown from an older version lands on a real choice.
-        assertEquals("cs", nextVoiceLang("de"))
-    }
-}
-
 /**
  * Shrooms Agents is no mesh client, so the shrooms app hands it the peers it
  * can reach when it opens it. What goes over and what comes back.

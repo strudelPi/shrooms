@@ -1,6 +1,6 @@
 # Faster speech-to-text for voice notes
 
-**Status:** measured 2026-10-03, Czech included; not switched yet — a decision below.
+**Status:** measured 2026-10-03, Czech included; switched to Parakeet the same day.
 
 Voice notes to agents are transcribed on the agent's machine
 ([docs/agents.md](agents.md)). The first engine, whisper.cpp with
@@ -54,7 +54,7 @@ window rule in stt.go matters for it, and does not exist for Parakeet.
 
 - **No language choice.** Parakeet v3 detects the language itself, with no
   extra pass — Whisper's auto-detection doubled its time, which is why the
-  apps grew a CS/EN/AUTO switch. That switch could go.
+  apps grew a CS/EN/AUTO switch. That switch is gone.
 - **Czech works** (v3 covers 25 European languages): measured above.
 - It runs in whisper.cpp's own build (`parakeet-cli`, upstream since
   2026-10), with ggml models from `ggml-org/parakeet-GGUF` on Hugging Face —
@@ -68,7 +68,9 @@ window rule in stt.go matters for it, and does not exist for Parakeet.
 
 ## Decision
 
-**Switch shrooms-agent to Parakeet v3 q4_k by default**, keeping Whisper as a
-configured alternative, and drop the language switch once Czech is confirmed?
-Measured 6–8× real time against 1–1.2×, the same words, and one less thing to
-set. The cost is verbatim filler words.
+**Parakeet v3 q4_k is shrooms-agent's default** (decided 2026-10-03, after
+the Czech note). The engine follows the model: a file named `*parakeet*` runs
+with `parakeet-cli` and no language, anything else with `whisper-cli`, its
+language and the clip-sized window — so `--stt-model …turbo…` brings Whisper
+back. The apps no longer offer a language; they send `lang=auto`. The cost is
+verbatim filler words ("uh", false starts) in the text.

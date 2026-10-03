@@ -27,4 +27,6 @@ logos_module(
     SOURCES
         src/shrooms_core_impl.h
         src/shrooms_core_impl.cpp
+        src/shrooms_agents.h
+        src/shrooms_agents.cpp
 )

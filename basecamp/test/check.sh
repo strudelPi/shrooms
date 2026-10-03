@@ -193,3 +193,23 @@ peers=$(echo "$out" | sed -n 's/.*PEERS=\([0-9]*\).*/\1/p' | head -1)
 
 echo
 echo "both transports OK"
+
+# The Agents panel (docs/agents.md), against a stand-in core: it only runs
+# inside Basecamp, so this is the one place it is exercised before a person
+# opens it. Also saves a picture of it, for looking at.
+echo
+echo "==> the Agents panel"
+cp basecamp/test/AgentsHarness.qml "$work/"
+shot=${AGENTS_SHOT:-$work/agents.png}
+out=$(run "$QML" -I "$work" "$work/AgentsHarness.qml" "$shot")
+echo "$out" | grep -E "^qml: (HOSTS|ROWS|STREAMING|PROMPT|CALLS)" || true
+expect() { echo "$out" | grep -qF "$1" || { echo "FAIL: $2"; exit 1; }; }
+expect "HOSTS=1 SESSIONS=2" "the agents were not listed"
+# History before the conversation, the conversation's rows in order, the
+# setting note, and the prompt still open.
+expect "ROWS=you,said,you,said,tool,output,note,note,you,tool,prompt" "the conversation rows are wrong"
+expect "STREAMING=[Pushing **now**…] WORKING=true" "the streamed reply is not shown as it grows"
+expect "CONTEXT=67% of 1M MODEL=opus-5 1m" "context and model are not read from the session"
+expect "PROMPT open=true id=p1" "the waiting prompt is not offered"
+expect "CALLS=agentsFind,agentWatch,agentGet,agentEvents,agentPost" "the core was not called as expected"
+echo "agents panel OK${AGENTS_SHOT:+ (picture: $shot)}"

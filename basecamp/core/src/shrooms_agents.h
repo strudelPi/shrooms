@@ -1,0 +1,88 @@
+#pragma once
+
+#include <atomic>
+#include <map>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+/**
+ * Agents on the mesh (docs/agents.md), for the Basecamp view.
+ *
+ * The view runs in Basecamp's QML sandbox, which blocks all network access,
+ * and reaches the outside through synchronous calls into this module. A slow
+ * call freezes the whole view, so the network is kept off that path: finding
+ * agents and following a session's live stream happen on threads of their own
+ * here, and the view's calls only read what they have collected. Sending a
+ * message, answering a prompt and changing a setting are single requests to a
+ * machine on the mesh, bounded by a short timeout.
+ *
+ * Only mesh addresses are ever dialled (ULA fd00::/8 and the 198.18.0.0/15
+ * IPv4 aliases), on the agent port: the connections are plain HTTP and rely
+ * on the WireGuard tunnel for encryption and for who can reach an agent.
+ *
+ * Qt-free and ASCII-only, as the module glue requires.
+ */
+namespace agents {
+
+constexpr int kPort = 7387;
+
+/**
+ * Whether a path may be sent to an agent: its API only, printable, no spaces
+ * and no way to step out of it.
+ */
+bool safePath(const std::string& path);
+
+/** Whether an address is a literal mesh address. */
+bool isMeshAddress(const std::string& address);
+
+/**
+ * One plain HTTP request to an agent. Returns true on a 2xx, with the body;
+ * otherwise false and why, including the agent's own error text.
+ */
+bool request(const std::string& address, const std::string& method, const std::string& target,
+             const std::string& body, int timeoutSec, std::string& out, std::string& err);
+
+class Hub {
+public:
+    ~Hub();
+
+    /**
+     * Probes the given peers for agents in the background. `peers` is
+     * "name|mesh|address" entries separated by ";". A round already running
+     * is not started again.
+     */
+    void find(const std::string& peers);
+
+    /** What the last rounds found, as a JSON array. */
+    std::string found();
+
+    /** Follows one session's live stream, replacing whatever was followed. */
+    void watch(const std::string& address, const std::string& session);
+
+    /**
+     * The watched session's events after a local index, as
+     * {"next":N,"connected":bool,"error":"...","events":[...]}. Events are the
+     * agent's own JSON, verbatim; "partial" ones carry streamed reply text.
+     */
+    std::string events(long long after);
+
+private:
+    void follow(std::string address, std::string session, unsigned generation);
+    void stopFollower();
+
+    std::mutex mu_;
+    std::map<std::string, std::string> found_;   // address -> host JSON
+    std::atomic<bool> finding_{false};
+
+    std::thread follower_;
+    std::atomic<unsigned> generation_{0};
+    std::atomic<int> followFd_{-1};
+    std::vector<std::string> events_;
+    long long base_ = 0;
+    bool connected_ = false;
+    std::string error_;
+};
+
+}  // namespace agents

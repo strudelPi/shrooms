@@ -87,12 +87,15 @@ Item {
     readonly property bool fileBlocked: !sources[source].file
 
     /** True when the core module is present, which is the Basecamp case. */
-    readonly property bool haveCore: typeof logos !== "undefined" && !!logos.callModule
+    // Basecamp's bridge to the core module. A property, so a test harness can
+    // hand the view a stand-in (test/AgentsHarness.qml).
+    property var bridge: typeof logos !== "undefined" ? logos : null
+    readonly property bool haveCore: !!bridge && !!bridge.callModule
 
     function callCore(method, args) {
         if (!haveCore) return ""
         try {
-            return String(logos.callModule("shrooms_core", method, args || []))
+            return String(bridge.callModule("shrooms_core", method, args || []))
         } catch (e) {
             return ""
         }
@@ -908,6 +911,14 @@ Item {
                             font.family: "monospace"; font.pixelSize: root.fs(10)
                         }
                         Item { Layout.fillWidth: true }
+                        Text {
+                            // The agents on the owner's machines (docs/agents.md).
+                            text: "agents ▸"
+                            color: agentsBtn.containsMouse ? cBone : cPhosphor
+                            font.family: "monospace"; font.pixelSize: root.fs(11)
+                            MouseArea { id: agentsBtn; anchors.fill: parent; hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor; onClicked: root.agentsOpen = true }
+                        }
                         Text {
                             // Counted rather than assumed: a peer announcing is not
                             // a peer you can reach, and the difference is the whole
@@ -2786,6 +2797,708 @@ Layout.preferredWidth: 0
                                                      : "nothing logged since this pane was opened"
                         color: root.logProblem !== "" ? cAmber : cAsh
                         font.family: "monospace"; font.pixelSize: root.fs(10)
+                    }
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // Agents (docs/agents.md): the Claude Code sessions on the owner's
+    // machines, as the Android app shows them. Everything that touches the
+    // network runs in shrooms_core on threads of its own; this only reads what
+    // it collected, so no call here can stall the view.
+    // ========================================================================
+
+    property bool agentsOpen: false
+    property var agentHosts: []
+    property var agentOpen: null          // {address, name, mesh, session}
+    property var agentEventsList: []      // the agent's events, partials left out
+    property var agentEarlier: []         // from the transcript, before the events
+    property string agentStreaming: ""
+    property int agentNext: 0
+    property bool agentConnected: false
+    property string agentProblem: ""
+    property bool agentCreating: false
+
+    function unwrap(raw) {
+        var r = raw
+        for (var k = 0; k < 2 && typeof r === "string"; k++) {
+            try { r = JSON.parse(r) } catch (e) { return null }
+        }
+        return r
+    }
+
+    function agentCall(method, args) {
+        var r = unwrap(callCore(method, args))
+        if (r && r.error) {
+            root.said = (r.detail || r.error)
+            root.saidBad = true
+            return null
+        }
+        return r
+    }
+
+    // "name|mesh|address;..." of the peers that can be reached now.
+    function agentPeers() {
+        var out = []
+        for (var i = 0; i < root.peers.length; i++) {
+            var p = root.peers[i]
+            if (p.online && p.overlay) out.push(p.name + "|" + (p.mesh || "") + "|" + p.overlay)
+        }
+        return out.join(";")
+    }
+
+    function refreshAgents() {
+        var r = unwrap(callCore("agentsFind", [agentPeers()]))
+        if (!Array.isArray(r)) return
+        var hosts = []
+        for (var i = 0; i < r.length; i++) {
+            var h = r[i]
+            hosts.push({ name: h.name, mesh: h.mesh, address: h.address,
+                         sessions: (h.list && h.list.sessions) ? h.list.sessions : [] })
+        }
+        hosts.sort(function(a, b) { return a.name < b.name ? -1 : 1 })
+        root.agentHosts = hosts
+    }
+
+    // The open session's figures, from the last round of finding.
+    readonly property var agentInfo: {
+        if (!agentOpen) return null
+        for (var i = 0; i < agentHosts.length; i++) {
+            if (agentHosts[i].address !== agentOpen.address) continue
+            var ss = agentHosts[i].sessions
+            for (var j = 0; j < ss.length; j++) if (ss[j].name === agentOpen.session) return ss[j]
+        }
+        return null
+    }
+
+    function openSession(h, s) {
+        root.agentOpen = { address: h.address, name: h.name, mesh: h.mesh, session: s }
+        root.agentEventsList = []
+        root.agentEarlier = []
+        root.agentStreaming = ""
+        root.agentNext = 0
+        chatModel.clear()
+        agentCall("agentWatch", [h.address, s])
+        // After the first paint: a call during construction of what it fills
+        // freezes the view.
+        Qt.callLater(function() {
+            if (!root.agentOpen) return
+            var r = agentCall("agentGet", [root.agentOpen.address,
+                "/v1/sessions/" + root.agentOpen.session + "/history?limit=30"])
+            if (r && r.history) { root.agentEarlier = r.history; rebuildChat() }
+        })
+    }
+
+    function pumpAgent() {
+        if (!agentOpen) return
+        var r = unwrap(callCore("agentEvents", [String(agentNext)]))
+        if (!r || r.next === undefined) return
+        root.agentConnected = !!r.connected
+        root.agentProblem = r.error || ""
+        if (!r.events || r.events.length === 0) return
+        var evs = root.agentEventsList.slice()
+        var streaming = root.agentStreaming
+        for (var i = 0; i < r.events.length; i++) {
+            var e = r.events[i]
+            if (e.kind === "partial") { streaming += (e.data && e.data.text) || ""; continue }
+            var t = e.data ? e.data.type : ""
+            if (e.kind === "claude" && (t === "assistant" || t === "result")) streaming = ""
+            evs.push(e)
+        }
+        root.agentNext = r.next
+        root.agentEventsList = evs
+        root.agentStreaming = streaming
+        rebuildChat()
+    }
+
+    function epoch(s) { var t = Date.parse(s || ""); return isNaN(t) ? 0 : t }
+    function clock(ms) {
+        if (!ms) return ""
+        var d = new Date(ms), now = new Date()
+        var hm = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2)
+        return d.toDateString() === now.toDateString() ? hm : (d.getDate() + "." + (d.getMonth() + 1) + ". " + hm)
+    }
+    function summarise(input) {
+        if (!input) return ""
+        var ks = ["command", "file_path", "pattern", "path", "url", "query", "description", "prompt"]
+        for (var i = 0; i < ks.length; i++) if (input[ks[i]]) return String(input[ks[i]])
+        return JSON.stringify(input).slice(0, 200)
+    }
+    function contextLabel(used, win) {
+        if (!used || !win) return ""
+        return Math.min(100, Math.floor(used * 100 / win)) + "% of " + (win >= 1000000 ? (win / 1000000) + "M" : (win / 1000) + "k")
+    }
+    function shortModel(m) { return String(m || "").replace(/^claude-/, "").replace("[", " ").replace("]", "").replace(/-\d{8}$/, "") }
+
+    // The conversation as rows, with the same rules as the Android app
+    // (AgentChat.kt): which prompts are open, answered, or orphaned by a
+    // process that stopped; history only before the first kept event.
+    function chatItems() {
+        var evs = agentEventsList, out = []
+        var answers = {}, lastStop = -1
+        for (var i = 0; i < evs.length; i++) {
+            var e = evs[i]
+            if (e.kind === "answer" && e.data) answers[e.data.prompt] = (e.data.allow ? "allowed" : "denied") + (e.by ? " from " + e.by : "")
+            if (e.kind === "stopped") lastStop = e.seq
+        }
+        var first = 0
+        for (i = 0; i < evs.length; i++) if (epoch(evs[i].time)) { first = epoch(evs[i].time); break }
+        for (i = 0; i < agentEarlier.length; i++) {
+            var h = agentEarlier[i], ht = epoch(h.time)
+            if (first && ht >= first) continue
+            out.push({ key: "h" + i, kind: h.role === "user" ? "you" : "said", earlier: true, text: h.text, time: ht, by: "" })
+        }
+        var per = {}
+        function add(e, item) {
+            per[e.seq] = (per[e.seq] || 0) + 1
+            item.key = "e" + e.seq + "-" + per[e.seq]
+            item.time = epoch(e.time)
+            item.earlier = false
+            out.push(item)
+        }
+        for (i = 0; i < evs.length; i++) {
+            e = evs[i]
+            var d = e.data || {}
+            if (e.kind === "message") add(e, { kind: "you", text: d.text || "", by: e.by || "" })
+            else if (e.kind === "stopped") add(e, { kind: "note", text: "asleep; the next message wakes it" })
+            else if (e.kind === "setting" && d.auto_approve !== undefined)
+                add(e, { kind: "note", text: (d.auto_approve ? "auto-approve on" : "auto-approve off") + (e.by ? " from " + e.by : "") })
+            else if (e.kind === "claude") {
+                if (d.type === "assistant" && d.message && d.message.content) {
+                    var c = d.message.content
+                    for (var j = 0; j < c.length; j++) {
+                        if (c[j].type === "text" && String(c[j].text).trim() !== "") add(e, { kind: "said", text: String(c[j].text).trim() })
+                        else if (c[j].type === "tool_use") add(e, { kind: "tool", text: c[j].name + "  " + summarise(c[j].input) })
+                    }
+                } else if (d.type === "user" && d.message && Array.isArray(d.message.content)) {
+                    c = d.message.content
+                    for (j = 0; j < c.length; j++) {
+                        if (c[j].type !== "tool_result") continue
+                        var t = typeof c[j].content === "string" ? c[j].content
+                              : (Array.isArray(c[j].content) ? c[j].content.map(function(x) { return x.text || "" }).join("\n") : "")
+                        add(e, { kind: "output", text: t, error: !!c[j].is_error })
+                    }
+                } else if (d.type === "control_request" && d.request && d.request.subtype === "can_use_tool") {
+                    var ans = answers[d.request_id] || (lastStop > e.seq ? "the session stopped before it was answered" : "")
+                    add(e, { kind: "prompt", id: d.request_id, tool: d.request.tool_name,
+                             text: summarise(d.request.input), description: d.request.description || "",
+                             open: ans === "", answer: ans })
+                } else if (d.type === "result") {
+                    var note = d.subtype === "success" ? "done" : String(d.subtype).replace(/_/g, " ")
+                    if (d.total_cost_usd !== undefined) note += "  ·  $" + Number(d.total_cost_usd).toFixed(3)
+                    add(e, { kind: "note", text: note })
+                }
+            }
+        }
+        return out
+    }
+
+    // Updates the model in place where it can: rows are only ever appended or
+    // changed (a prompt being answered), so the view keeps its place. History
+    // arriving after the events is the one case that rebuilds it.
+    function rebuildChat() {
+        var items = chatItems()
+        var atEnd = chatList.atYEnd || chatModel.count === 0
+        var i = 0
+        for (; i < chatModel.count && i < items.length; i++) {
+            if (chatModel.get(i).key !== items[i].key) break
+            var same = chatModel.get(i).blob === JSON.stringify(items[i])
+            if (!same) chatModel.set(i, row(items[i]))
+        }
+        if (i < chatModel.count) {
+            chatModel.clear()
+            i = 0
+        }
+        for (; i < items.length; i++) chatModel.append(row(items[i]))
+        if (atEnd) Qt.callLater(function() { chatList.positionViewAtEnd() })
+    }
+    function row(it) {
+        return { key: it.key, kind: it.kind, text: it.text || "", by: it.by || "", time: it.time || 0,
+                 earlier: !!it.earlier, error: !!it.error, pid: it.id || "", tool: it.tool || "",
+                 description: it.description || "", open: !!it.open, answer: it.answer || "",
+                 blob: JSON.stringify(it) }
+    }
+
+    readonly property bool agentWorking: {
+        if (agentInfo && agentInfo.state === "working") return true
+        if (agentStreaming !== "") return true
+        var n = agentEventsList.length
+        if (n === 0) return false
+        var last = agentEventsList[n - 1]
+        if (last.kind === "message") return true
+        return last.kind === "claude" && last.data && last.data.type !== "result" &&
+               !(last.data.type === "control_request")
+    }
+
+    function sendToAgent(text) {
+        if (!agentOpen || text.trim() === "") return false
+        var r = agentCall("agentPost", [agentOpen.address, "/v1/sessions/" + agentOpen.session + "/messages",
+                                        JSON.stringify({ text: text.trim() })])
+        return r !== null
+    }
+    function answerPrompt(id, allow) {
+        if (!agentOpen) return
+        agentCall("agentPost", [agentOpen.address, "/v1/sessions/" + agentOpen.session + "/prompts/" + id,
+                                JSON.stringify({ allow: allow })])
+    }
+    function setAutoApprove(on) {
+        if (!agentOpen) return
+        if (agentCall("agentPost", [agentOpen.address, "/v1/sessions/" + agentOpen.session + "/settings",
+                                    JSON.stringify({ auto_approve: on })]) !== null) refreshAgents()
+    }
+
+    ListModel { id: chatModel }
+    // For the harness, which cannot reach an id inside this component.
+    function chatModelCount() { return chatModel.count }
+    function chatModelAt(i) { return chatModel.get(i) }
+
+    Timer {
+        // Finding agents: cheap, since the core probes in the background and
+        // this returns at once what it has.
+        interval: 3000
+        running: root.agentsOpen && root.haveCore
+        repeat: true; triggeredOnStart: true
+        onTriggered: root.refreshAgents()
+    }
+    Timer {
+        // The open session: collected by the core, read here several times a
+        // second so a streamed reply grows smoothly.
+        interval: 300
+        running: root.agentsOpen && root.agentOpen !== null && root.haveCore
+        repeat: true
+        onTriggered: root.pumpAgent()
+    }
+
+    component Lnk: Text {
+        id: lnk
+        signal clicked()
+        property color base: cPhosphor
+        color: lnkMouse.containsMouse ? cBone : base
+        font.family: "monospace"; font.pixelSize: root.fs(11)
+        font.underline: lnkMouse.containsMouse
+        MouseArea { id: lnkMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: lnk.clicked() }
+    }
+
+    component Pulse: Rectangle {
+        property color tint: cPhosphor
+        width: root.sz(8); height: width; radius: width / 2
+        color: tint
+        SequentialAnimation on opacity {
+            loops: Animation.Infinite
+            NumberAnimation { from: 1; to: 0.25; duration: 900 }
+            NumberAnimation { from: 0.25; to: 1; duration: 900 }
+        }
+    }
+
+    Rectangle {
+        id: agentsPanel
+        anchors.fill: parent
+        visible: root.agentsOpen
+        z: 50
+        color: cVoid
+
+        // A click must not fall through to the mesh view underneath.
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: function(w) { w.accepted = true } }
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.margins: root.sz(20)
+            spacing: root.sz(18)
+
+            // --- machines and their sessions ---------------------------------
+            ColumnLayout {
+                Layout.preferredWidth: root.sz(320)
+                Layout.maximumWidth: root.sz(380)
+                Layout.fillHeight: true
+                spacing: root.sz(10)
+
+                RowLayout {
+                    spacing: 8
+                    Pulse {}
+                    Text { text: "AGENTS"; color: cPhosphor; font.family: "monospace"; font.pixelSize: root.fs(12); font.letterSpacing: 1.5 }
+                    Item { Layout.fillWidth: true }
+                    Lnk { text: "back to the mesh"; base: cAsh; onClicked: { root.agentsOpen = false } }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    visible: !root.haveCore
+                    wrapMode: Text.Wrap
+                    text: "Agents need shrooms_core, which runs inside Basecamp."
+                    color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(11)
+                }
+                Text {
+                    Layout.fillWidth: true
+                    visible: root.haveCore && root.agentHosts.length === 0
+                    wrapMode: Text.Wrap
+                    text: "Looking for agents among the reachable peers… An agent is shrooms-agent on one of your machines, on its mesh address, port 7387."
+                    color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(11)
+                }
+
+                ListView {
+                    id: hostList
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    spacing: root.sz(6)
+                    model: root.agentHosts
+                    delegate: Column {
+                        id: hostCol
+                        required property var modelData
+                        width: hostList.width
+                        spacing: root.sz(6)
+                        RowLayout {
+                            width: parent.width
+                            spacing: 8
+                            Rectangle { width: root.sz(9); height: width; radius: width / 2; color: "transparent"; border.width: 2; border.color: root.meshTint(hostCol.modelData.mesh) }
+                            Text { text: hostCol.modelData.name; color: cBone; font.family: "monospace"; font.pixelSize: root.fs(14) }
+                            Text { text: hostCol.modelData.mesh; color: root.meshTint(hostCol.modelData.mesh); font.family: "monospace"; font.pixelSize: root.fs(10) }
+                            Item { Layout.fillWidth: true }
+                            Lnk { text: "+ session"; onClicked: { newSession.host = hostCol.modelData; root.agentCreating = true } }
+                        }
+                        Text {
+                            visible: hostCol.modelData.sessions.length === 0
+                            text: "no sessions yet"; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10)
+                        }
+                        Repeater {
+                            model: hostCol.modelData.sessions
+                            delegate: Rectangle {
+                                id: srow
+                                required property var modelData
+                                readonly property bool isOpen: root.agentOpen !== null && root.agentOpen.address === hostCol.modelData.address && root.agentOpen.session === srow.modelData.name
+                                width: hostCol.width
+                                height: sCol.implicitHeight + root.sz(16)
+                                radius: root.sz(8)
+                                color: isOpen ? Qt.rgba(0.21, 0.94, 0.63, 0.08) : cPanel
+                                border.width: 1
+                                border.color: srow.modelData.state === "waiting" ? cAmber : (isOpen ? cPhosphor : cLine)
+                                Column {
+                                    id: sCol
+                                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                    anchors.margins: root.sz(8)
+                                    spacing: 3
+                                    RowLayout {
+                                        width: parent.width
+                                        Text { text: srow.modelData.name; color: cBone; font.family: "monospace"; font.pixelSize: root.fs(12); elide: Text.ElideRight; Layout.fillWidth: true }
+                                        Pulse { visible: srow.modelData.state !== "idle"; tint: srow.modelData.state === "waiting" ? cAmber : cPhosphor }
+                                        Text {
+                                            text: srow.modelData.state === "waiting" ? "NEEDS YOU" : (srow.modelData.state === "working" ? "WORKING" : (srow.modelData.running ? "idle" : "asleep"))
+                                            color: srow.modelData.state === "waiting" ? cAmber : (srow.modelData.state === "working" ? cPhosphor : cAsh)
+                                            font.family: "monospace"; font.pixelSize: root.fs(9); font.letterSpacing: 1
+                                        }
+                                    }
+                                    Text {
+                                        visible: (srow.modelData.preview || "") !== ""
+                                        width: parent.width
+                                        text: srow.modelData.preview || ""
+                                        color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10)
+                                        wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
+                                    }
+                                    Text {
+                                        width: parent.width
+                                        text: [root.clock(root.epoch(srow.modelData.last_time)),
+                                               root.contextLabel(srow.modelData.context_used, srow.modelData.context_window),
+                                               root.shortModel(srow.modelData.model),
+                                               srow.modelData.auto_approve ? "auto-approve" : ""].filter(function(x) { return x !== "" }).join("  ·  ")
+                                        color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(9); elide: Text.ElideRight
+                                    }
+                                }
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.openSession(hostCol.modelData, srow.modelData.name) }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle { Layout.fillHeight: true; width: 1; color: cLine }
+
+            // --- the conversation -------------------------------------------
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: root.sz(8)
+
+                // New session form, in place of the conversation.
+                ColumnLayout {
+                    id: newSession
+                    property var host: null
+                    visible: root.agentCreating
+                    Layout.fillWidth: true
+                    spacing: root.sz(8)
+                    Text { text: "NEW SESSION ON " + (newSession.host ? newSession.host.name.toUpperCase() : ""); color: cPhosphor; font.family: "monospace"; font.pixelSize: root.fs(12); font.letterSpacing: 1.5 }
+                    Text { text: "A name and a directory on that machine, like a cl session. ~ is that machine's home."; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                    TextField { id: nsName; Layout.fillWidth: true; placeholderTextColor: cAsh; placeholderText: "name"; color: cBone; font.family: "monospace"; background: Rectangle { color: cPanel; border.color: nsName.activeFocus ? cPhosphor : cLine; radius: 6 } }
+                    TextField { id: nsDir; Layout.fillWidth: true; placeholderTextColor: cAsh; text: "~/"; placeholderText: "directory"; color: cBone; font.family: "monospace"; background: Rectangle { color: cPanel; border.color: nsDir.activeFocus ? cPhosphor : cLine; radius: 6 } }
+                    CheckBox { id: nsAuto; text: "auto-approve — never ask, like --dangerously-skip-permissions"; contentItem: Text { leftPadding: nsAuto.indicator.width + 6; text: nsAuto.text; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10); verticalAlignment: Text.AlignVCenter } }
+                    RowLayout {
+                        Lnk {
+                            text: "create"
+                            onClicked: {
+                                var r = root.agentCall("agentPost", [newSession.host.address, "/v1/sessions",
+                                    JSON.stringify({ name: nsName.text.trim(), dir: nsDir.text.trim(), auto_approve: nsAuto.checked })])
+                                if (r !== null) {
+                                    root.agentCreating = false
+                                    root.refreshAgents()
+                                    root.openSession(newSession.host, nsName.text.trim())
+                                    nsName.text = ""
+                                }
+                            }
+                        }
+                        Lnk { text: "cancel"; base: cAsh; onClicked: root.agentCreating = false }
+                    }
+                }
+
+                Text {
+                    visible: !root.agentCreating && root.agentOpen === null
+                    text: "Pick a session on the left."
+                    color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(11)
+                }
+
+                // Header: the session, its facts, its switches.
+                ColumnLayout {
+                    visible: !root.agentCreating && root.agentOpen !== null
+                    Layout.fillWidth: true
+                    spacing: 4
+                    RowLayout {
+                        spacing: 8
+                        Text { text: root.agentOpen ? root.agentOpen.session : ""; color: cBone; font.family: "monospace"; font.pixelSize: root.fs(16) }
+                        Pulse { visible: root.agentWorking; }
+                        Item { Layout.fillWidth: true }
+                        Lnk {
+                            readonly property bool on: root.agentInfo !== null && !!root.agentInfo.auto_approve
+                            text: on ? "AUTO-APPROVE ON" : "asks first"
+                            base: on ? cPhosphor : cAsh
+                            onClicked: root.setAutoApprove(!on)
+                        }
+                        Lnk { visible: root.agentWorking; text: "stop"; base: cRust
+                              onClicked: root.agentCall("agentPost", [root.agentOpen.address, "/v1/sessions/" + root.agentOpen.session + "/interrupt", ""]) }
+                    }
+                    Text {
+                        text: root.agentOpen ? [root.agentOpen.name, root.agentOpen.mesh,
+                              root.agentInfo ? root.shortModel(root.agentInfo.model) : "",
+                              root.agentInfo ? root.contextLabel(root.agentInfo.context_used, root.agentInfo.context_window) : "",
+                              root.agentConnected ? "" : ("reconnecting" + (root.agentProblem ? " — " + root.agentProblem : ""))
+                             ].filter(function(x) { return x !== "" }).join("  ·  ") : ""
+                        color: root.agentConnected ? cAsh : cAmber
+                        font.family: "monospace"; font.pixelSize: root.fs(10)
+                    }
+                    Rectangle {
+                        visible: root.agentInfo !== null && root.agentInfo.context_window > 0
+                        Layout.fillWidth: true; height: 2; color: cLine
+                        Rectangle {
+                            readonly property real f: root.agentInfo && root.agentInfo.context_window ? Math.min(1, root.agentInfo.context_used / root.agentInfo.context_window) : 0
+                            width: parent.width * f; height: 2
+                            color: f >= 0.9 ? cRust : (f >= 0.7 ? cAmber : cPhosphor)
+                        }
+                    }
+                }
+
+                ListView {
+                    id: chatList
+                    visible: !root.agentCreating && root.agentOpen !== null
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    spacing: root.sz(10)
+                    model: chatModel
+                    ScrollBar.vertical: ScrollBar {}
+                    footer: Item {
+                        width: chatList.width
+                        height: liveCol.implicitHeight + root.sz(8)
+                        Column {
+                            id: liveCol
+                            width: parent.width
+                            topPadding: root.sz(8)
+                            Rectangle {
+                                visible: root.agentStreaming !== ""
+                                width: parent.width
+                                height: streamText.implicitHeight + root.sz(20)
+                                color: cPanel; radius: root.sz(10); border.color: cLine
+                                TextEdit {
+                                    id: streamText
+                                    x: root.sz(10); y: root.sz(10); width: parent.width - root.sz(20)
+                                    readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap
+                                    textFormat: TextEdit.MarkdownText
+                                    text: root.agentStreaming + " ▍"
+                                    color: cBone; font.family: "monospace"; font.pixelSize: root.fs(12)
+                                }
+                            }
+                            RowLayout {
+                                visible: root.agentStreaming === "" && root.agentWorking
+                                spacing: 8
+                                Pulse {}
+                                Text { text: "thinking…"; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                            }
+                        }
+                    }
+                    delegate: Item {
+                        id: crow
+                        required property int index
+                        required property string kind
+                        required property string text
+                        required property string by
+                        required property real time
+                        required property bool earlier
+                        required property bool error
+                        required property string pid
+                        required property string tool
+                        required property string description
+                        required property bool open
+                        required property string answer
+                        width: chatList.width
+                        height: crowCol.implicitHeight
+
+                        Column {
+                            id: crowCol
+                            width: parent.width
+                            spacing: 4
+
+                            Text {
+                                visible: crow.earlier && crow.index === 0
+                                text: "— earlier, from the transcript —"
+                                color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10)
+                            }
+                            Text {
+                                visible: !crow.earlier && crow.index > 0 && chatModel.get(crow.index - 1).earlier
+                                text: "— with the agent —"
+                                color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10)
+                            }
+
+                            // You, or the model: a bubble with its time and a copy link.
+                            Rectangle {
+                                visible: crow.kind === "you" || crow.kind === "said"
+                                width: parent.width
+                                height: bubbleCol.implicitHeight + root.sz(20)
+                                radius: root.sz(10)
+                                color: crow.kind === "you" ? Qt.rgba(0.21, 0.94, 0.63, crow.earlier ? 0.04 : 0.07) : cPanel
+                                border.color: crow.kind === "you" ? Qt.rgba(0.21, 0.94, 0.63, 0.35) : cLine
+                                opacity: crow.earlier ? 0.8 : 1
+                                Column {
+                                    id: bubbleCol
+                                    x: root.sz(10); y: root.sz(10); width: parent.width - root.sz(20)
+                                    spacing: 4
+                                    RowLayout {
+                                        width: parent.width
+                                        Text {
+                                            text: [crow.kind === "you" ? "YOU" : "", crow.by, root.clock(crow.time)].filter(function(x) { return x !== "" }).join("  ·  ")
+                                            color: crow.kind === "you" ? cPhosphor : cAsh
+                                            font.family: "monospace"; font.pixelSize: root.fs(9); font.letterSpacing: 1
+                                            Layout.fillWidth: true
+                                        }
+                                        Lnk { text: "copy"; base: cAsh; font.pixelSize: root.fs(9); onClicked: root.copyText(crow.text) }
+                                    }
+                                    TextEdit {
+                                        width: parent.width
+                                        readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap
+                                        textFormat: crow.kind === "said" ? TextEdit.MarkdownText : TextEdit.PlainText
+                                        text: crow.text
+                                        color: cBone; selectionColor: Qt.rgba(0.21, 0.94, 0.63, 0.35)
+                                        font.family: "monospace"; font.pixelSize: root.fs(12)
+                                        onLinkActivated: function(link) { root.openUrl(link) }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                visible: crow.kind === "tool"
+                                width: parent.width
+                                text: "▸ " + crow.text
+                                color: cViolet; font.family: "monospace"; font.pixelSize: root.fs(11)
+                                elide: Text.ElideRight
+                            }
+
+                            TextEdit {
+                                id: outText
+                                property bool expanded: false
+                                visible: crow.kind === "output"
+                                width: parent.width
+                                leftPadding: root.sz(14)
+                                readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap
+                                text: expanded ? crow.text : (crow.text.split("\n")[0].slice(0, 160) + ((crow.text.indexOf("\n") >= 0 || crow.text.length > 160) ? "  … (click)" : ""))
+                                color: crow.error ? cRust : cAsh
+                                font.family: "monospace"; font.pixelSize: root.fs(10)
+                                MouseArea { anchors.fill: parent; acceptedButtons: Qt.LeftButton; propagateComposedEvents: true
+                                            onClicked: function(m) { outText.expanded = !outText.expanded; m.accepted = false } }
+                            }
+
+                            // A permission prompt: what it would run, in full, above the buttons.
+                            Rectangle {
+                                visible: crow.kind === "prompt"
+                                width: parent.width
+                                height: promptCol.implicitHeight + root.sz(24)
+                                radius: root.sz(10)
+                                color: cPanel
+                                border.color: crow.open ? cAmber : cLine
+                                Column {
+                                    id: promptCol
+                                    x: root.sz(12); y: root.sz(12); width: parent.width - root.sz(24)
+                                    spacing: 8
+                                    RowLayout {
+                                        spacing: 8
+                                        Pulse { visible: crow.open; tint: cAmber }
+                                        Text { text: crow.open ? (crow.tool.toUpperCase() + " WANTS TO RUN") : crow.tool
+                                               color: crow.open ? cAmber : cAsh; font.family: "monospace"; font.pixelSize: root.fs(10); font.letterSpacing: 1 }
+                                    }
+                                    Rectangle {
+                                        width: parent.width
+                                        height: cmdText.implicitHeight + root.sz(16)
+                                        color: cVoid; radius: 6; border.color: cLine
+                                        TextEdit {
+                                            id: cmdText
+                                            x: root.sz(8); y: root.sz(8); width: parent.width - root.sz(16)
+                                            readOnly: true; selectByMouse: true; wrapMode: TextEdit.WrapAnywhere
+                                            text: crow.text; color: cChartreuse
+                                            font.family: "monospace"; font.pixelSize: root.fs(11)
+                                        }
+                                    }
+                                    Text { visible: crow.description !== "" && crow.description !== crow.text; width: parent.width; wrapMode: Text.Wrap
+                                           text: crow.description; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                                    RowLayout {
+                                        visible: crow.open
+                                        spacing: root.sz(16)
+                                        Lnk { text: "ALLOW"; font.pixelSize: root.fs(12); onClicked: root.answerPrompt(crow.pid, true) }
+                                        Lnk { text: "DENY"; base: cRust; font.pixelSize: root.fs(12); onClicked: root.answerPrompt(crow.pid, false) }
+                                    }
+                                    Text { visible: !crow.open; text: crow.answer; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                                }
+                            }
+
+                            Text {
+                                visible: crow.kind === "note"
+                                text: "— " + crow.text + (crow.time ? "  ·  " + root.clock(crow.time) : "")
+                                color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10)
+                            }
+                        }
+                    }
+                }
+
+                // Composer: Enter sends, Shift+Enter is a new line.
+                RowLayout {
+                    visible: !root.agentCreating && root.agentOpen !== null
+                    Layout.fillWidth: true
+                    spacing: root.sz(10)
+                    ScrollView {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.min(root.sz(140), Math.max(root.sz(40), composer.implicitHeight))
+                        TextArea {
+                            id: composer
+                            placeholderText: "message — Enter sends, Shift+Enter for a new line"
+                            placeholderTextColor: cAsh
+                            wrapMode: TextArea.Wrap
+                            color: cBone
+                            font.family: "monospace"; font.pixelSize: root.fs(12)
+                            background: Rectangle { color: cPanel; radius: root.sz(10); border.color: composer.activeFocus ? cPhosphor : cLine }
+                            Keys.onReturnPressed: function(ev) {
+                                if (ev.modifiers & Qt.ShiftModifier) { ev.accepted = false; return }
+                                if (root.sendToAgent(composer.text)) composer.text = ""
+                            }
+                        }
+                    }
+                    Lnk {
+                        text: "SEND"; font.pixelSize: root.fs(12)
+                        base: composer.text.trim() !== "" ? cPhosphor : cAsh
+                        onClicked: if (root.sendToAgent(composer.text)) composer.text = ""
                     }
                 }
             }

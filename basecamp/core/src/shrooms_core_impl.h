@@ -327,4 +327,40 @@ public:
 
     /** @brief As reload(), against a specific control socket. */
     std::string reloadOn(const std::string& socketPath);
+
+    /**
+     * @brief Starts looking for agents (docs/agents.md) among the given peers,
+     * in the background, and returns what has been found so far.
+     *
+     * @param peers "name|mesh|address" entries separated by ";". Only mesh
+     * addresses are probed.
+     *
+     * The view polls this: the network never runs on its thread.
+     */
+    std::string agentsFind(const std::string& peers);
+
+    /**
+     * @brief Follows one session's live stream in the background, replacing
+     * whatever was followed before. Returns {"ok":true} or an error.
+     */
+    std::string agentWatch(const std::string& address, const std::string& session);
+
+    /**
+     * @brief The followed session's events after a local index, already
+     * collected: {"next":N,"connected":bool,"error":"...","events":[...]}.
+     */
+    std::string agentEvents(const std::string& after);
+
+    /**
+     * @brief One GET to an agent's API, such as a session list or history.
+     * Returns the agent's JSON, or an object with an error field.
+     */
+    std::string agentGet(const std::string& address, const std::string& path);
+
+    /**
+     * @brief One POST to an agent's API: a message, an answer to a prompt, a
+     * setting, a new session. Returns the agent's reply, {"ok":true} when it
+     * had none, or an object with an error field.
+     */
+    std::string agentPost(const std::string& address, const std::string& path, const std::string& body);
 };

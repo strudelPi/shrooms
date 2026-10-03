@@ -1,4 +1,5 @@
 #include "shrooms_core_impl.h"
+#include "shrooms_agents.h"
 
 #include <cctype>
 #include <cerrno>
@@ -761,4 +762,63 @@ std::string ShroomsCoreImpl::reloadOn(const std::string& socketPath)
 std::string ShroomsCoreImpl::reload()
 {
     return postToDaemon("/reload", "");
+}
+
+// --- agents ------------------------------------------------------------------
+//
+// The hub lives here rather than as a member: the module glue reads the class
+// declaration, and it has no reason to see the threads behind these methods.
+
+namespace {
+
+agents::Hub& hub()
+{
+    static agents::Hub h;
+    return h;
+}
+
+bool safeSession(const std::string& s)
+{
+    if (s.empty() || s.size() > 64) return false;
+    for (unsigned char c : s) {
+        if (!std::isalnum(c) && c != '.' && c != '_' && c != '-') return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+std::string ShroomsCoreImpl::agentsFind(const std::string& peers)
+{
+    hub().find(peers);
+    return hub().found();
+}
+
+std::string ShroomsCoreImpl::agentWatch(const std::string& address, const std::string& session)
+{
+    if (!agents::isMeshAddress(address)) return errorJson("not a mesh address", address);
+    if (!safeSession(session)) return errorJson("not a session name", session);
+    hub().watch(address, session);
+    return "{\"ok\":true}";
+}
+
+std::string ShroomsCoreImpl::agentEvents(const std::string& after)
+{
+    return hub().events(std::atoll(after.c_str()));
+}
+
+std::string ShroomsCoreImpl::agentGet(const std::string& address, const std::string& path)
+{
+    if (!agents::safePath(path)) return errorJson("not an agent path", path);
+    std::string out, err;
+    if (!agents::request(address, "GET", path, "", 5, out, err)) return errorJson("agent", err);
+    return out;
+}
+
+std::string ShroomsCoreImpl::agentPost(const std::string& address, const std::string& path, const std::string& body)
+{
+    if (!agents::safePath(path)) return errorJson("not an agent path", path);
+    std::string out, err;
+    if (!agents::request(address, "POST", path, body, 8, out, err)) return errorJson("agent", err);
+    return out.empty() ? "{\"ok\":true}" : out;
 }

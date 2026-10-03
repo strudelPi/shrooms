@@ -44,3 +44,5 @@ number appears, its source is named.
 | [032](032-a-suffix-that-cannot-be-taken-away.md) | A suffix that cannot be taken away | accepted; `.mesh` was never reserved and ICANN's 2026 round has closed |
 | [033](033-the-card-is-the-admin-not-the-uid.md) | The card is the admin, not the uid | proposed; tiers by what protects an operation, not by how it sounds |
 | [034](034-the-admin-names-the-blind-relays.md) | The admin names the blind relays | accepted; built |
+| [035](035-an-edge-port-is-nobodys-contract.md) | An Edge node's port is nobody's contract | accepted; built — a tethering phone stranded the old one |
+| [036](036-agents-grow-out-of-the-mesh.md) | Agents grow out of the mesh | accepted; built — Shrooms Agents, a separate app over the mesh |

@@ -95,18 +95,37 @@ directory — the same thing `cl` keys on.
 
 ## API (HTTP + JSON, server-sent events)
 
+On each machine's overlay addresses, port 7387.
+
 | | |
 |---|---|
-| `GET /v1/sessions` | list: name, directory, state (idle / working / waiting), pending prompts |
-| `POST /v1/sessions` | `{name, dir}` — create |
+| `GET /v1/sessions` | list: name, directory, state (idle / working / waiting), pending prompts, context used and window, model, the last reply, auto-approve |
+| `POST /v1/sessions` | `{name, dir, auto_approve?}` — create; `{name, resume: id}` — continue an existing conversation, in the directory it ran in |
 | `DELETE /v1/sessions/{name}` | stop and forget |
-| `GET /v1/sessions/{name}/events?after=N` | the session's events, then a live stream (SSE) |
+| `PATCH /v1/sessions/{name}`, `POST …/settings` | `{auto_approve}` (POST for clients that cannot send PATCH) |
+| `GET /v1/sessions/{name}/events?after=N` | the session's events, then a live stream (SSE); `partial` events carry reply text as it is written, unnumbered and never kept |
+| `GET /v1/sessions/{name}/history?limit=N` | what was said before this agent had the conversation, from Claude Code's transcript (its last 4 MB) |
 | `POST /v1/sessions/{name}/messages` | `{text}` — a user turn |
 | `POST /v1/sessions/{name}/prompts/{id}` | `{allow, message?}` — answer a permission prompt |
 | `POST /v1/sessions/{name}/interrupt` | stop the current turn |
+| `POST /v1/sessions/{name}/files?name=` | the bytes of a file (50 MB at most); kept under the agent's own directory; returns `{path}` for the next message to name |
+| `POST /v1/sessions/{name}/transcribe?name=&lang=` | a voice note, kept like a file and transcribed by whisper.cpp; returns `{path, text}`. Naming the language halves the time |
+| `GET /v1/conversations?limit=N` | this machine's Claude Code conversations, newest first: where each ran, its last exchange, the session continuing it, and any terminal `claude` open in the same directory (with its tmux session) |
+| `POST /v1/terminals/{pid}/stop` | end a terminal's `claude` so its conversation can be continued here; only Claude Code run by this user by hand |
+| `GET /v1/peers` | the mesh as this machine sees it, so a client that knows one agent finds the rest |
 
 Events are numbered per session and kept on disk, so a phone that was away
 catches up from the last number it saw.
+
+### Taking over a terminal's conversation
+
+What replaces `cl`. Resuming a conversation keeps writing to the same
+transcript, so a session that continues one started in a terminal carries it
+on rather than copying it. A terminal `claude` does not keep its transcript
+open, so which conversation it holds cannot be known — only that one is open
+in the same directory, and which tmux session it is. The list says so, with
+"stop it": two writers on one conversation cannot see each other's turns, and
+the transcript branches.
 
 ## What it does
 
@@ -125,7 +144,5 @@ notifies when a session needs you or replied.
 - Publishing: the LAN F-Droid and Basecamp repositories live on jimmy-crib,
   which was down when this was built; the agents packages go there with the
   next shrooms release.
-- Paste a screenshot into Basecamp's composer; share to Shrooms Agents from
-  any Android app; several files at once.
-- Taking over a conversation started in a terminal (`cl`), rather than
-  pointing a session at its id by hand.
+- Share to Shrooms Agents from any Android app; several files at once.
+  (Pasting an image into Basecamp is built; it needs wl-clipboard or xclip.)

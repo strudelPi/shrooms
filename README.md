@@ -794,6 +794,27 @@ action — direct on wifi, relayed on the carrier's CGNAT, and the transition
 survived in both directions. Built with `make apk`, or published to an F-Droid
 repo with `make fdroid`.
 
+## Shrooms Agents
+
+What grows out of the mesh: talk to the Claude Code sessions on your own
+machines from a phone or from Basecamp, and approve what they want to do —
+streamed replies, permission prompts, files, voice notes transcribed on the
+agent's machine, and conversations taken over from a terminal. Nothing leaves
+the mesh: `shrooms-agent` listens only on each machine's mesh addresses, so
+being on the mesh is the access control.
+
+A separate app and Basecamp module beside shrooms, not part of it
+([ADR-036](docs/adr/036-agents-grow-out-of-the-mesh.md)); the agent is a
+separate binary, run as you, never as root:
+
+```
+sudo make install                                   # installs shrooms-agent too
+systemctl --user enable --now shrooms-agent
+```
+
+Android: `AGENTS=1 scripts/build-apk.sh`. Basecamp: `make basecamp-agents-lgx`.
+How it works and the API: [docs/agents.md](docs/agents.md).
+
 ## Membership without a shared secret
 
 Today one secret does everything: the network key derives the topics, the
@@ -1506,7 +1527,9 @@ short version:
 | [DESIGN.md](DESIGN.md) | architecture and the research behind each decision |
 | [PROTOTYPE.md](PROTOTYPE.md) | build plan, milestones, what each proved |
 | [SECURITY.md](SECURITY.md) | what is protected, what leaks, what is deferred |
-| [docs/adr/](docs/adr/) | why each significant decision was made (26 records) |
+| [docs/adr/](docs/adr/) | why each significant decision was made (36 records) |
+| [docs/agents.md](docs/agents.md) | Shrooms Agents: Claude Code sessions on your machines, over the mesh |
+| [docs/stale-tether-nat.md](docs/stale-tether-nat.md) | why an Edge node's WireGuard port moves on every network change |
 | [docs/a-mesh-on-a-card.md](docs/a-mesh-on-a-card.md) | putting a mesh's admin key on a Keycard, and admitting a phone to it |
 | [docs/mesh-labels-are-local.md](docs/mesh-labels-are-local.md) | why the same mesh has a different name on every device, and what that decides |
 | [docs/when-a-node-loses-its-state.md](docs/when-a-node-loses-its-state.md) | what is in the state directory, what survives a power cut, and how to enrol a device again |

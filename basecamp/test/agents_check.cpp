@@ -26,6 +26,21 @@ int main(int argc, char** argv)
     CHECK(!safePath("/v1/../../etc"), "dotdot");
     CHECK(!safePath("/v1/x HTTP/1.0\r\nX: y"), "header injection");
     CHECK(!safePath("/admin"), "outside the API");
+    // Programs the core starts get the environment without the AppImage's
+    // loader settings: with them, coreutils refused to run and xdg-open failed.
+    {
+        setenv("LD_PRELOAD", "/tmp/.mount_x/usr/lib/libprocself_fix.so", 1);
+        setenv("__BUNDLE_REAL_EXE", "/tmp/.mount_x/usr/bin/.logos_host.elf", 1);
+        setenv("LD_LIBRARY_PATH", "/tmp/.mount_x/usr/lib", 1);
+        auto e = childEnv();
+        std::string all;
+        for (auto& v : e.vars) all += v + "\n";
+        CHECK(all.find("LD_PRELOAD=") == std::string::npos && all.find("__BUNDLE_REAL_EXE=") == std::string::npos &&
+              all.find("LD_LIBRARY_PATH=") == std::string::npos, "loader settings passed on");
+        CHECK(all.find("PATH=") != std::string::npos && e.ptrs.back() == nullptr, "the rest kept");
+        unsetenv("LD_PRELOAD"); unsetenv("__BUNDLE_REAL_EXE"); unsetenv("LD_LIBRARY_PATH");
+    }
+
     // Links the core opens for a view: web links only.
     CHECK(safeUrl("https://github.com/users/vpavlin/packages/container/shrooms-agent/settings"), "a plain https link");
     CHECK(safeUrl("http://vps.office.mesh:8099/x"), "a mesh http link");

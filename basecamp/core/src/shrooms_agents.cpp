@@ -23,6 +23,36 @@ extern "C" char** environ;
 
 namespace agents {
 
+// The environment for the programs this starts — xdg-open, the recorder, the
+// clipboard tool — without what Basecamp's AppImage puts in its own: its
+// LD_PRELOAD (libprocself_fix.so) makes /proc/self/exe name Basecamp's binary,
+// and Ubuntu's coreutils, one multi-call binary, then refuse to run ("Security
+// violation: Requested utility `cat` does not match executable name") — so
+// xdg-open, a shell script, failed without a word and links did not open
+// (2026-10-04). Its LD_LIBRARY_PATH and Qt plugin path would likewise hand
+// its libraries to programs built against the system's.
+ChildEnv childEnv()
+{
+    static const char* drop[] = {"LD_PRELOAD=", "LD_LIBRARY_PATH=", "QT_PLUGIN_PATH=", "QML2_IMPORT_PATH=",
+                                 "QML_IMPORT_PATH=", "APPDIR=", "APPIMAGE=", "ARGV0=", "OWD=",
+                                 // What libprocself_fix.so answers /proc/self/exe with.
+                                 "__BUNDLE_REAL_EXE="};
+    ChildEnv e;
+    for (char** v = environ; v && *v; v++) {
+        bool keep = true;
+        for (const char* d : drop)
+            if (std::strncmp(*v, d, std::strlen(d)) == 0) keep = false;
+        if (keep) e.vars.emplace_back(*v);
+    }
+    for (auto& v : e.vars) e.ptrs.push_back(const_cast<char*>(v.c_str()));
+    e.ptrs.push_back(nullptr);
+    return e;
+}
+
+} // namespace agents
+
+namespace agents {
+
 namespace {
 
 constexpr size_t kMaxBody = 8 * 1024 * 1024;
@@ -568,7 +598,7 @@ std::string Hub::recordStart()
         for (auto& a : t) argv.push_back(const_cast<char*>(a.c_str()));
         argv.push_back(nullptr);
         pid_t pid;
-        int rc = posix_spawnp(&pid, argv[0], &fa, nullptr, argv.data(), environ);
+        int rc = posix_spawnp(&pid, argv[0], &fa, nullptr, argv.data(), childEnv().ptrs.data());
         if (rc == 0) {
             recorder_ = pid;
             recording_ = path;
@@ -669,7 +699,7 @@ bool Hub::openUrl(const std::string& url, std::string& err)
     std::string bin = "xdg-open";
     char* argv[] = {const_cast<char*>(bin.c_str()), const_cast<char*>(url.c_str()), nullptr};
     pid_t pid;
-    int rc = posix_spawnp(&pid, argv[0], &fa, nullptr, argv, environ);
+    int rc = posix_spawnp(&pid, argv[0], &fa, nullptr, argv, childEnv().ptrs.data());
     posix_spawn_file_actions_destroy(&fa);
     if (rc != 0) {
         err = std::string("xdg-open: ") + std::strerror(rc);
@@ -695,7 +725,7 @@ int runTo(const std::vector<std::string>& cmd, const std::string& outPath, int s
     for (auto& a : cmd) argv.push_back(const_cast<char*>(a.c_str()));
     argv.push_back(nullptr);
     pid_t pid;
-    int rc = posix_spawnp(&pid, argv[0], &fa, nullptr, argv.data(), environ);
+    int rc = posix_spawnp(&pid, argv[0], &fa, nullptr, argv.data(), childEnv().ptrs.data());
     posix_spawn_file_actions_destroy(&fa);
     if (rc != 0) return -1;
     int status = 0;

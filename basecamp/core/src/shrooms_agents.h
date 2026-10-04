@@ -38,6 +38,17 @@ bool safePath(const std::string& path);
 std::string field(const std::string& json, const std::string& key);
 
 /** Whether an address is a literal mesh address. */
+/**
+ * The environment for programs this starts, without the AppImage's loader
+ * settings (LD_PRELOAD, LD_LIBRARY_PATH, …). ptrs is the envp, valid while the
+ * value lives.
+ */
+struct ChildEnv {
+    std::vector<std::string> vars;
+    std::vector<char*> ptrs;
+};
+ChildEnv childEnv();
+
 /** Whether a link is one to open: http or https, printable, not huge. */
 bool safeUrl(const std::string& url);
 bool isMeshAddress(const std::string& address);

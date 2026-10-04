@@ -161,7 +161,10 @@ unreachable. It used to vanish and come back, moving the whole list.
 
 Links in a conversation open in the browser. In Basecamp the core opens them
 (`xdg-open`, http and https only): Basecamp's sandbox blocks every web URL
-inside a view, so `Qt.openUrlExternally` there does nothing. In Basecamp
+inside a view, so `Qt.openUrlExternally` there does nothing. Programs the
+core starts get its environment without the AppImage's loader settings: its
+`LD_PRELOAD` (with `__BUNDLE_REAL_EXE`) makes Ubuntu's multi-call coreutils
+refuse to run, which silently broke `xdg-open`, a shell script. In Basecamp
 the core keeps a session's last 4000 events; "load them" on a longer
 session shows those, not the very first.
 

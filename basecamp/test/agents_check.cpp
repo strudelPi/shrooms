@@ -50,6 +50,17 @@ int main(int argc, char** argv)
     CHECK(!safeUrl("https://x.io/\n--option"), "a newline");
     CHECK(!safeUrl("-https://x.io"), "an option");
 
+    // A copy keeps strings cut, never mid-escape or mid-character.
+    {
+        std::string big(5000, 'x');
+        std::string ev = "{\"seq\":7,\"data\":{\"text\":\"" + std::string(4094, 'a') + "\\n\u0161\u0161" + big + "\",\"k\":\"short\"}}";
+        std::string t = trimStrings(ev, 4096);
+        CHECK(t.size() < 4300 && t.find("\"k\":\"short\"") != std::string::npos && t.find("\xe2\x80\xa6\"") != std::string::npos,
+              "trimmed to %zu: %s", t.size(), t.substr(4080, 60).c_str());
+        CHECK(t.find("\\n") == std::string::npos || t.find("\\n") < 4200, "an escape split");
+        CHECK(trimStrings("{\"a\":\"\\\"q\\\"\"}", 4096) == "{\"a\":\"\\\"q\\\"\"}", "a short string with escapes changed");
+    }
+
     std::string out, err;
     bool ok = request(addr, "GET", "/v1/sessions", "", 5, out, err);
     CHECK(ok && out.find("\"sessions\"") != std::string::npos, "%s %s", err.c_str(), out.substr(0, 80).c_str());
@@ -70,6 +81,19 @@ int main(int argc, char** argv)
     CHECK(found.find("\"name\":\"laptop\"") != std::string::npos && found.find("\"list\":{") != std::string::npos,
           "%s", found.substr(0, 200).c_str());
     CHECK(found.find("8.8.8.8") == std::string::npos, "a public address was probed");
+
+    // Switching away from a machine that does not answer does not wait for its
+    // connection attempt: that froze Basecamp, its call timing out at 20 s.
+    // fdb0:9afc:a5ef:ffff::1 is on the mesh's prefix and nobody's address.
+    {
+        Hub h;
+        h.watch("fdb0:9afc:a5ef:ffff::1", "nowhere", 300);
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        auto t0 = std::chrono::steady_clock::now();
+        h.watch(addr, session, -5);
+        long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+        CHECK(ms < 1000, "switching away took %ld ms", ms);
+    }
 
     hub.watch(addr, session, 0);
     std::string ev;

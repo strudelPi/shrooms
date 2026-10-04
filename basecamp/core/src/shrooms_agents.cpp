@@ -5,12 +5,14 @@
 #include <cerrno>
 #include <chrono>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/stat.h>
@@ -61,6 +63,10 @@ constexpr size_t kMaxReply = 512 * 1024;
 // What is kept on disk of each conversation: as the phone keeps.
 constexpr size_t kHistoryEvents = 300;
 constexpr size_t kHistoryBytes = 1 << 20;
+// Strings longer than this — a tool's output, nearly always, shown folded —
+// are kept cut, as the phone keeps them: whole, a few filled the megabyte and a
+// busy session's copy held 75 events.
+constexpr size_t kHistoryString = 4096;
 
 std::string jsonEscape(const std::string& s)
 {
@@ -88,7 +94,14 @@ std::string jsonEscape(const std::string& s)
 
 // Opens a TCP connection to a mesh address, or returns -1 with why. Both
 // timeouts are set, so a peer that went away cannot hang a caller.
-int dial(const std::string& address, int timeoutSec, std::string& err)
+//
+// The connection is made in slices of 100 ms, at most connectSec (timeoutSec
+// when 0) in all, asking `cancelled` between them. A blocking connect to a
+// machine that does not answer took the whole send timeout — 60 s for a
+// session being followed — and switching sessions waits for the follower:
+// Basecamp froze, its call to the core timing out after 20 s (2026-10-04).
+int dial(const std::string& address, int timeoutSec, std::string& err,
+         const std::function<bool()>& cancelled = {}, int connectSec = 0)
 {
     if (!isMeshAddress(address)) {
         err = address + " is not a mesh address";
@@ -115,15 +128,52 @@ int dial(const std::string& address, int timeoutSec, std::string& err)
         err = std::string("socket: ") + std::strerror(errno);
         return -1;
     }
-    timeval tv{};
-    tv.tv_sec = timeoutSec;
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-    if (::connect(fd, reinterpret_cast<sockaddr*>(&ss), len) < 0) {
+    int flags = ::fcntl(fd, F_GETFL, 0);
+    ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    int rc = ::connect(fd, reinterpret_cast<sockaddr*>(&ss), len);
+    if (rc < 0 && errno != EINPROGRESS) {
         err = "cannot reach " + address + ": " + std::strerror(errno);
         ::close(fd);
         return -1;
     }
+    if (rc < 0) {
+        int limitMs = (connectSec > 0 ? connectSec : timeoutSec) * 1000;
+        int waited = 0;
+        for (;;) {
+            if (cancelled && cancelled()) {
+                err = "cancelled";
+                ::close(fd);
+                return -1;
+            }
+            pollfd p{fd, POLLOUT, 0};
+            int r = ::poll(&p, 1, 100);
+            if (r > 0) break;
+            if (r < 0 && errno != EINTR) {
+                err = std::string("poll: ") + std::strerror(errno);
+                ::close(fd);
+                return -1;
+            }
+            waited += 100;
+            if (waited >= limitMs) {
+                err = "cannot reach " + address + ": " + std::strerror(ETIMEDOUT);
+                ::close(fd);
+                return -1;
+            }
+        }
+        int soErr = 0;
+        socklen_t sl = sizeof soErr;
+        ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &soErr, &sl);
+        if (soErr != 0) {
+            err = "cannot reach " + address + ": " + std::strerror(soErr);
+            ::close(fd);
+            return -1;
+        }
+    }
+    ::fcntl(fd, F_SETFL, flags);
+    timeval tv{};
+    tv.tv_sec = timeoutSec;
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     return fd;
 }
 
@@ -393,7 +443,7 @@ void Hub::follow(std::string address, std::string session, int tail, long long a
         std::string err;
         // A long read timeout: the agent sends a comment every 20 seconds, so
         // 60 without anything is a dead connection, the normal way they end.
-        int fd = dial(address, 60, err);
+        int fd = dial(address, 60, err, [&] { return generation_.load() != generation; }, 10);
         if (fd >= 0) {
             followFd_ = fd;
             std::string target = "/v1/sessions/" + session + "/events?after=" + std::to_string(after);
@@ -490,11 +540,52 @@ std::string Hub::historyPath(const std::string& address, const std::string& sess
     return dataDir("history") + "/" + name;
 }
 
+// ev, a JSON event, with every string value longer than max bytes cut to
+// about max and ended with "…". Cut between characters: never inside an
+// escape or a UTF-8 sequence, so what comes out is still valid JSON.
+std::string trimStrings(const std::string& ev, size_t max)
+{
+    std::string out;
+    out.reserve(ev.size() < 2 * max ? ev.size() : 2 * max);
+    size_t i = 0, n = ev.size();
+    while (i < n) {
+        char c = ev[i];
+        out += c;
+        i++;
+        if (c != '"') continue;
+        // Inside a string: copy up to max bytes, then skip to its end.
+        size_t kept = 0;
+        bool cut = false;
+        while (i < n && ev[i] != '"') {
+            size_t len = 1;
+            if (ev[i] == '\\') len = (i + 1 < n && ev[i + 1] == 'u') ? 6 : 2;
+            else if ((static_cast<unsigned char>(ev[i]) & 0xE0) == 0xC0) len = 2;
+            else if ((static_cast<unsigned char>(ev[i]) & 0xF0) == 0xE0) len = 3;
+            else if ((static_cast<unsigned char>(ev[i]) & 0xF8) == 0xF0) len = 4;
+            if (i + len > n) len = n - i;
+            if (!cut && kept + len > max) {
+                cut = true;
+                out += "\u2026";
+            }
+            if (!cut) {
+                out.append(ev, i, len);
+                kept += len;
+            }
+            i += len;
+        }
+        if (i < n) {
+            out += '"';
+            i++;
+        }
+    }
+    return out;
+}
+
 // The newest events that fit in kHistoryEvents and kHistoryBytes, streamed
 // text left out, after a first line saying when: {"saved":MS}.
 void Hub::saveHistory(const std::string& address, const std::string& session)
 {
-    std::vector<const std::string*> keep;
+    std::vector<std::string> keep;
     std::string out;
     {
         std::lock_guard<std::mutex> g(mu_);
@@ -502,15 +593,16 @@ void Hub::saveHistory(const std::string& address, const std::string& session)
         size_t bytes = 0;
         for (auto it = events_.rbegin(); it != events_.rend() && keep.size() < kHistoryEvents; ++it) {
             if (it->find("\"kind\":\"partial\"") != std::string::npos) continue;
-            if (bytes + it->size() > kHistoryBytes) break;
-            bytes += it->size() + 1;
-            keep.push_back(&*it);
+            std::string cut = trimStrings(*it, kHistoryString);
+            if (bytes + cut.size() > kHistoryBytes) break;
+            bytes += cut.size() + 1;
+            keep.push_back(std::move(cut));
         }
         long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::system_clock::now().time_since_epoch()).count();
         out = "{\"saved\":" + std::to_string(now) + "}\n";
         out.reserve(out.size() + bytes);
-        for (auto it = keep.rbegin(); it != keep.rend(); ++it) out += **it + "\n";
+        for (auto it = keep.rbegin(); it != keep.rend(); ++it) out += *it + "\n";
     }
     std::string path = historyPath(address, session), tmp = path + ".tmp";
     {

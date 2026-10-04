@@ -853,12 +853,14 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
         // all, took tens of seconds over the mesh, and the list was rebuilt
         // under the reader as it trickled in.
         var keptLast = 0L
+        var keptFirst = 0L
         if (tail == SESSION_TAIL && copyStale == 0) withContext(Dispatchers.IO) { History.load(ctx, o.host, o.session) }?.let { h ->
             if (h.events.isNotEmpty()) {
                 events.addAll(h.events)
                 if (earlier.isEmpty()) earlier = h.earlier
                 keptAt = h.saved
                 keptLast = h.events.last().seq
+                keptFirst = h.events.first().seq
             }
         }
         val after = java.util.concurrent.atomic.AtomicLong(keptLast)
@@ -874,9 +876,11 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                 // The machine answered: what is shown is its own from here.
                 if (answered.get() && keptAt != 0L) keptAt = 0
                 val i = info
-                // Its numbers went back: deleted and made again. The copy is
-                // of something else.
-                if (keptLast > 0 && i != null && i.lastSeq in 1 until keptLast) {
+                // Its numbers went back below the copy's oldest: deleted and
+                // made again, numbering restarted. The copy is of something
+                // else. (Not against the copy's newest: the listed last event
+                // trails a session that is talking.)
+                if (keptFirst > 0 && i != null && i.lastSeq in 1 until keptFirst) {
                     withContext(Dispatchers.IO) { History.forget(ctx, o.host, o.session) }
                     copyStale++
                     return@launch

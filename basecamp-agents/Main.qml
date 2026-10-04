@@ -438,11 +438,13 @@ Item {
         root.agentStreaming = streaming
         rebuildChat()
         // While the copy is what is shown: the session's numbers are below
-        // the copy's — deleted and made again since it was kept. Opened again
-        // without it. (Not once live: the list's last_seq trails a session
-        // that is talking.)
+        // the copy's oldest — deleted and made again since it was kept, its
+        // numbering restarted. Opened again without it. Against the oldest:
+        // the list's last_seq trails a session that is talking, so measured
+        // against the copy's newest it fired on every busy session, dropped
+        // its copy and left the pane to a replay (2026-10-04).
         var li = root.agentInfo
-        if (r.kept > 0 && li && li.last_seq > 0 && li.last_seq < evs[evs.length - 1].seq) {
+        if (r.kept > 0 && li && li.last_seq > 0 && li.last_seq < evs[0].seq) {
             openSession(root.agentOpen, root.agentOpen.session, root.agentTailNow, true)
             return
         }

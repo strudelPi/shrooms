@@ -201,6 +201,7 @@ Item {
             view.openUrl("https://example.org/a")
             var opened = top.lastOpen
             view.openUrl("ftp://example.org/b")
+            console.error("EXPLAIN=" + (view.explain("Invalid response").indexOf("restart Basecamp") > 0) + "," + view.explain("no session"))
             console.error("OPENURL=" + opened + " refused=" + (view.said.indexOf("copied it instead") > 0))
 
             // A machine that misses a round of finding stays, as last seen;

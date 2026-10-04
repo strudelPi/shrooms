@@ -113,7 +113,7 @@ Item {
         if (r && r.ok) return
         if (Qt.openUrlExternally(u)) return
         copyText(u)
-        root.said = "could not open " + u + (r && (r.detail || r.error) ? " (" + (r.detail || r.error) + ")" : "") + " — copied it instead"
+        root.said = "could not open " + u + (r && (r.detail || r.error) ? " (" + explain(r.detail || r.error) + ")" : "") + " — copied it instead"
         root.saidBad = true
     }
 
@@ -196,10 +196,19 @@ Item {
         return r
     }
 
+    // What Basecamp says when the core running has no such method: the core
+    // runs in its own process and keeps running across a reload of this view,
+    // so a view newer than its core meets this until Basecamp restarts.
+    function explain(msg) {
+        msg = String(msg || "")
+        return msg === "Invalid response"
+            ? "the shrooms core running is older than this view — quit and restart Basecamp"
+            : msg
+    }
     function agentCall(method, args) {
         var r = unwrap(callCore(method, args))
         if (r && r.error) {
-            root.said = (r.detail || r.error)
+            root.said = explain(r.detail || r.error)
             root.saidBad = true
             return null
         }

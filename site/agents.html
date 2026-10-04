@@ -55,35 +55,14 @@
     agent listens only on mesh addresses, so only your own devices can reach it.
 </p>
 
-<h2 id="what">What it does</h2>
-
-<ul>
-    <li><strong>Every session on every machine</strong>, in one list — the
-    ones you star first. Live replies, search across a whole conversation,
-    and notifications when one needs you.</li>
-    <li><strong>Prompts and questions</strong>: allow or deny what it wants to
-    run, or auto-approve a session; pick an answer when it asks.</li>
-    <li><strong>Files and voice notes</strong>, transcribed on your own machine
-    (<a href="https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3">Parakeet</a>)
-    — no audio goes to a speech service.</li>
-    <li><strong>Take over a terminal's session</strong> and carry on from the
-    phone.</li>
-    <li><strong>Claude Code or <a href="https://pi.dev">pi</a></strong> — pi
-    on any model, a local one included, so a machine with no Claude account
-    can serve sessions too. More can be plugged in
-    (<a href="https://github.com/vpavlin/shrooms/blob/master/docs/agents-harnesses.md">how</a>).</li>
-</ul>
-
-<h2 id="setup">Install</h2>
+<h2 id="install">Install</h2>
 
 <p>On each machine that runs coding agents — shrooms already installed there:</p>
 <pre><code><span class="cmd">curl -fsSLO https://raw.githubusercontent.com/vpavlin/shrooms/master/scripts/install-agent.sh</span>
 <span class="cmd">sudo bash install-agent.sh --voice</span></code></pre>
 <p>
-    It takes the agent from the shrooms image, runs it as you (never as root),
-    opens it to the mesh only, and with <code>--voice</code> sets up voice
-    notes. Claude Code and pi are your own, logged in as in a terminal.
-    <code>--uninstall</code> takes it all away again.
+    It runs the agent as you — never as root — and opens it to the mesh only;
+    <code>--voice</code> adds voice notes (<a href="#setup">what it does</a>).
 </p>
 <p>
     On the phone, Shrooms Agents is an Android app beside shrooms — open it
@@ -93,17 +72,138 @@
     <code>make basecamp-agents-lgx</code>.
 </p>
 
+<h2 id="more" class="more">In more detail</h2>
+
+<ul>
+    <li><a href="#what">What it does</a></li>
+    <li><a href="#harnesses">Claude Code, pi, and the next one</a></li>
+    <li><a href="#access">The access control is the mesh</a></li>
+    <li><a href="#setup">What the installer does</a></li>
+    <li><a href="#limits">What it does not do</a></li>
+</ul>
+
+<h2 id="what">1. What it does</h2>
+
+<p>
+    Each machine runs <code>shrooms-agent</code>, which keeps that machine's
+    sessions: a name, a directory, and the coding agent working in it. The
+    phone app and the Basecamp module find every agent on your mesh and list
+    their sessions together — the ones you star first, whatever machine they
+    are on.
+</p>
+
+<ul>
+    <li><strong>A conversation</strong>, streamed as it is written, in
+    markdown, with each tool it uses folded to one line and its output folded
+    below. It opens at the end, and search finds anything said in it — on the
+    agent's machine, so it covers what the app has not loaded and what was
+    said in a terminal before.</li>
+    <li><strong>Permission prompts</strong> with the command in full and allow
+    or deny — or auto-approve per session, the desktop's
+    <code>--dangerously-skip-permissions</code>. <strong>Questions</strong>
+    the agent asks come as a card with the options to pick, or room for your
+    own words.</li>
+    <li><strong>Files and voice notes.</strong> A photo or a log goes to the
+    agent's machine and is named in your next message. A voice note is
+    recorded on your device and transcribed on the agent's machine, by
+    <a href="https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3">Parakeet</a>
+    through whisper.cpp — Czech and English and twenty-odd other languages,
+    without saying which, and no audio reaches a speech service.</li>
+    <li><strong>Taking over a terminal's conversation</strong>: a Claude Code
+    session started in a terminal (or tmux) can be continued from the phone,
+    in the same conversation.</li>
+    <li><strong>Notifications</strong> on the phone when a session needs you or
+    has replied, and context use, model and cost on every session.</li>
+</ul>
+
+<h2 id="harnesses">2. Claude Code, pi, and the next one</h2>
+
+<p>
+    The coding agent itself is pluggable. Two are built in:
+</p>
+
+<ul>
+    <li><strong>Claude Code</strong>, driven the way its own SDK drives it.
+    Everything above works with it.</li>
+    <li><strong><a href="https://pi.dev">pi</a></strong>, in its RPC mode, on
+    whatever model pi is set up with — a model on your own hardware included,
+    which is the point: a machine with no Claude account can serve sessions
+    to the whole mesh. pi runs its tools without asking, so there is nothing
+    to approve; its extensions' dialogs arrive as questions.</li>
+</ul>
+
+<p>
+    Adding another is one translator: a file that starts the program and turns
+    what it says into the events the apps already show, so neither app
+    changes. <a href="https://github.com/vpavlin/shrooms/blob/master/docs/agents-harnesses.md">The guide</a>
+    walks through pi as the worked example, with the exact events a new one
+    must produce. OpenCode and Codex are next; they are not built yet.
+</p>
+
+<h2 id="access">3. The access control is the mesh</h2>
+
+<p>
+    <code>shrooms-agent</code> listens only on the machine's mesh addresses —
+    never on its LAN or public ones — so the only devices that can reach it
+    are your mesh's members. There is no account, no token, no server in the
+    middle, and nothing to log in to: being admitted to the mesh is the
+    authorisation, and revoking a device from the mesh revokes it here too.
+</p>
+
 <div class="note">
-    <p><strong>One person's mesh.</strong> Every device on the mesh can drive
-    the agents on it, and an agent can do whatever its user can. That is right
-    for your own devices — run it only on a mesh where every member is you.</p>
+    <p><strong>What that means, said plainly.</strong> Every member of the mesh
+    can drive the agents on it, and an agent can do whatever its user can do
+    on that machine. That is right for a mesh of your own devices, which is
+    what this is for. It is not right for a mesh you share with other people
+    — run the agent only where every member is you.</p>
 </div>
 
 <p>
-    How it works, the API and the limits:
-    <a href="https://github.com/vpavlin/shrooms/blob/master/docs/agents.md">docs/agents.md</a>
-    · why it is a separate app: <a href="adr/036-agents-grow-out-of-the-mesh.html">ADR-036</a>.
+    The agent runs as an ordinary user, never as root, and is a separate
+    program from the shrooms daemon: the network stays the boring,
+    privileged part, and the part that runs code on request stays out of it.
 </p>
+
+<h2 id="setup">4. What the installer does</h2>
+
+<p>
+    <code>install-agent.sh</code> is run with sudo by the person whose agents
+    it serves (<code>--user NAME</code> otherwise), on a machine where shrooms
+    is running:
+</p>
+
+<ul>
+    <li>it copies <code>shrooms-agent</code> out of its own small image,
+    <code>ghcr.io/vpavlin/shrooms-agent</code> — one static binary, for amd64
+    and arm64 — with the docker or podman shrooms already uses;</li>
+    <li>it lets you read the shrooms control socket, by a file ACL that
+    survives reboots, if you cannot already;</li>
+    <li>it opens port 7387 to this machine's own mesh addresses only, when
+    firewalld or ufw is running;</li>
+    <li>it installs the agent as your user service and keeps it running while
+    you are logged out;</li>
+    <li>with <code>--voice</code> it builds whisper.cpp's
+    <code>parakeet-cli</code> and fetches the model, checked by its hash.</li>
+</ul>
+
+<p>
+    It installs neither Claude Code nor pi: those are yours, logged in and set
+    up as in a terminal, and the agent serves whichever it finds.
+    <code>--uninstall</code> removes all of it but your sessions.
+</p>
+
+<h2 id="limits">5. What it does not do</h2>
+
+<ul>
+    <li><strong>It cannot log a machine's agent in.</strong> Claude Code is
+    logged in once on the machine itself; the app has no way to do it for
+    you (<a href="https://github.com/vpavlin/shrooms/blob/master/docs/agents-harnesses.md">why, and what could</a>).</li>
+    <li><strong>No terminal.</strong> It speaks to the agent, not to a shell;
+    slash commands of the terminal UI do not exist here.</li>
+    <li><strong>Takeover is Claude Code's only</strong>, so far.</li>
+    <li><strong>One person's devices.</strong> As above: the mesh is the access
+    control, so a shared mesh is the wrong place for it.</li>
+</ul>
 
 <footer>
     <p>

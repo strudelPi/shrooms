@@ -174,6 +174,28 @@ the view in pieces of about half a megabyte and the view reads on until caught
 up: a session's whole backlog in one reply through Basecamp's IPC is the likely
 reason some conversations showed empty after switching to them (not proven).
 
+## Installing it
+
+`scripts/install-agent.sh`, run with sudo by the user whose agents it serves
+(`--user NAME` otherwise), on a machine where shrooms runs:
+
+- takes `shrooms-agent` out of the shrooms image (it is built in, from
+  2026-10-04) into `/usr/local/bin` — no Go toolchain, no other download;
+- if that user cannot read the control socket, grants it by ACL, kept across
+  reboots by `/etc/tmpfiles.d/shrooms-agent-USER.conf` (directory line first;
+  see below for why);
+- opens TCP 7387 to this machine's own mesh addresses only, under firewalld
+  or ufw;
+- installs `/etc/systemd/user/shrooms-agent.service`, turns lingering on and
+  starts it for that user;
+- `--voice`: builds whisper.cpp's `parakeet-cli` (pinned commit) as that user
+  and fetches the Parakeet model, checked by sha256;
+- `--uninstall` removes all of it but the voice build and the sessions.
+
+Tried on jimmy-crib (Ubuntu, docker) and atlas (Fedora, podman, SELinux,
+firewalld): from clean, re-run, uninstalled and reinstalled, and the boot
+order replayed. The sections below are what it automates.
+
 ## On a server
 
 Running: the laptop, the VPS, atlas and jimmy-crib (2026-10-04). On atlas

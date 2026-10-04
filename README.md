@@ -809,9 +809,14 @@ A separate app and Basecamp module beside shrooms, not part of it
 separate binary, run as you, never as root:
 
 ```
-sudo make install                                   # installs shrooms-agent too
-systemctl --user enable --now shrooms-agent
+curl -fsSLO https://raw.githubusercontent.com/vpavlin/shrooms/master/scripts/install-agent.sh
+sudo bash install-agent.sh --voice                  # on each machine with coding agents
 ```
+
+It takes the agent from the shrooms image, lets your user read the shrooms
+socket, opens it to the mesh only, and starts it as a user service;
+`--voice` builds speech-to-text there too. From a checkout, `sudo make install`
+installs it with shrooms.
 
 Android: `AGENTS=1 scripts/build-apk.sh`. Basecamp: `make basecamp-agents-lgx`.
 How it works and the API: [docs/agents.md](docs/agents.md). Adding another

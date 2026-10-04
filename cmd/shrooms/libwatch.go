@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"os"
 	"strings"
 	"time"
 
@@ -152,6 +153,68 @@ func rendezvousBackoffOverride(restarts *restartLog, now time.Time, stalled bool
 		return false, ""
 	}
 	return true, online
+}
+
+// networkChangeRestartFloor bounds the restart a network change earns: never
+// sooner than this after the last one, so a flapping wifi cannot drive a
+// restart loop.
+const networkChangeRestartFloor = 2 * time.Minute
+
+// networkChangeOverride lets watchRendezvous restart before its backoff has
+// run out when every restart in the history was made before the network it
+// is on now appeared.
+//
+// On 2026-10-04 the laptop restarted its rendezvous plane four times while
+// its wifi was switching and it had no network at all; when the hotspot came
+// up six minutes later the backoff held — "needs a restart, but the last one
+// did not help" — and it stayed off the mesh until restarted by hand.
+// Restarts that failed on a network that has since gone say nothing about the
+// one that replaced it. So one restart is allowed per change, at most every
+// networkChangeRestartFloor; after it, the history belongs to this network
+// and the backoff stands again.
+func networkChangeOverride(restarts *restartLog, now, lastNetChange time.Time) bool {
+	if lastNetChange.IsZero() || restarts.Last.IsZero() {
+		return false
+	}
+	return restarts.Last.Before(lastNetChange) && now.Sub(restarts.Last) >= networkChangeRestartFloor
+}
+
+// defaultRouteIn reports whether a routing table — /proc/net/route and
+// /proc/net/ipv6_route as read — has a default route: somewhere to send
+// anything not on a local link. With none, there is no network a restart could
+// reach, only bridges like docker0.
+func defaultRouteIn(route4, route6 string) bool {
+	for i, line := range strings.Split(route4, "\n") {
+		f := strings.Fields(line)
+		if i == 0 || len(f) < 8 {
+			continue
+		}
+		if f[1] == "00000000" && f[7] == "00000000" { // destination and mask 0.0.0.0/0
+			return true
+		}
+	}
+	for _, line := range strings.Split(route6, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 10 || f[9] == "lo" {
+			continue
+		}
+		if f[0] == strings.Repeat("0", 32) && f[1] == "00" { // ::/0
+			return true
+		}
+	}
+	return false
+}
+
+// hasDefaultRoute is defaultRouteIn for this machine. Unreadable tables count
+// as a network: this only ever holds a restart back, and must not do so on a
+// guess.
+func hasDefaultRoute() bool {
+	r4, err4 := os.ReadFile("/proc/net/route")
+	r6, err6 := os.ReadFile("/proc/net/ipv6_route")
+	if err4 != nil && err6 != nil {
+		return true
+	}
+	return defaultRouteIn(string(r4), string(r6))
 }
 
 // onlineEvidence names a tunnel that proves this machine reaches the internet

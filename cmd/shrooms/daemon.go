@@ -1111,6 +1111,11 @@ func watchRendezvous(ctx context.Context, log *slog.Logger, instances []*instanc
 	healthy := started
 	underlay := localUnderlay(instances)
 	var netChanged time.Time
+	// When the underlay last changed, kept: networkChangeOverride compares
+	// the restart history against it.
+	var lastNetChange time.Time
+	// When "no network" was last said, so it is said once in a while.
+	var lastNoNetwork time.Time
 	// When we first noticed a peer we can reach but cannot hear. Zero when
 	// there is no such peer.
 	var deafSince time.Time
@@ -1194,6 +1199,7 @@ func watchRendezvous(ctx context.Context, log *slog.Logger, instances []*instanc
 					"was", underlay, "now", cur)
 				underlay = cur
 				netChanged = now
+				lastNetChange = now
 				// Fresh ports first, so the mapping asked for below is for the
 				// port we are actually on.
 				moveEphemeralPorts(log, instances)
@@ -1270,6 +1276,19 @@ func watchRendezvous(ctx context.Context, log *slog.Logger, instances []*instanc
 				continue
 			}
 
+			// With no network at all — only bridges like docker0 have
+			// addresses — no restart can reach the fleet, and each one made
+			// now would count against the backoff that the network's return
+			// is then held back by (2026-10-04). Wait for it instead.
+			if !hasDefaultRoute() {
+				if now.Sub(lastNoNetwork) >= 5*time.Minute {
+					lastNoNetwork = now
+					log.Warn("the rendezvous plane is down and this machine has no network; waiting for one rather than restarting",
+						"problem", problem)
+				}
+				continue
+			}
+
 			// Exiting is only a fix if something starts us again. Under
 			// systemd or as a container's main process it is a five-second
 			// gap; from a terminal it is a mesh that stays down until somebody
@@ -1287,6 +1306,10 @@ func watchRendezvous(ctx context.Context, log *slog.Logger, instances []*instanc
 			// repeating it costs every tunnel on every mesh. See restartlog.go.
 			if ok, left := restarts.ready(now, rendezvousStall); !ok {
 				over, evidence := rendezvousBackoffOverride(restarts, now, stalled, onlineEvidence(instances, now))
+				if !over && networkChangeOverride(restarts, now, lastNetChange) {
+					over, evidence = true, fmt.Sprintf("the network changed %s ago, after the last restart (%s ago)",
+						now.Sub(lastNetChange).Round(time.Second), now.Sub(restarts.Last).Round(time.Second))
+				}
 				if !over {
 					log.Warn("the rendezvous plane needs a restart, but the last one did not help",
 						"problem", problem,

@@ -163,3 +163,54 @@ func TestOnlyAPublicHandshakeProvesTheNetwork(t *testing.T) {
 		})
 	}
 }
+
+// A network change earns one restart past the backoff, when every restart in
+// the history was made before it — as on 2026-10-04, four made while the wifi
+// was switching, then the hotspot came up and the backoff held.
+func TestANetworkChangeEarnsOneRestart(t *testing.T) {
+	now := time.Date(2026, 10, 4, 8, 30, 0, 0, time.UTC)
+	r := &restartLog{Count: 4, Last: now.Add(-7 * time.Minute)}
+	changed := now.Add(-1 * time.Minute)
+	if !networkChangeOverride(r, now, changed) {
+		t.Error("restarts from before the network appeared held the restart back")
+	}
+	// Once restarted on this network, its history counts again.
+	r.Last = now.Add(-30 * time.Second)
+	if networkChangeOverride(r, now.Add(5*time.Minute), changed) {
+		t.Error("a second early restart on the same network")
+	}
+	// A wifi flapping every minute does not get a restart every minute.
+	r.Last = now.Add(-90 * time.Second)
+	if networkChangeOverride(r, now, now.Add(-30*time.Second)) {
+		t.Error("restarted within the floor of the last one")
+	}
+	if networkChangeOverride(r, now, time.Time{}) || networkChangeOverride(&restartLog{}, now, changed) {
+		t.Error("no change, or no history, is nothing to override")
+	}
+}
+
+// No default route is no network: bridges like docker0 have addresses and
+// routes, but nowhere to send the rest. Tables as the laptop had them.
+func TestNoDefaultRouteIsNoNetwork(t *testing.T) {
+	head := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+	bridges := head +
+		"docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n" +
+		"br-f5b174195d43\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n"
+	wifi := head + "wlo1\t00000000\t6B5DE20A\t0003\t0\t0\t600\t00000000\t0\t0\t0\n" + bridges[len(head):]
+	unreachable6 := "00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo\n"
+	default6 := "00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe80000000000000000000000000006b 00000400 00000001 00000000 00000003     wlo1\n"
+	mesh6 := "fd3bffe90f8181a718bc69b109bb7e69 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001   logos0\n"
+	if defaultRouteIn(bridges, unreachable6+mesh6) {
+		t.Error("docker's bridges and the kernel's unreachable ::/0 were taken for a network")
+	}
+	// 0.0.0.0/8 starts at zero and is not everything.
+	if defaultRouteIn(head+"eth0\t00000000\t00000000\t0001\t0\t0\t0\t000000FF\t0\t0\t0\n", "") {
+		t.Error("a route to 0.0.0.0/8 was taken for a default route")
+	}
+	if !defaultRouteIn(wifi, "") {
+		t.Error("an IPv4 default route was missed")
+	}
+	if !defaultRouteIn(bridges, mesh6+default6) {
+		t.Error("an IPv6-only default route was missed")
+	}
+}

@@ -840,6 +840,16 @@ std::string ShroomsCoreImpl::agentRecord(const std::string& action, const std::s
         hub().recordCancel();
         return "{\"ok\":true}";
     }
+    if (action == "send") {
+        // The recording as a voice note: queued, sent, transcribed on the
+        // agent's machine and sent as the turn — nothing comes back here.
+        if (!agents::isMeshAddress(address)) return errorJson("not a mesh address", address);
+        if (!safeSession(session)) return errorJson("not a session name", session);
+        std::string err;
+        std::string id = hub().recordSend(address, session, err);
+        if (id.empty()) return errorJson("cannot send it", err);
+        return "{\"id\":\"" + id + "\"}";
+    }
     if (action != "stop") return errorJson("unknown action", action);
     if (!agents::isMeshAddress(address)) return errorJson("not a mesh address", address);
     if (!safeSession(session)) return errorJson("not a session name", session);
@@ -852,6 +862,24 @@ std::string ShroomsCoreImpl::agentRecord(const std::string& action, const std::s
 std::string ShroomsCoreImpl::agentJobs()
 {
     return hub().jobs();
+}
+
+std::string ShroomsCoreImpl::agentQueue(const std::string& address, const std::string& session, const std::string& text)
+{
+    if (!agents::isMeshAddress(address)) return errorJson("not a mesh address", address);
+    if (!safeSession(session)) return errorJson("not a session name", session);
+    if (text.find_first_not_of(" \t\r\n") == std::string::npos) return errorJson("an empty message", "");
+    return "{\"id\":\"" + hub().queueText(address, session, text) + "\"}";
+}
+
+std::string ShroomsCoreImpl::agentOutbox()
+{
+    return hub().outbox();
+}
+
+std::string ShroomsCoreImpl::agentUnqueue(const std::string& id)
+{
+    return hub().unqueue(id) ? "{\"ok\":true}" : errorJson("not queued", id);
 }
 
 std::string ShroomsCoreImpl::agentSearch(const std::string& address, const std::string& session, const std::string& query)

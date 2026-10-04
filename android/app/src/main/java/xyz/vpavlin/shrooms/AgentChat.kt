@@ -20,8 +20,16 @@ sealed class ChatItem {
     /** A setting changed: "auto-approve on · from nothing.home". */
     data class Note(override val seq: Long, override val time: Long, val text: String) : ChatItem()
 
-    /** A turn somebody sent, and from which device. */
-    data class You(override val seq: Long, override val time: Long, val text: String, val by: String) : ChatItem()
+    /** A turn somebody sent, and from which device; [voice] if it was said, not typed. */
+    data class You(override val seq: Long, override val time: Long, val text: String, val by: String,
+                   val voice: Boolean = false) : ChatItem()
+
+    /**
+     * A voice note on its way to being a turn: transcribing on the agent's
+     * machine, or [failed] there — kept, so it can be transcribed again.
+     */
+    data class Voice(override val seq: Long, override val time: Long, val id: String, val by: String,
+                     val failed: Boolean, val error: String) : ChatItem()
 
     /** What the model said. */
     data class Said(override val seq: Long, override val time: Long, val text: String) : ChatItem()
@@ -104,10 +112,23 @@ object AgentChat {
             }
         }
 
+        // A voice note shows until its turn arrives, as its latest state.
+        val sent = events.filter { it.kind == "message" }.map { it.data.optString("id") }.filter { it.isNotEmpty() }.toSet()
+        val lastVoice = mutableMapOf<String, Long>()
+        for (e in events) if (e.kind == "voice") lastVoice[e.data.optString("id")] = e.seq
+
         val out = mutableListOf<ChatItem>()
         for (e in events) {
             when (e.kind) {
-                "message" -> out += ChatItem.You(e.seq, e.time, e.data.optString("text"), e.by)
+                "message" -> out += ChatItem.You(e.seq, e.time, e.data.optString("text"), e.by,
+                    voice = e.data.optString("voice").isNotEmpty())
+                "voice" -> {
+                    val id = e.data.optString("id")
+                    if (id !in sent && lastVoice[id] == e.seq) {
+                        out += ChatItem.Voice(e.seq, e.time, id, e.by, e.data.optString("status") == "failed",
+                            e.data.optString("error"))
+                    }
+                }
                 "stopped" -> out += ChatItem.Stopped(e.seq, e.time, e.data.optString("reason"))
                 "setting" -> if (e.data.has("auto_approve")) {
                     out += ChatItem.Note(e.seq, e.time,

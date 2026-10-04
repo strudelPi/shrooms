@@ -52,6 +52,9 @@ Item {
     property string lastSearch: ""
     property bool findNone: false
     property string lastOpen: ""
+    property var outbox: []
+    property string lastQueued: ""
+    property string lastPostPath: ""
     property int searchAsked: 0
     property var jobsNow: []
 
@@ -68,6 +71,18 @@ Item {
                 if (method === "agentsFind" && top.findNone) return JSON.stringify([])
                 if (method === "agentsFind") { top.lastFind = args[0]
                     return JSON.stringify(top.hosts.concat([Object.assign({}, top.hosts[0], { mesh: "home", address: "fd7b::1" })])) }
+                // The core's outbox, as a list here.
+                if (method === "agentQueue") {
+                    var q = { id: "b-" + (top.outbox.length + 1), address: args[0], session: args[1], kind: "text", text: args[2], created: 1, error: "" }
+                    top.outbox = top.outbox.concat([q]); top.lastQueued = args[2]
+                    return JSON.stringify({ id: q.id })
+                }
+                if (method === "agentOutbox") return JSON.stringify(top.outbox)
+                if (method === "agentUnqueue") { top.outbox = top.outbox.filter(function(x) { return x.id !== args[0] }); return JSON.stringify({ ok: true }) }
+                if (method === "agentRecord" && args[0] === "send") {
+                    top.outbox = top.outbox.concat([{ id: "b-v", address: args[1], session: args[2], kind: "voice", text: "", created: 2, error: "connect: no route to host" }])
+                    return JSON.stringify({ id: "b-v" })
+                }
                 if (method === "agentOpenUrl") { top.lastOpen = args[0]
                     return JSON.stringify(String(args[0]).indexOf("http") === 0 ? { ok: true } : { error: "cannot open it", detail: "only http and https links are opened" }) }
                 if (method === "agentSearch") { top.lastSearch = args.join(" "); return JSON.stringify({ search: 1 }) }
@@ -99,7 +114,7 @@ Item {
                     // The transcript holds the phone's own turns too: this one
                     // is event 1 and must not be shown twice.
                     { time: "2026-10-03T14:21:00+02:00", role: "user", text: "Can you check **the** tests?" } ] })
-                if (method === "agentPost") { top.lastPost = args[2]; return JSON.stringify({ ok: true }) }
+                if (method === "agentPost") { top.lastPost = args[2]; top.lastPostPath = args[1]; return JSON.stringify({ ok: true }) }
                 if (method === "agentUpload") return JSON.stringify({ job: 1 })
                 if (method === "agentDelete") { top.lastDelete = args[1]; return JSON.stringify({ ok: true }) }
                 if (method === "agentRecord") return JSON.stringify(args[0] === "stop" ? { job: 2 } : { ok: true })
@@ -148,7 +163,39 @@ Item {
             console.error("COMPOSER=[" + view.composerText() + "]")
             view.sendToAgent("look")
 
-            console.error("SENT=" + JSON.stringify(JSON.parse(top.lastPost).text) + " ATTACHED_AFTER=" + view.agentAttached.length)
+            console.error("SENT=" + JSON.stringify(top.lastQueued) + " ATTACHED_AFTER=" + view.agentAttached.length)
+
+            // Written: into the outbox, shown queued until the core sends it.
+            // A voice note goes there too, as audio — no text comes back.
+            view.refreshOutbox()
+            var queuedText = view.agentQueued.length
+            view.toggleRecording(); view.toggleRecording()
+            view.refreshOutbox()
+            console.error("OUTBOX=" + queuedText + "," + view.agentQueued.length + " voice=" + view.agentQueued[1].kind
+                          + " label=[" + view.queuedLabel(view.agentQueued[1]) + "]")
+            view.cancelQueued("b-v")
+            console.error("CANCELLED=" + view.agentQueued.length)
+
+            // A voice note's way to a turn: transcribing, failed with a retry,
+            // then the turn it became, marked as said.
+            var n = top.events.length
+            top.events.push(ev(n + 1, "voice", { id: "v1", path: "/u/n.wav", status: "transcribing" }))
+            view.pumpAgent()
+            var kinds1 = []
+            for (i = 0; i < chatCount(); i++) kinds1.push(view.chatModelAt(i).kind)
+            top.events.push(ev(n + 2, "voice", { id: "v1", status: "failed", error: "model not found" }))
+            view.pumpAgent()
+            var failedSaid = "none"
+            for (i = 0; i < chatCount(); i++)
+                if (view.chatModelAt(i).kind === "voicenote") failedSaid = view.chatModelAt(i).error + ":" + view.chatModelAt(i).text
+            view.retryVoice("v1")
+            var retried = top.lastPostPath
+            top.events.push(ev(n + 3, "message", { text: "ahoj", id: "v1", voice: "/u/n.wav" }, "nothing"))
+            view.pumpAgent()
+            var lastRow = view.chatModelAt(chatCount() - 1)
+            console.error("VOICE first=" + kinds1[kinds1.length - 1] + " failed=" + failedSaid
+                          + " retry=" + retried + " then=" + lastRow.kind + ":" + lastRow.voice + ":" + lastRow.text
+                          + " notes=" + (function() { var c = 0; for (var k = 0; k < chatCount(); k++) if (view.chatModelAt(k).kind === "voicenote") c++; return c })())
 
             // Search: asked of the core, read back, and a result opened — one
             // from before the agent is shown whole, one of its own is jumped to.

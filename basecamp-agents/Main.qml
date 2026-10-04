@@ -298,6 +298,7 @@ Item {
         var t = (tail === undefined || tail === null) ? agentTail : tail
         root.agentTailNow = t
         root.searchOpen = false
+        Qt.callLater(refreshOutbox)
         // Picking a session in the list leaves the "+ session" form, which
         // otherwise stayed in front of it (2026-10-04).
         root.agentCreating = false
@@ -396,10 +397,19 @@ Item {
             item.earlier = false
             out.push(item)
         }
+        // A voice note shows until its turn arrives, as its latest state
+        // (the phone's AgentChat).
+        var sentIds = {}, lastVoice = {}
+        for (i = 0; i < evs.length; i++) {
+            if (evs[i].kind === "message" && evs[i].data && evs[i].data.id) sentIds[evs[i].data.id] = true
+            if (evs[i].kind === "voice" && evs[i].data) lastVoice[evs[i].data.id] = evs[i].seq
+        }
         for (i = 0; i < evs.length; i++) {
             e = evs[i]
             var d = e.data || {}
-            if (e.kind === "message") add(e, { kind: "you", text: d.text || "", by: e.by || "" })
+            if (e.kind === "message") add(e, { kind: "you", text: d.text || "", by: e.by || "", voice: !!d.voice })
+            else if (e.kind === "voice" && !sentIds[d.id] && lastVoice[d.id] === e.seq)
+                add(e, { kind: "voicenote", id: d.id, error: d.status === "failed", text: d.error || "" })
             else if (e.kind === "stopped") add(e, { kind: "note", text: "asleep; the next message wakes it" })
             else if (e.kind === "setting" && d.auto_approve !== undefined)
                 add(e, { kind: "note", text: (d.auto_approve ? "auto-approve on" : "auto-approve off") + (e.by ? " from " + e.by : "") })
@@ -517,7 +527,7 @@ Item {
         return { key: it.key, seq: it.seq || 0, kind: it.kind, text: it.text || "", by: it.by || "", time: it.time || 0,
                  earlier: !!it.earlier, error: !!it.error, pid: it.id || "", tool: it.tool || "",
                  description: it.description || "", open: !!it.open, answer: it.answer || "", qjson: it.qjson || "",
-                 blob: JSON.stringify(it) }
+                 voice: !!it.voice, blob: JSON.stringify(it) }
     }
 
     readonly property bool agentWorking: {
@@ -538,12 +548,30 @@ Item {
         return (text === "" ? "" : text + "\n\n") + "Attached from Basecamp (on this machine):\n"
                + paths.map(function(p) { return "- " + p }).join("\n")
     }
+    // Through the core's outbox: sent now if the machine answers, later if
+    // not, so a message can be written with it unreachable (the phone's Outbox).
     function sendToAgent(text) {
         if (!agentOpen || (text.trim() === "" && agentAttached.length === 0) || agentSending !== "") return false
-        var r = agentCall("agentPost", [agentOpen.address, "/v1/sessions/" + agentOpen.session + "/messages",
-                                        JSON.stringify({ text: withAttachments(text.trim(), agentAttached) })])
-        if (r !== null) { root.agentAttached = []; root.chatStick = true }
+        var r = agentCall("agentQueue", [agentOpen.address, agentOpen.session, withAttachments(text.trim(), agentAttached)])
+        if (r !== null) { root.agentAttached = []; root.chatStick = true; refreshOutbox() }
         return r !== null
+    }
+    // What is written and not yet sent, for the open session.
+    property var agentQueued: []
+    property int outboxTick: 0
+    function refreshOutbox() {
+        var all = unwrap(callCore("agentOutbox", []))
+        if (!Array.isArray(all) || !agentOpen) { root.agentQueued = []; return }
+        root.agentQueued = all.filter(function(q) { return q.address === agentOpen.address && q.session === agentOpen.session })
+    }
+    function cancelQueued(id) { agentCall("agentUnqueue", [id]); refreshOutbox() }
+    function queuedLabel(q) {
+        var host = agentOpen ? agentOpen.name : "the machine"
+        return q.error ? "QUEUED · waiting for " + host + " — " + q.error : "QUEUED · sending to " + host + "…"
+    }
+    function retryVoice(id) {
+        if (!agentOpen) return
+        agentCall("agentPost", [agentOpen.address, "/v1/sessions/" + agentOpen.session + "/voice/" + id + "/retry", ""])
     }
     function localPath(url) {
         var u = String(url)
@@ -560,8 +588,12 @@ Item {
             if (agentCall("agentRecord", ["start", "", "", ""]) !== null) root.agentRecording = true
         } else {
             root.agentRecording = false
-            if (agentCall("agentRecord", ["stop", agentOpen.address, agentOpen.session, "auto"]) !== null)
-                root.agentTranscribing = true
+            // A voice note goes as a voice note: queued, transcribed on the
+            // agent's machine and sent as the turn — nothing to wait for here.
+            if (agentCall("agentRecord", ["send", agentOpen.address, agentOpen.session, ""]) !== null) {
+                root.chatStick = true
+                refreshOutbox()
+            }
         }
     }
     function shortDir(d) { return String(d || "").replace(/^\/home\/[^\/]+/, "~") }
@@ -624,6 +656,9 @@ Item {
     }
     // Uploads and voice notes finish in the core's own time: picked up here.
     function pumpJobs() {
+        // The outbox about once a second: it changes as the core sends.
+        root.outboxTick = (outboxTick + 1) % 3
+        if (outboxTick === 0) refreshOutbox()
         var r = unwrap(callCore("agentJobs", []))
         if (!r || !r.jobs) return
         root.agentRecording = !!r.recording
@@ -1364,6 +1399,36 @@ Item {
                             id: liveCol
                             width: parent.width
                             topPadding: root.sz(8)
+                            spacing: root.sz(8)
+                            // What is written and not sent yet: the machine is
+                            // unreachable, or it is being sent now.
+                            Repeater {
+                                model: root.agentQueued
+                                delegate: Rectangle {
+                                    id: qrow
+                                    required property var modelData
+                                    width: liveCol.width
+                                    height: qcol.implicitHeight + root.sz(16)
+                                    radius: root.sz(10)
+                                    color: Qt.rgba(0.21, 0.94, 0.63, 0.03)
+                                    border.color: Qt.rgba(0.21, 0.94, 0.63, 0.25)
+                                    Column {
+                                        id: qcol
+                                        x: root.sz(10); y: root.sz(8); width: parent.width - root.sz(20)
+                                        spacing: 4
+                                        RowLayout {
+                                            width: parent.width
+                                            Pulse { tint: cAsh }
+                                            Text { Layout.fillWidth: true; elide: Text.ElideRight; text: root.queuedLabel(qrow.modelData)
+                                                   color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(9); font.letterSpacing: 1 }
+                                            Lnk { text: "cancel"; base: cRust; font.pixelSize: root.fs(9); onClicked: root.cancelQueued(qrow.modelData.id) }
+                                        }
+                                        Text { width: parent.width; wrapMode: Text.Wrap
+                                               text: qrow.modelData.kind === "voice" ? "🎤 voice note" : qrow.modelData.text
+                                               color: Qt.rgba(0.84, 0.87, 0.89, 0.7); font.family: "monospace"; font.pixelSize: root.fs(12) }
+                                    }
+                                }
+                            }
                             Rectangle {
                                 visible: root.agentStreaming !== ""
                                 width: parent.width
@@ -1403,6 +1468,7 @@ Item {
                         required property string description
                         required property bool open
                         required property string answer
+                        required property bool voice
                         required property string qjson
                         width: chatList.width
                         height: crowCol.implicitHeight
@@ -1441,7 +1507,7 @@ Item {
                                     RowLayout {
                                         width: parent.width
                                         Text {
-                                            text: [crow.kind === "you" ? "YOU" : "", crow.by, root.clock(crow.time)].filter(function(x) { return x !== "" }).join("  ·  ")
+                                            text: [crow.kind === "you" ? (crow.voice ? "YOU 🎤" : "YOU") : "", crow.by, root.clock(crow.time)].filter(function(x) { return x !== "" }).join("  ·  ")
                                             color: crow.kind === "you" ? cPhosphor : cAsh
                                             font.family: "monospace"; font.pixelSize: root.fs(9); font.letterSpacing: 1
                                             Layout.fillWidth: true
@@ -1615,6 +1681,28 @@ Item {
                                     }
                                     Text { visible: !crow.open; width: parent.width; wrapMode: Text.Wrap; text: crow.answer; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
                                 }
+                            }
+
+                            // A voice note on its way to being a turn: transcribing on
+                            // the agent's machine, or failed there and kept to try again.
+                            Column {
+                                visible: crow.kind === "voicenote"
+                                width: parent.width
+                                spacing: 4
+                                RowLayout {
+                                    visible: !crow.error
+                                    spacing: 8
+                                    Pulse { tint: cSky }
+                                    Text { text: "🎤 voice note — transcribing on the agent's machine…"; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                                }
+                                Text {
+                                    visible: crow.error
+                                    width: parent.width; wrapMode: Text.Wrap
+                                    text: "🎤 the voice note could not be transcribed: " + crow.text
+                                    color: cRust; font.family: "monospace"; font.pixelSize: root.fs(11)
+                                }
+                                Lnk { visible: crow.error; text: "transcribe again"; base: cSky; font.pixelSize: root.fs(10)
+                                      onClicked: root.retryVoice(crow.pid) }
                             }
 
                             Text {

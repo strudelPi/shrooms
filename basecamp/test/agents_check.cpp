@@ -191,6 +191,57 @@ int main(int argc, char** argv)
               "voice job did not finish: %s", jobs.substr(jobs.find("voice") == std::string::npos ? 0 : jobs.find("voice")).substr(0, 200).c_str());
     }
 
+    // The outbox, in a directory of its own (XDG_DATA_HOME): written to an
+    // unreachable machine it waits, with the reason, across a restart of the
+    // core; written to a reachable one it arrives, once.
+    {
+        char tmpl[] = "/tmp/outbox-check-XXXXXX";
+        std::string data = ::mkdtemp(tmpl);
+        setenv("XDG_DATA_HOME", data.c_str(), 1);
+        {
+            Hub h;
+            std::string id = h.queueText("fd00::1", "nowhere", "written offline\twith a tab");
+            std::string ob;
+            for (int i = 0; i < 100; i++) {
+                ob = h.outbox();
+                if (ob.find("\"error\":\"\"") == std::string::npos) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            CHECK(ob.find(id) != std::string::npos && ob.find("written offline\\twith a tab") != std::string::npos &&
+                  ob.find("\"error\":\"\"") == std::string::npos, "queued and failing: %s", ob.c_str());
+        }
+        {
+            Hub h; // a restart: read back from disk
+            std::string ob = h.outbox();
+            CHECK(ob.find("written offline\\twith a tab") != std::string::npos, "lost across a restart: %s", ob.c_str());
+            std::string id = ob.substr(ob.find("\"id\":\"") + 6);
+            id = id.substr(0, id.find('"'));
+            CHECK(h.unqueue(id) && h.outbox() == "[]", "cancel: %s", h.outbox().c_str());
+        }
+        // Delivered, to a session of its own on the agent (pi: no model call
+        // needed for the message to be taken).
+        std::string out, err;
+        request(addr, "POST", "/v1/sessions", "{\"name\":\"outbox-check\",\"dir\":\"/tmp\",\"harness\":\"pi\"}", 5, out, err);
+        {
+            Hub h;
+            std::string id = h.queueText(addr, "outbox-check", "from the outbox");
+            for (int i = 0; i < 100 && h.outbox() != "[]"; i++) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            CHECK(h.outbox() == "[]", "not sent: %s", h.outbox().c_str());
+            request(addr, "GET", "/v1/sessions/outbox-check/history", "", 5, out, err);
+            std::string ev;
+            int fd = -1;
+            (void)fd;
+            bool ok = request(addr, "POST", "/v1/sessions/outbox-check/messages",
+                              "{\"text\":\"from the outbox\",\"id\":\"" + id + "\"}", 5, ev, err);
+            CHECK(ok && ev.find("\"duplicate\":true") != std::string::npos, "sent again was not a duplicate: %s %s",
+                  ev.c_str(), err.c_str());
+        }
+        request(addr, "DELETE", "/v1/sessions/outbox-check", "", 5, out, err);
+        std::string rm = "rm -rf " + data;
+        (void)!std::system(rm.c_str());
+        unsetenv("XDG_DATA_HOME");
+    }
+
     std::printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;
 }

@@ -97,10 +97,19 @@ type Session struct {
 	autoApprove bool
 	starred     bool
 	turns       uint64
-	ctxUsed     uint64
-	ctxWindow   uint64
-	preview     string
-	model       string
+	// ids are the device-made ids of messages and voice notes already taken,
+	// so a device that sends again — it did not hear the answer, the
+	// network went — does not send twice. The last maxIDs, loaded from the
+	// log at start.
+	ids     map[string]bool
+	idOrder []string
+	// voices are the voice notes taken, by id: where each is kept, and
+	// whether it failed — what RetryVoice needs, and a failed one has.
+	voices    map[string]voiceNote
+	ctxUsed   uint64
+	ctxWindow uint64
+	preview   string
+	model     string
 }
 
 // memoryEvents bounds what a session keeps in memory. Older events are on
@@ -230,7 +239,7 @@ func (m *Manager) Harnesses() []HarnessInfo {
 }
 
 func (m *Manager) newSession(name, dir string, h Harness) *Session {
-	return &Session{name: name, dir: dir, m: m, harness: h, subs: map[chan Event]struct{}{},
+	return &Session{name: name, dir: dir, m: m, harness: h, subs: map[chan Event]struct{}{}, ids: map[string]bool{}, voices: map[string]voiceNote{},
 		pending: map[string]json.RawMessage{}, state: Idle}
 }
 
@@ -401,6 +410,17 @@ func (s *Session) loadEvents() {
 		s.seq = e.Seq
 		if e.Kind == "claude" {
 			s.observe(e.Data)
+		}
+		if e.Kind == "message" || e.Kind == "voice" {
+			var d struct{ ID, Path, Status, Voice string }
+			json.Unmarshal(e.Data, &d)
+			s.remember(d.ID)
+			switch {
+			case e.Kind == "voice" && d.ID != "":
+				s.voices[d.ID] = voiceNote{path: d.Path, failed: d.Status == "failed"}
+			case e.Kind == "message" && d.Voice != "" && d.ID != "":
+				s.voices[d.ID] = voiceNote{path: d.Voice}
+			}
 		}
 		s.events = append(s.events, e)
 		if len(s.events) > memoryEvents {
@@ -589,21 +609,140 @@ func (s *Session) ensureRunning() error {
 
 // Send is a user turn from a device.
 func (s *Session) Send(text, by string) error {
-	if text == "" {
-		return errors.New("an empty message")
+	_, err := s.SendID(text, by, "")
+	return err
+}
+
+// maxIDs bounds the message ids a session remembers: far more than a device
+// has waiting in its outbox at once.
+const maxIDs = 1000
+
+// seen reports whether a device-made id has been taken already. Called with
+// s.mu held.
+func (s *Session) seen(id string) bool { return id != "" && s.ids[id] }
+
+// remember takes an id. Called with s.mu held.
+func (s *Session) remember(id string) {
+	if id == "" || s.ids[id] {
+		return
+	}
+	s.ids[id] = true
+	s.idOrder = append(s.idOrder, id)
+	if len(s.idOrder) > maxIDs {
+		delete(s.ids, s.idOrder[0])
+		s.idOrder = s.idOrder[1:]
+	}
+}
+
+// SendID is Send with the id the device gave the message, which makes sending
+// it again harmless: a device whose outbox could not tell whether the first
+// try arrived — the answer was lost, the network went — sends again, and an
+// id already taken is not sent twice. duplicate says it was.
+func (s *Session) SendID(text, by, id string) (duplicate bool, err error) {
+	if strings.TrimSpace(text) == "" {
+		return false, errors.New("an empty message")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.seen(id) {
+		return true, nil
+	}
+	return false, s.send(text, by, map[string]any{"id": id})
+}
+
+// send writes a turn and records it. Called with s.mu held.
+func (s *Session) send(text, by string, extra map[string]any) error {
 	if err := s.ensureRunning(); err != nil {
 		return err
 	}
 	if err := s.proc.writeAll(s.proc.codec.Turn(text)); err != nil {
 		return err
 	}
-	s.record("message", by, map[string]string{"text": text})
+	data := map[string]any{"text": text}
+	for k, v := range extra {
+		if v != "" && v != nil {
+			data[k] = v
+		}
+	}
+	if id, _ := extra["id"].(string); id != "" {
+		s.remember(id)
+	}
+	s.record("message", by, data)
 	s.state = Working
 	s.lastUsed = time.Now()
 	return nil
+}
+
+// Voice takes a voice note recorded on a device and kept at path: it is
+// transcribed here, in the background, and what was said is sent as that
+// device's turn — nobody waits for the text to read it back first. The
+// session's log says what is happening: a "voice" event, transcribing then
+// failed if it fails; the message itself, with the recording's path, if not.
+// id is the device's, as for SendID.
+func (s *Session) Voice(path, by, id string, stt *Transcriber) (duplicate bool) {
+	s.mu.Lock()
+	if s.seen(id) {
+		s.mu.Unlock()
+		return true
+	}
+	s.remember(id)
+	s.mu.Unlock()
+	s.transcribe(path, by, id, stt)
+	return false
+}
+
+// voiceNote is a voice note a session has taken.
+type voiceNote struct {
+	path   string
+	failed bool
+}
+
+// RetryVoice transcribes a voice note that failed again, from the recording
+// kept here — the reason it is kept before anything else is done with it.
+func (s *Session) RetryVoice(id, by string, stt *Transcriber) error {
+	s.mu.Lock()
+	v, ok := s.voices[id]
+	s.mu.Unlock()
+	switch {
+	case !ok:
+		return fmt.Errorf("no voice note %q here", id)
+	case !v.failed:
+		return fmt.Errorf("voice note %q did not fail", id)
+	}
+	if _, err := os.Stat(v.path); err != nil {
+		return fmt.Errorf("its recording is gone: %w", err)
+	}
+	s.transcribe(v.path, by, id, stt)
+	return nil
+}
+
+// transcribe turns a kept voice note into the device's turn, in the
+// background, saying in the log what happens.
+func (s *Session) transcribe(path, by, id string, stt *Transcriber) {
+	s.mu.Lock()
+	s.voices[id] = voiceNote{path: path}
+	s.record("voice", by, map[string]string{"id": id, "path": path, "status": "transcribing"})
+	s.mu.Unlock()
+
+	go func() {
+		start := time.Now()
+		text, err := stt.Transcribe(s.m.ctx, path, "auto")
+		if err == nil && strings.TrimSpace(text) == "" {
+			err = errors.New("nothing was heard in it")
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if err == nil {
+			err = s.send(text, by, map[string]any{"id": id, "voice": path})
+		}
+		if err != nil {
+			s.voices[id] = voiceNote{path: path, failed: true}
+			s.record("voice", by, map[string]string{"id": id, "path": path, "status": "failed", "error": err.Error()})
+			return
+		}
+		s.m.log.Info("voice note sent", "session", s.name, "took", time.Since(start).Round(time.Millisecond),
+			"words", len(strings.Fields(text)), "by", by)
+	}()
 }
 
 // Answer answers a permission prompt. Allowing runs the tool with the input

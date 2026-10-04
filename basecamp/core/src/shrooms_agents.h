@@ -144,7 +144,44 @@ public:
      */
     std::string searched();
 
+    /**
+     * The outbox: what is written to a session goes here and is sent from
+     * here, by a thread of its own, every few seconds until the agent has it —
+     * so it can be written with the machine unreachable or this one offline.
+     * In order per session; kept on disk across restarts. Each carries an id
+     * the agent takes once, so sending again is harmless.
+     */
+    std::string queueText(const std::string& address, const std::string& session, const std::string& text);
+
+    /**
+     * Stops the recording and queues it as a voice note: the agent keeps it,
+     * transcribes it and sends what was said. Returns its id, or "" with err.
+     */
+    std::string recordSend(const std::string& address, const std::string& session, std::string& err);
+
+    /** The outbox, oldest first: [{id,address,session,kind,text,created,error}]. */
+    std::string outbox();
+
+    /** Takes one out of the outbox, with its recording. */
+    bool unqueue(const std::string& id);
+
 private:
+    struct Outgoing {
+        std::string id, address, session, kind, text, file;
+        long long created = 0;
+        std::string error;
+    };
+    void loadOutbox();   // with mu_ held
+    void saveOutbox();   // with mu_ held
+    void startSender();
+    void sendLoop();
+    std::string outboxDir();
+    std::vector<Outgoing> outbox_;
+    bool outboxLoaded_ = false;
+    std::once_flag senderStarted_;
+    std::thread sender_;
+    std::atomic<bool> stopping_{false};
+
     struct Job {
         long id;
         std::string kind, state, name, path, text, error;

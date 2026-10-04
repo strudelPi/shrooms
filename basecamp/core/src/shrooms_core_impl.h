@@ -385,6 +385,18 @@ public:
     std::string agentJobs();
 
     /**
+     * @brief Queues a message for a session: sent by the core in the
+     * background, now if the machine answers, later if not. {"id"}.
+     */
+    std::string agentQueue(const std::string& address, const std::string& session, const std::string& text);
+
+    /** @brief What is queued and not yet sent: [{id,address,session,kind,text,created,error}]. */
+    std::string agentOutbox();
+
+    /** @brief Takes something out of the queue. */
+    std::string agentUnqueue(const std::string& id);
+
+    /**
      * @brief Searches a session's whole conversation, in the background:
      * {"search":N}. agentSearched() says when it is done and what it found.
      */

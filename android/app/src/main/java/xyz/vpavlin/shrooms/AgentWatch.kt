@@ -116,6 +116,9 @@ class AgentWatcher(private val ctx: Context) {
     suspend fun run() {
         ensureChannel(ctx)
         while (kotlinx.coroutines.currentCoroutineContext().isActive) {
+            // What was written while a machine was unreachable goes as soon
+            // as it is back, app open or not.
+            runCatching { Outbox.flush(ctx) }
             for (h in AgentHosts.load(ctx)) {
                 val sessions = runCatching { AgentClient(h.address).sessions(5000) }.getOrNull() ?: continue
                 for (s in sessions) {

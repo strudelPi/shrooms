@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,8 @@ func Handler(log *slog.Logger, m *Manager, who Who) http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{name}/search", h.search)
 	mux.HandleFunc("POST /v1/sessions/{name}/files", h.upload)
 	mux.HandleFunc("POST /v1/sessions/{name}/transcribe", h.transcribe)
+	mux.HandleFunc("POST /v1/sessions/{name}/voice", h.voice)
+	mux.HandleFunc("POST /v1/sessions/{name}/voice/{id}/retry", h.retryVoice)
 	mux.HandleFunc("GET /v1/conversations", h.conversations)
 	mux.HandleFunc("POST /v1/terminals/{pid}/stop", h.stopTerminal)
 	mux.HandleFunc("GET /v1/sessions/{name}/events", h.events)
@@ -317,16 +320,74 @@ func (h *handler) message(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var req struct{ Text string }
+	// ID, from the device's outbox, makes sending again harmless: one
+	// already taken answers 200 {"duplicate":true} and is not sent twice.
+	var req struct{ Text, ID string }
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.Send(req.Text, h.caller(r)); err != nil {
+	dup, err := s.SendID(req.Text, h.caller(r), req.ID)
+	if err != nil {
+		fail(w, http.StatusConflict, err)
+		return
+	}
+	if dup {
+		writeJSON(w, http.StatusOK, map[string]bool{"duplicate": true})
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// retryVoice transcribes a failed voice note again, from its kept recording.
+func (h *handler) retryVoice(w http.ResponseWriter, r *http.Request) {
+	s, ok := h.session(w, r)
+	if !ok {
+		return
+	}
+	if h.m.STT == nil {
+		fail(w, http.StatusNotImplemented, fmt.Errorf("no speech-to-text on this machine"))
+		return
+	}
+	if err := s.RetryVoice(r.PathValue("id"), h.caller(r), h.m.STT); err != nil {
 		fail(w, http.StatusConflict, err)
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// voice takes a voice note as a turn: ?name=<file name>&id=<the device's id>,
+// the audio as the body. It is kept like any upload and answered at once
+// (202, {"path"}); the transcription and the turn follow in the background
+// (Session.Voice). The same id again answers 200 {"duplicate":true}.
+func (h *handler) voice(w http.ResponseWriter, r *http.Request) {
+	s, ok := h.session(w, r)
+	if !ok {
+		return
+	}
+	if h.m.STT == nil {
+		fail(w, http.StatusNotImplemented, fmt.Errorf("no speech-to-text on this machine: see shrooms-agent --help (-stt-model)"))
+		return
+	}
+	id := r.URL.Query().Get("id")
+	s.mu.Lock()
+	dup := s.seen(id)
+	s.mu.Unlock()
+	if dup {
+		writeJSON(w, http.StatusOK, map[string]bool{"duplicate": true})
+		return
+	}
+	path, err := s.Upload(r.URL.Query().Get("name"), http.MaxBytesReader(w, r.Body, MaxUpload))
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.Voice(path, h.caller(r), id, h.m.STT) {
+		os.Remove(path) // the same note arrived twice at once
+		writeJSON(w, http.StatusOK, map[string]bool{"duplicate": true})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"path": path})
 }
 
 func (h *handler) answer(w http.ResponseWriter, r *http.Request) {

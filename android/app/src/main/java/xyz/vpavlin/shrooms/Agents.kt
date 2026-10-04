@@ -43,6 +43,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -710,7 +711,6 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     // text put in the box to be read and corrected before it is sent.
     val recorder = remember { VoiceRecorder(ctx) }
     var recording by remember { mutableStateOf(false) }
-    var transcribing by remember { mutableStateOf(false) }
     DisposableEffect(Unit) { onDispose { recorder.cancel() } }
     fun startRecording() {
         runCatching { recorder.start() }
@@ -720,17 +720,31 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     val askMic = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
     ) { granted -> if (granted) startRecording() else actionError = "the microphone was not allowed" }
-    fun stopAndTranscribe() {
+    // The outbox: what is written here goes there and is sent from there —
+    // now if the machine answers, later if not (Outbox).
+    val outbox by Outbox.changed.collectAsState()
+    val queued = remember(outbox, o) {
+        Outbox.list(ctx).filter { it.address == o.address && it.session == o.session }.sortedBy { it.created }
+    }
+    fun mine(q: Outgoing) = q.address == o.address && q.session == o.session
+    fun enqueue(q: Outgoing) {
+        Outbox.add(ctx, q)
+        scope.launch { Outbox.flush(ctx, ::mine) }
+    }
+    // A voice note goes as a voice note: the agent transcribes it and sends
+    // what was said, so there is nothing to wait for and read back here.
+    fun stopAndQueue() {
         recording = false
         val f = recorder.stop() ?: return
-        transcribing = true
-        scope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching { client.transcribe(o.session, f.name, f.readBytes()) }.also { f.delete() }
-            }.onSuccess { text ->
-                if (text.isNotBlank()) input = if (input.isBlank()) text else input.trimEnd() + " " + text
-            }.onFailure { actionError = it.message ?: "could not transcribe" }
-            transcribing = false
+        val id = Outbox.newId()
+        val kept = java.io.File(Outbox.voiceDir(ctx), "$id.m4a")
+        if (!f.renameTo(kept)) { f.copyTo(kept, overwrite = true); f.delete() }
+        enqueue(Outgoing(id, o.address, o.host, o.session, "voice", file = kept.path, created = System.currentTimeMillis()))
+    }
+    LaunchedEffect(o) {
+        while (isActive) {
+            Outbox.flush(ctx, ::mine)
+            delay(5_000)
         }
     }
 
@@ -819,7 +833,8 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     val last = items.lastOrNull()
     val working = info?.state == "working" ||
         (items.isNotEmpty() && last !is ChatItem.Done && last !is ChatItem.Stopped &&
-            last !is ChatItem.Earlier && last !is ChatItem.Note && !(last is ChatItem.Prompt && !last.open))
+            last !is ChatItem.Earlier && last !is ChatItem.Note && last !is ChatItem.Voice &&
+            !(last is ChatItem.Prompt && !last.open))
     val waiting = items.any { it is ChatItem.Prompt && it.open }
 
     // Laid out from the bottom, as chats are: the newest message is item 0, so
@@ -980,7 +995,12 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
             ) {
-                // Item 0, at the bottom: what is happening now.
+                // At the very bottom: what is written and not sent yet.
+                items(queued.size, key = { "q-" + queued[queued.size - 1 - it].id }) { r ->
+                    val q = queued[queued.size - 1 - r]
+                    QueuedRow(q, o.host) { Outbox.remove(ctx, q.id) }
+                }
+                // Then what is happening now.
                 item(key = "live") {
                     when {
                         streaming.isNotEmpty() -> Bubble(Palette.Panel) {
@@ -1003,12 +1023,17 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                     if (item !is ChatItem.Earlier && prev is ChatItem.Earlier) Label("— on this phone —")
                     Box(if (lit != 0L && item.seq == lit && item !is ChatItem.Earlier)
                         Modifier.border(2.dp, Palette.Sky, RoundedCornerShape(12.dp)) else Modifier) {
-                        ChatRow(item) { prompt, allow, answers ->
+                        ChatRow(item, onAnswer = { prompt, allow, answers ->
                             scope.launch(Dispatchers.IO) {
                                 runCatching { client.answer(o.session, prompt, allow, answers = answers) }
                                     .onFailure { actionError = it.message ?: "could not answer" }
                             }
-                        }
+                        }, onRetryVoice = { id ->
+                            scope.launch(Dispatchers.IO) {
+                                runCatching { client.retryVoice(o.session, id) }
+                                    .onFailure { actionError = it.message ?: "could not transcribe it again" }
+                            }
+                        })
                     }
                 }
                 // At the top (the list is laid out from the bottom): what was
@@ -1053,8 +1078,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(10.dp)) {
             ComposerButton("📎") { pickFile.launch("*/*") }
             when {
-                transcribing -> Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) { Pulse(Palette.Sky, 12) }
-                recording -> Box(Modifier.size(40.dp).clickable { stopAndTranscribe() }, contentAlignment = Alignment.Center) {
+                recording -> Box(Modifier.size(40.dp).clickable { stopAndQueue() }, contentAlignment = Alignment.Center) {
                     Pulse(Palette.Rust, 16)
                     Text("■", color = Palette.Bone, style = MaterialTheme.typography.labelSmall)
                 }
@@ -1088,10 +1112,8 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                         input = ""
                         attached = emptyList()
                         actionError = ""
-                        scope.launch(Dispatchers.IO) {
-                            runCatching { client.send(o.session, text) }
-                                .onFailure { actionError = it.message ?: "could not send"; input = text }
-                        }
+                        enqueue(Outgoing(Outbox.newId(), o.address, o.host, o.session, "text", text = text,
+                            created = System.currentTimeMillis()))
                     },
                 contentAlignment = Alignment.Center,
             ) { Text("↑", color = Palette.Void, style = MaterialTheme.typography.titleMedium) }
@@ -1113,6 +1135,30 @@ fun keysOf(items: List<ChatItem>): List<String> {
         else { val n = seen.merge(it.seq, 1, Int::plus)!!; "e${it.seq}-$n" }
     }
 }
+
+/**
+ * A message or voice note in the outbox: written, not yet sent — the machine
+ * is unreachable, or this is being sent now. Cancel takes it back.
+ */
+@Composable
+private fun QueuedRow(q: Outgoing, host: String, onCancel: () -> Unit) {
+    Bubble(Palette.Phosphor.copy(alpha = 0.04f), Palette.Phosphor.copy(alpha = 0.25f)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Pulse(Palette.Ash, 6)
+            Spacer(Modifier.width(6.dp))
+            Text(queuedLabel(q, host), style = MaterialTheme.typography.labelSmall, color = Palette.Ash,
+                modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text("cancel", style = MaterialTheme.typography.labelSmall, color = Palette.Rust,
+                modifier = Modifier.clickable(onClick = onCancel).padding(start = 8.dp))
+        }
+        Text(if (q.kind == "voice") "🎤 voice note" else q.text, style = MaterialTheme.typography.bodyMedium,
+            color = Palette.Bone.copy(alpha = 0.7f))
+    }
+}
+
+/** What a queued row says about where it is. */
+fun queuedLabel(q: Outgoing, host: String): String =
+    if (q.lastError.isEmpty()) "QUEUED · sending to $host…" else "QUEUED · waiting for $host — ${q.lastError}"
 
 @Composable
 private fun Bubble(bg: Color, border: Color = Palette.Line, content: @Composable () -> Unit) {
@@ -1154,10 +1200,11 @@ private fun CopyLink(text: String) {
 }
 
 @Composable
-private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean, Map<String, String>?) -> Unit) {
+private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean, Map<String, String>?) -> Unit,
+                    onRetryVoice: (String) -> Unit = {}) {
     when (item) {
         is ChatItem.You -> Bubble(Palette.Phosphor.copy(alpha = 0.08f), Palette.Phosphor.copy(alpha = 0.35f)) {
-            Stamp(listOf("YOU", item.by, whenSaid(item.time)).filter { it.isNotEmpty() }.joinToString("  ·  "),
+            Stamp(listOf(if (item.voice) "YOU 🎤" else "YOU", item.by, whenSaid(item.time)).filter { it.isNotEmpty() }.joinToString("  ·  "),
                 Palette.Phosphor, copy = item.text)
             Text(spans(Markdown.links(item.text)), style = MaterialTheme.typography.bodyMedium)
         }
@@ -1209,6 +1256,17 @@ private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean, Map<String, Stri
         is ChatItem.Done -> Label("— ${item.note}${whenSaid(item.time).let { if (it.isEmpty()) "" else "  ·  $it" }}")
         is ChatItem.Stopped -> Label("— asleep; the next message wakes it")
         is ChatItem.Note -> Label("— ${item.text}")
+        is ChatItem.Voice -> if (!item.failed) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(4.dp)) {
+                Pulse(Palette.Sky); Spacer(Modifier.width(8.dp))
+                Label("🎤 voice note — transcribing on the agent's machine…")
+            }
+        } else Column(Modifier.padding(4.dp)) {
+            Text("🎤 the voice note could not be transcribed: ${item.error}", style = MaterialTheme.typography.bodySmall,
+                color = Palette.Rust)
+            Text("transcribe again", style = MaterialTheme.typography.labelSmall, color = Palette.Sky,
+                modifier = Modifier.clickable { onRetryVoice(item.id) }.padding(vertical = 6.dp))
+        }
     }
 }
 

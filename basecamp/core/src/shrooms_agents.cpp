@@ -264,6 +264,10 @@ bool request(const std::string& address, const std::string& method, const std::s
 Hub::~Hub()
 {
     stopFollower();
+    // The sender holds `this`: it is stopped and waited for, not left
+    // running into freed memory.
+    stopping_ = true;
+    if (sender_.joinable()) sender_.join();
 }
 
 void Hub::find(const std::string& peers)
@@ -856,6 +860,261 @@ std::string Hub::jobs()
                "\",\"text\":\"" + jsonEscape(j.text) + "\",\"error\":\"" + jsonEscape(j.error) + "\"}";
     }
     return out + "]}";
+}
+
+// --- the outbox ------------------------------------------------------------
+
+namespace {
+
+std::string pctDecode(const std::string& s)
+{
+    std::string out;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '%' && i + 2 < s.size() &&
+            std::isxdigit(static_cast<unsigned char>(s[i + 1])) && std::isxdigit(static_cast<unsigned char>(s[i + 2]))) {
+            out += static_cast<char>(std::stoi(s.substr(i + 1, 2), nullptr, 16));
+            i += 2;
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
+long long nowMillis()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+std::string newId()
+{
+    static std::atomic<unsigned> n{0};
+    char buf[48];
+    std::snprintf(buf, sizeof buf, "b-%llx-%x-%x", static_cast<unsigned long long>(nowMillis()),
+                  static_cast<unsigned>(::getpid()), n.fetch_add(1));
+    return buf;
+}
+
+std::vector<std::string> splitTabs(const std::string& line)
+{
+    std::vector<std::string> f;
+    size_t start = 0;
+    for (;;) {
+        size_t t = line.find('\t', start);
+        f.push_back(line.substr(start, t == std::string::npos ? std::string::npos : t - start));
+        if (t == std::string::npos) break;
+        start = t + 1;
+    }
+    return f;
+}
+
+}  // namespace
+
+// Where the outbox is kept: the person's data, so ~/.local/share, not a
+// cache. Voice notes wait beside the list.
+std::string Hub::outboxDir()
+{
+    const char* xdg = std::getenv("XDG_DATA_HOME");
+    std::string base;
+    if (xdg && *xdg) {
+        base = xdg;
+    } else {
+        const char* home = std::getenv("HOME");
+        base = std::string(home && *home ? home : "/tmp") + "/.local/share";
+    }
+    std::string dir = base + "/shrooms";
+    ::mkdir(base.c_str(), 0700);
+    ::mkdir(dir.c_str(), 0700);
+    dir += "/outbox";
+    ::mkdir(dir.c_str(), 0700);
+    return dir;
+}
+
+// One line per entry, tab-separated, text and error percent-encoded so a tab
+// or a newline in them cannot break a line.
+void Hub::loadOutbox()
+{
+    if (outboxLoaded_) return;
+    outboxLoaded_ = true;
+    std::ifstream in(outboxDir() + "/outbox.tsv");
+    std::string line;
+    while (std::getline(in, line)) {
+        auto f = splitTabs(line);
+        if (f.size() < 8 || f[0].empty() || (f[3] != "text" && f[3] != "voice")) continue;
+        Outgoing o;
+        o.id = f[0];
+        o.address = f[1];
+        o.session = f[2];
+        o.kind = f[3];
+        o.text = pctDecode(f[4]);
+        o.file = f[5];
+        o.created = std::atoll(f[6].c_str());
+        o.error = pctDecode(f[7]);
+        outbox_.push_back(o);
+    }
+}
+
+void Hub::saveOutbox()
+{
+    std::string path = outboxDir() + "/outbox.tsv";
+    std::ofstream out(path + ".tmp", std::ios::trunc);
+    for (const auto& o : outbox_) {
+        out << o.id << '\t' << o.address << '\t' << o.session << '\t' << o.kind << '\t' << urlEncode(o.text)
+            << '\t' << o.file << '\t' << o.created << '\t' << urlEncode(o.error) << '\n';
+    }
+    out.close();
+    std::rename((path + ".tmp").c_str(), path.c_str());
+}
+
+std::string Hub::queueText(const std::string& address, const std::string& session, const std::string& text)
+{
+    Outgoing o;
+    o.id = newId();
+    o.address = address;
+    o.session = session;
+    o.kind = "text";
+    o.text = text;
+    o.created = nowMillis();
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        loadOutbox();
+        outbox_.push_back(o);
+        saveOutbox();
+    }
+    startSender();
+    return o.id;
+}
+
+std::string Hub::recordSend(const std::string& address, const std::string& session, std::string& err)
+{
+    int pid;
+    std::string path;
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        pid = recorder_;
+        path = recording_;
+        recorder_ = -1;
+        recording_.clear();
+    }
+    if (pid <= 0) {
+        err = "not recording";
+        return "";
+    }
+    stopRecorder(pid); // the WAV header is written on SIGINT; wait for it
+    Outgoing o;
+    o.id = newId();
+    o.address = address;
+    o.session = session;
+    o.kind = "voice";
+    o.file = outboxDir() + "/" + o.id + ".wav";
+    o.created = nowMillis();
+    if (std::rename(path.c_str(), o.file.c_str()) != 0) {
+        std::string body, rerr;
+        if (!readFile(path, body, rerr)) {
+            err = rerr;
+            return "";
+        }
+        std::ofstream(o.file, std::ios::binary) << body;
+        ::unlink(path.c_str());
+    }
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        loadOutbox();
+        outbox_.push_back(o);
+        saveOutbox();
+    }
+    startSender();
+    return o.id;
+}
+
+std::string Hub::outbox()
+{
+    startSender(); // what was left from the last run goes too
+    std::lock_guard<std::mutex> g(mu_);
+    loadOutbox();
+    std::string out = "[";
+    for (size_t i = 0; i < outbox_.size(); i++) {
+        const auto& o = outbox_[i];
+        if (i) out += ",";
+        out += "{\"id\":\"" + jsonEscape(o.id) + "\",\"address\":\"" + jsonEscape(o.address) +
+               "\",\"session\":\"" + jsonEscape(o.session) + "\",\"kind\":\"" + o.kind +
+               "\",\"text\":\"" + jsonEscape(o.text) + "\",\"created\":" + std::to_string(o.created) +
+               ",\"error\":\"" + jsonEscape(o.error) + "\"}";
+    }
+    return out + "]";
+}
+
+bool Hub::unqueue(const std::string& id)
+{
+    std::lock_guard<std::mutex> g(mu_);
+    loadOutbox();
+    for (auto it = outbox_.begin(); it != outbox_.end(); ++it) {
+        if (it->id != id) continue;
+        if (!it->file.empty()) ::unlink(it->file.c_str());
+        outbox_.erase(it);
+        saveOutbox();
+        return true;
+    }
+    return false;
+}
+
+void Hub::startSender()
+{
+    std::call_once(senderStarted_, [this]() { sender_ = std::thread([this]() { sendLoop(); }); });
+}
+
+// Every few seconds: per session, its oldest entry, and the next only once
+// that one has gone — the order things were said in is kept.
+void Hub::sendLoop()
+{
+    while (!stopping_) {
+        std::vector<Outgoing> heads;
+        {
+            std::lock_guard<std::mutex> g(mu_);
+            loadOutbox();
+            std::map<std::string, bool> seen;
+            for (const auto& o : outbox_) { // in the order queued
+                std::string key = o.address + "/" + o.session;
+                if (seen[key]) continue;
+                seen[key] = true;
+                heads.push_back(o);
+            }
+        }
+        bool sent = false;
+        for (const auto& o : heads) {
+            std::string out, err;
+            bool ok;
+            if (o.kind == "voice") {
+                std::string body;
+                ok = readFile(o.file, body, err) &&
+                     request(o.address, "POST",
+                             "/v1/sessions/" + o.session + "/voice?name=" + urlEncode(baseName(o.file)) + "&id=" + o.id,
+                             body, 120, out, err);
+            } else {
+                ok = request(o.address, "POST", "/v1/sessions/" + o.session + "/messages",
+                             "{\"text\":\"" + jsonEscape(o.text) + "\",\"id\":\"" + jsonEscape(o.id) + "\"}", 15, out,
+                             err);
+            }
+            std::lock_guard<std::mutex> g(mu_);
+            for (auto it = outbox_.begin(); it != outbox_.end(); ++it) {
+                if (it->id != o.id) continue;
+                if (ok) {
+                    if (!it->file.empty()) ::unlink(it->file.c_str());
+                    outbox_.erase(it);
+                    sent = true;
+                } else {
+                    it->error = err;
+                }
+                break;
+            }
+            saveOutbox();
+        }
+        // Straight on while things go; a pause when nothing could, in steps
+        // short enough that shutting down does not wait on it.
+        for (int i = 0; !sent && !stopping_ && i < (heads.empty() ? 20 : 40); i++)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 }
 
 }  // namespace agents

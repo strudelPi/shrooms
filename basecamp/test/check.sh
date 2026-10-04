@@ -244,11 +244,14 @@ expect "HARNESS offered=claude,pi sent=pi auto=false label=[pi][]" "another harn
 expect "STREAMING=[Pushing **now**…] WORKING=true" "the streamed reply is not shown as it grows"
 expect "CONTEXT=67% of 1M MODEL=opus-5 1m" "context and model are not read from the session"
 expect "PROMPT open=true id=p1" "the waiting prompt is not offered"
-expect "CALLS=agentsFind,agentWatch,agentGet,agentEvents,agentJobs,agentPost" "the core was not called as expected"
+expect "CALLS=agentsFind,agentWatch,agentOutbox,agentGet,agentEvents,agentJobs,agentPost,agentQueue,agentRecord,agentUnqueue" "the core was not called as expected"
 # A file and a voice note: the file is named in the next message, once, and
 # the transcript lands in the composer, not sent on its own.
 expect "ATTACHED=1 STICK=true" "a finished upload was not attached, or attached twice"
 expect "COMPOSER=[ahoj, tady Vašek]" "the voice note's text did not land in the message box"
+expect "OUTBOX=1,2 voice=voice label=[QUEUED · waiting for laptop — connect: no route to host]" "a message or voice note does not go through the outbox, or is not shown queued"
+expect "CANCELLED=1" "a queued voice note cannot be taken back"
+expect "VOICE first=voicenote failed=true:model not found retry=/v1/sessions/shrooms/voice/v1/retry then=you:true:ahoj notes=0" "a voice note does not show its way to a turn"
 expect 'SENT="look\n\nAttached from Basecamp (on this machine):\n- /home/x/.local/share/shrooms-agent/uploads/shrooms/20261003-150000-shot.png" ATTACHED_AFTER=0' "the attachment was not sent with the message"
 # Taking over a terminal's conversation: listed with the terminal that may
 # hold it, named after its directory without colliding with "shrooms", and

@@ -114,6 +114,8 @@ On each machine's overlay addresses, port 7387.
 | `POST /v1/sessions/{name}/prompts/{id}` | `{allow, message?, answers?}` — answer a permission prompt. A question from the model (Claude Code's AskUserQuestion tool) arrives as a prompt for that tool, even under `--dangerously-skip-permissions`, and is answered with `allow` and `answers` (question → chosen label, labels joined by ", ", or the person's own words), which the agent puts into the tool's input; allowed without answers it is refused (409), since the model would read it as "the user did not answer". Auto-approve never answers a question |
 | `POST /v1/sessions/{name}/interrupt` | stop the current turn |
 | `POST /v1/sessions/{name}/files?name=` | the bytes of a file (50 MB at most); kept under the agent's own directory; returns `{path}` for the next message to name |
+| `POST /v1/sessions/{name}/voice?name=&id=` | a voice note as a turn: kept like a file, answered at once (202 `{path}`); transcribed here in the background and sent as the device's message (`message` event with `voice`: the recording's path). Its progress is a `voice` event (`transcribing`, or `failed` with `error`). The same `id` again answers 200 `{"duplicate":true}` |
+| `POST /v1/sessions/{name}/voice/{id}/retry` | transcribe a failed voice note again, from its kept recording |
 | `POST /v1/sessions/{name}/transcribe?name=&lang=` | a voice note, kept like a file and transcribed on this machine; returns `{path, text}`. Parakeet v3 (the default) detects the language and ignores `lang`; with a Whisper model (`--stt-model`), naming it halves the time |
 | `GET /v1/conversations?limit=N` | this machine's Claude Code conversations, newest first: where each ran, its last exchange, the session continuing it, and any terminal `claude` open in the same directory (with its tmux session) |
 | `POST /v1/terminals/{pid}/stop` | end a terminal's `claude` so its conversation can be continued here; only Claude Code run by this user by hand |
@@ -167,6 +169,22 @@ core starts get its environment without the AppImage's loader settings: its
 refuse to run, which silently broke `xdg-open`, a shell script. In Basecamp
 the core keeps a session's last 4000 events; "load them" on a longer
 session shows those, not the very first.
+
+Both apps write through an **outbox**: a message or voice note goes there
+first and is sent from there — at once if the machine answers, later if it
+is unreachable or the device is offline — in order per session, shown in
+the conversation as *queued* until it has gone, and cancellable until then.
+On the phone it is sent by whichever runs, the conversation on screen or the
+watcher in the background; in Basecamp, by a thread of the core, from
+`~/.local/share/shrooms/outbox`. Each carries an id made on the device, which
+the agent takes once (`POST …/messages {text, id}` answers
+`{"duplicate":true}` to a repeat, from memory of the last thousand and the
+log), so sending again after a lost answer cannot send twice.
+
+**Voice notes are turns**: the recording itself is sent, the agent keeps it,
+transcribes it on its machine and sends what was said — nothing comes back
+to read and confirm. Kept first, so one that fails (no model, nothing
+heard) says why and can be transcribed again from the same recording.
 
 Search (both apps) finds words anywhere in a conversation, on the agent's
 machine, so it covers what the app has not loaded and what was said in a

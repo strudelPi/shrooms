@@ -222,3 +222,60 @@ class MeshAddressTest {
         }
     }
 }
+
+class OutboxTest {
+    private fun q(id: String, session: String, created: Long, kind: String = "text") =
+        Outgoing(id, "fdb0::1", "laptop", session, kind, text = "t $id", file = if (kind == "voice") "/x/$id.m4a" else "",
+            created = created)
+
+    // Per session, oldest first, and nothing after one that has not gone:
+    // things arrive in the order they were said.
+    @Test fun oldestFirstPerSession() {
+        val items = listOf(q("b2", "b", 30), q("a1", "a", 10), q("a2", "a", 20), q("b1", "b", 5))
+        assertEquals(setOf("a1", "b1"), Outbox.nextPerSession(items).map { it.id }.toSet())
+    }
+
+    // Kept across a restart of the app, as written; anything else is dropped.
+    @Test fun keptAsWritten() {
+        val items = listOf(q("a1", "a", 10), q("v1", "a", 11, "voice").copy(lastError = "unreachable"))
+        assertEquals(items, Outbox.decode(Outbox.encode(items)))
+        assertEquals(emptyList<Outgoing>(), Outbox.decode("not json"))
+        assertEquals(emptyList<Outgoing>(), Outbox.decode("""[{"id":"x","kind":"carrier pigeon"}]"""))
+        // An id each, never the same twice in a row.
+        assertTrue(Outbox.newId() != Outbox.newId())
+    }
+
+    @Test fun whereItIsSaysWhy() {
+        assertEquals("QUEUED · sending to laptop…", queuedLabel(q("a", "s", 1), "laptop"))
+        assertEquals("QUEUED · waiting for laptop — connect timed out",
+            queuedLabel(q("a", "s", 1).copy(lastError = "connect timed out"), "laptop"))
+    }
+}
+
+class VoiceItemsTest {
+    private fun ev(seq: Long, kind: String, data: String) = AgentEvent(seq, kind, "nothing", org.json.JSONObject(data))
+
+    // A voice note shows while it is being transcribed, and is replaced by the
+    // turn it became; a failed one says why and can be tried again.
+    @Test fun aVoiceNoteBecomesItsTurn() {
+        val transcribing = listOf(ev(1, "voice", """{"id":"v1","path":"/u/n.m4a","status":"transcribing"}"""))
+        val v = AgentChat.items(transcribing).single() as ChatItem.Voice
+        assertEquals("v1", v.id); assertFalse(v.failed)
+
+        val sent = transcribing + ev(2, "message", """{"text":"ahoj","id":"v1","voice":"/u/n.m4a"}""")
+        val you = AgentChat.items(sent).single() as ChatItem.You
+        assertTrue("a turn that was said is marked", you.voice)
+        assertEquals("ahoj", you.text)
+
+        val failed = transcribing + ev(2, "voice", """{"id":"v1","status":"failed","error":"model not found"}""")
+        val f = AgentChat.items(failed).single() as ChatItem.Voice
+        assertTrue(f.failed); assertEquals("model not found", f.error)
+
+        // Retried, then sent: only the turn shows.
+        val retried = failed + ev(3, "voice", """{"id":"v1","status":"transcribing"}""") +
+            ev(4, "message", """{"text":"ahoj","id":"v1","voice":"/u/n.m4a"}""")
+        assertEquals(listOf("You"), AgentChat.items(retried).map { it::class.simpleName })
+        // A typed message is not marked.
+        assertFalse((AgentChat.items(listOf(ev(1, "message", """{"text":"hi","id":"m1"}"""))).single() as ChatItem.You).voice)
+    }
+}

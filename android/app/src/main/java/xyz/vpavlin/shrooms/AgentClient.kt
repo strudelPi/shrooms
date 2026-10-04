@@ -203,8 +203,36 @@ class AgentClient(address: String) {
         request("DELETE", "/v1/sessions/${enc(name)}", null)
     }
 
-    fun send(session: String, text: String) {
-        request("POST", "/v1/sessions/${enc(session)}/messages", JSONObject().put("text", text).toString())
+    /**
+     * Sends a turn. [id] is the outbox's, which makes sending it again
+     * harmless: the agent takes an id once (a repeat answers "duplicate").
+     */
+    fun send(session: String, text: String, id: String = "") {
+        val body = JSONObject().put("text", text)
+        if (id.isNotEmpty()) body.put("id", id)
+        request("POST", "/v1/sessions/${enc(session)}/messages", body.toString())
+    }
+
+    /**
+     * Sends a voice note as a turn: the agent keeps it, transcribes it on its
+     * machine and sends what was said — nothing comes back to read first.
+     */
+    fun voice(session: String, name: String, bytes: ByteArray, id: String) {
+        val c = open("POST", "/v1/sessions/${enc(session)}/voice?name=${enc(name)}&id=${enc(id)}", 120_000)
+        try {
+            c.doOutput = true
+            c.setRequestProperty("Content-Type", "audio/mp4")
+            c.setFixedLengthStreamingMode(bytes.size)
+            c.outputStream.use { it.write(bytes) }
+            if (c.responseCode / 100 != 2) throw AgentError(errorOf(c))
+        } finally {
+            c.disconnect()
+        }
+    }
+
+    /** Transcribes a voice note that failed again, from the recording the agent kept. */
+    fun retryVoice(session: String, id: String) {
+        request("POST", "/v1/sessions/${enc(session)}/voice/${enc(id)}/retry", "")
     }
 
     /** Answers a prompt; for a question, [answers] maps each question to its answer. */

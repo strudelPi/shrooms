@@ -1154,6 +1154,19 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                     }
                 }
             }
+            // Nothing to show yet: say what is happening rather than a blank
+            // screen — a session with no copy kept here waits for its machine.
+            if (items.isEmpty() && streaming.isEmpty() && queued.isEmpty()) {
+                Row(Modifier.align(Alignment.Center), verticalAlignment = Alignment.CenterVertically) {
+                    val empty = info?.lastSeq == 0L
+                    if (!empty) { Pulse(Palette.Ash, 6); Spacer(Modifier.width(8.dp)) }
+                    Label(when {
+                        empty -> "no messages yet"
+                        connError.isNotEmpty() -> "reaching ${o.host}… — $connError"
+                        else -> "loading the conversation…"
+                    })
+                }
+            }
             if (scrolledUp) {
                 Box(Modifier.align(Alignment.BottomEnd).padding(16.dp).size(40.dp)
                     .background(Palette.Panel, CircleShape).border(1.dp, Palette.Phosphor, CircleShape)

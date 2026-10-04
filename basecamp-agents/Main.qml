@@ -363,14 +363,41 @@ Item {
         // fresh: without the copy kept by the core (it is of a session since
         // made again), which a negative tail says.
         agentCall("agentWatch", [h.address, s, String(fresh && t > 0 ? -t : t)])
+        root.agentEarlierAsked = false
+        root.agentCaughtUp = false
+        // The last session's connection says nothing about this one's.
+        root.agentConnected = false
+        root.agentProblem = ""
         // After the first paint: a call during construction of what it fills
-        // freezes the view.
+        // freezes the view. What the core has — the copy kept here — shows
+        // at once; the transcript is asked for later (fetchEarlier).
+        Qt.callLater(pumpAgent)
+    }
+
+    // The transcript's turns from before the agent had the conversation: asked
+    // of the agent once it is connected, and only when the events start at
+    // the session's first, the only place they are shown. Asked first, as it
+    // was, it held the pane blank for a round trip over the mesh — up to the
+    // 5 s timeout, the view frozen, for a machine that is away.
+    property bool agentEarlierAsked: false
+    // The machine answered and everything it had was read: an empty
+    // conversation now is empty, not still loading.
+    property bool agentCaughtUp: false
+    readonly property string chatPlaceholder: !agentOpen || chatModel.count > 0 || agentStreaming !== "" ? ""
+        : agentCaughtUp ? "no messages yet"
+        : agentConnected ? "loading the conversation…"
+        : agentProblem !== "" ? "reaching " + agentOpen.name + "… — " + agentProblem
+        : "reaching " + agentOpen.name + "…"
+    function fetchEarlier() {
+        if (!agentOpen || agentEarlierAsked || !agentConnected) return
+        var evs = agentEventsList
+        if (evs.length > 0 && evs[0].seq > 1) return
+        agentEarlierAsked = true
+        var open = agentOpen
         Qt.callLater(function() {
-            if (!root.agentOpen) return
-            var r = agentCall("agentGet", [root.agentOpen.address,
-                "/v1/sessions/" + root.agentOpen.session + "/history?limit=30"])
-            if (r && r.history) { root.agentEarlier = r.history; rebuildChat() }
-            pumpAgent()
+            if (root.agentOpen !== open) return
+            var r = agentCall("agentGet", [open.address, "/v1/sessions/" + open.session + "/history?limit=30"])
+            if (r && r.history && root.agentOpen === open) { root.agentEarlier = r.history; rebuildChat() }
         })
     }
 
@@ -391,7 +418,12 @@ Item {
             root.agentNext = r.next
             if (!r.events || r.events.length === 0) { rebuildChat(); return }
         }
-        if (!r.events || r.events.length === 0) return
+        // Caught up with what the core has: the transcript, if it belongs.
+        if (!r.events || r.events.length === 0) {
+            if (r.connected) root.agentCaughtUp = true
+            fetchEarlier()
+            return
+        }
         var evs = root.agentEventsList.slice()
         var streaming = root.agentStreaming
         for (var i = 0; i < r.events.length; i++) {
@@ -1435,6 +1467,16 @@ Item {
                     clip: true
                     spacing: root.sz(10)
                     model: chatModel
+                    // Nothing to show yet: say what is happening rather than
+                    // a blank pane — a session with no copy kept here waits
+                    // for its machine.
+                    Row {
+                        anchors.centerIn: parent
+                        visible: root.chatPlaceholder !== ""
+                        spacing: root.sz(8)
+                        Pulse { visible: !root.agentCaughtUp; anchors.verticalCenter: parent.verticalCenter }
+                        Text { text: root.chatPlaceholder; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(11) }
+                    }
                     ScrollBar.vertical: ScrollBar {
                         onPressedChanged: if (!pressed) root.chatStick = chatList.atYEnd
                     }

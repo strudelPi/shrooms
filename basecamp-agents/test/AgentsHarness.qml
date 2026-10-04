@@ -98,6 +98,7 @@ Item {
                 if (method === "agentEvents" && top.keptPhase === 1) return JSON.stringify({ next: 3, more: false, connected: false,
                     error: "connect: no route to host", kept: 1759500000000, epoch: 4, events: Number(args[0]) >= 3 ? [] : top.events.slice(0, 3) })
                 // A copy of a session since made again: numbers above its own.
+                if (method === "agentEvents" && top.keptPhase === 4) return JSON.stringify({ next: 0, more: false, connected: true, error: "", kept: 0, epoch: 0, events: [] })
                 if (method === "agentEvents" && top.keptPhase === 3) return JSON.stringify({ next: 3, more: false, connected: false,
                     error: "", kept: 1759500000000, epoch: 0, events: Number(args[0]) >= 3 ? [] : [ev(50, "message", { text: "old" }), ev(51, "message", { text: "older" }), ev(52, "message", { text: "oldest" })] })
                 if (method === "agentEvents" && top.keptPhase === 2) return JSON.stringify({ next: 7, more: false, connected: true,
@@ -311,6 +312,12 @@ Item {
             console.error("KEPT seqs=" + keptSeqs + " kept=" + keptAt + " working=" + keptWorking
                           + " then=" + view.agentEventsList.map(function(e) { return e.seq }).join(",")
                           + " kept=" + view.agentKept + " rows=" + chatCount())
+            // Nothing yet, then caught up with nothing: said, not blank.
+            top.keptPhase = 4
+            view.openSession(view.agentHosts[0], "shrooms")
+            var waitingText = view.chatPlaceholder
+            view.pumpAgent()
+            console.error("PLACEHOLDER first=[" + waitingText + "] then=[" + view.chatPlaceholder + "]")
             top.keptPhase = 3
             view.openSession(view.agentHosts[0], "shrooms")
             view.pumpAgent()

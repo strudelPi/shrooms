@@ -213,7 +213,11 @@ saved while a conversation is open (`agentEvents` says `"kept":MS` while the
 copy is unconfirmed; a negative tail to `agentWatch` opens without it).
 The turns from the transcript ("earlier") are shown only above a session's
 own first event: above a later one they repeated, out of place, turns the
-agent also has.
+agent also has. Basecamp asks for them only then, once the machine has
+answered: asked first, as it was, the pane stayed blank for a round trip
+over the mesh (and up to 5 s, the view frozen, for a machine that was
+away). Until a conversation has anything to show, both apps say what they
+are doing — reaching the machine, loading, or that it has no messages yet.
 Deleting a session deletes its copy.
 
 **Unread replies** show as a count on each session in both apps: the

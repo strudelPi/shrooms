@@ -117,6 +117,15 @@ class AgentChatTest {
         assertEquals(emptyList<AgentHost>(), HostCache.decode("""[{"name":"x","address":"8.8.8.8","sessions":[]}]"""))
     }
 
+    // Machines seen before are asked directly, not only through another agent's
+    // peer list: with that agent gone, they must still be found.
+    @Test fun machinesSeenBeforeAreAskedDirectly() {
+        val handed = listOf(AgentHosts.Host("laptop", "office", "fdb0::1"))
+        val seen = listOf(AgentHost("laptop", "office", "fdb0::1", emptyList()), AgentHost("atlas", "office", "fdb0::2", emptyList()))
+        assertEquals(listOf("laptop", "atlas"), agentCandidates(handed, seen).map { it.name })
+        assertEquals("fdb0::2", agentCandidates(emptyList(), seen)[1].address)
+    }
+
     // A search result jumps to its event: the first of that event's items, in a
     // list laid out from the bottom with the live row as item 0.
     @Test fun aSearchResultIsFoundInTheList() {

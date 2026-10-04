@@ -173,6 +173,15 @@ data class OpenSession(val address: String, val host: String, val mesh: String, 
  * announce, because announcing bound ports is off by default (ADR-026) and an
  * agent should be found with nothing configured.
  */
+/**
+ * Who to ask directly, besides the shrooms app's peers: the ones it handed
+ * over, and every machine an agent was found on before. Those last were often
+ * found only through another agent's /v1/peers — through the laptop, say — and
+ * with the laptop gone, nothing reached them and every one greyed (2026-10-04).
+ */
+fun agentCandidates(handed: List<AgentHosts.Host>, seen: List<AgentHost>): List<AgentHosts.Host> =
+    (handed + seen.map { AgentHosts.Host(it.name, it.mesh, it.address) }).distinctBy { it.name }
+
 suspend fun discoverAgents(peers: List<Peer>, byName: List<String> = emptyList(),
                            known: List<AgentHosts.Host> = emptyList()): List<AgentHost> =
     withContext(Dispatchers.IO) {
@@ -322,7 +331,7 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
     LaunchedEffect(refresh, open, named) {
         if (open != null) return@LaunchedEffect
         while (isActive) {
-            val found = discoverAgents(peers, named, AgentHosts.peers(ctx))
+            val found = discoverAgents(peers, named, agentCandidates(AgentHosts.peers(ctx), hosts.orEmpty()))
             val merged = HostCache.merge(hosts.orEmpty(), found, System.currentTimeMillis())
             hosts = merged
             cachePrefs.edit().putString("cache", HostCache.encode(merged)).apply()

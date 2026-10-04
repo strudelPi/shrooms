@@ -196,7 +196,12 @@ then.
 opened (at most a megabyte, streamed text left out), saved while it is on
 screen. Opened while its machine cannot be reached, it shows that copy,
 marked "offline — as it was HH:MM", never as working; the machine's own
-events replace it as soon as it answers. On the phone in the app's files
+events replace it once their replay has caught up with it — reached its
+newest event, or paused (the backlog comes at once, so a pause is its end) —
+in one go. Replaced as soon as the stream opened, the conversation was
+rebuilt from its oldest end as the replay trickled in over the mesh, which
+scrolled on every switch. A conversation with no copy is gathered the same
+way before it is shown. On the phone in the app's files
 (`history/`), with the 30 turns from before the agent had the conversation,
 and kept up to date by the background watcher for every session it sees —
 reading only the events the copy lacks — so a conversation is there offline

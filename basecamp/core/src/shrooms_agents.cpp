@@ -11,6 +11,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/stat.h>
@@ -363,7 +364,10 @@ void Hub::watch(const std::string& address, const std::string& session, int tail
         connected_ = false;
         error_.clear();
         kept_ = 0;
+        keptLast_ = 0;
+        replay_.clear();
         if (kept > 0 && !keptEvents.empty()) {
+            keptLast_ = seqOf(keptEvents.back());
             events_ = std::move(keptEvents);
             kept_ = kept;
         }
@@ -408,13 +412,6 @@ void Hub::follow(std::string address, std::string session, int tail, unsigned ge
                         std::lock_guard<std::mutex> g(mu_);
                         connected_ = true;
                         error_.clear();
-                        // The machine's own events replace the kept ones.
-                        if (kept_ != 0) {
-                            base_ += static_cast<long long>(events_.size());
-                            events_.clear();
-                            kept_ = 0;
-                            epoch_++;
-                        }
                     }
                     // Lines of the stream. Chunk framing, when present, sits on
                     // lines of its own and is skipped as not being data.
@@ -432,6 +429,15 @@ void Hub::follow(std::string address, std::string session, int tail, unsigned ge
                             after = s;
                         }
                         std::lock_guard<std::mutex> g(mu_);
+                        // The kept copy stays until the replay has caught up
+                        // with it, then is replaced in one go: replaced as soon
+                        // as the stream opened, the view rebuilt the
+                        // conversation as the replay trickled in.
+                        if (kept_ != 0) {
+                            replay_.push_back(ev);
+                            if (!partial && seqOf(ev) >= keptLast_) replaceKept();
+                            continue;
+                        }
                         events_.push_back(ev);
                         if (events_.size() > kKeepEvents) {
                             size_t drop = events_.size() - kKeepEvents;
@@ -439,6 +445,21 @@ void Hub::follow(std::string address, std::string session, int tail, unsigned ge
                             base_ += static_cast<long long>(drop);
                         }
                         if (!partial) dirty = true;
+                    }
+                    // Or once the replay pauses: the backlog is sent at once, so
+                    // a pause is its end (a session made again since it was
+                    // kept never reaches the kept copy's numbers).
+                    bool gathering = false;
+                    if (inBody) {
+                        std::lock_guard<std::mutex> g(mu_);
+                        gathering = kept_ != 0 && !replay_.empty();
+                    }
+                    if (gathering) {
+                        pollfd p{fd, POLLIN, 0};
+                        if (::poll(&p, 1, 250) == 0) {
+                            std::lock_guard<std::mutex> g(mu_);
+                            if (kept_ != 0) replaceKept();
+                        }
                     }
                     if (dirty && std::chrono::steady_clock::now() - lastSave > std::chrono::seconds(5)) {
                         saveHistory(address, session);
@@ -464,6 +485,18 @@ void Hub::follow(std::string address, std::string session, int tail, unsigned ge
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
+}
+
+// The live replay replaces the kept copy: a new epoch, read again from next.
+// Called with mu_ held.
+void Hub::replaceKept()
+{
+    base_ += static_cast<long long>(events_.size());
+    events_ = std::move(replay_);
+    replay_.clear();
+    kept_ = 0;
+    keptLast_ = 0;
+    epoch_++;
 }
 
 void Hub::forgetHistory(const std::string& address, const std::string& session)

@@ -84,6 +84,15 @@ object AgentChat {
      * before it for context: never fewer than [current], and 0 (everything)
      * stays everything.
      */
+    /**
+     * Whether a conversation's opening replay has caught up, and is shown:
+     * once it reaches the newest event of the copy on screen ([keptLast], 0
+     * when none), or has been quiet for two rounds after its last event —
+     * the whole backlog is sent at once, so a pause is its end.
+     */
+    fun replayCaughtUp(lastSeq: Long?, keptLast: Long, quietRounds: Int): Boolean =
+        lastSeq != null && ((keptLast > 0 && lastSeq >= keptLast) || quietRounds >= 2)
+
     fun tailReaching(current: Int, lastSeq: Long, seq: Long): Int =
         if (current == 0) 0 else maxOf(current.toLong(), lastSeq - seq + 1 + 20).toInt()
 

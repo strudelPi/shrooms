@@ -64,3 +64,16 @@ class HistoryRefreshTest {
         assertEquals(listOf(5L), History.extend(null, 4, listOf(ev(5))).map { it.seq })
     }
 }
+
+class ReplayTest {
+    // The opening replay is shown in one go: not while it is still arriving.
+    @Test fun shownOnceCaughtUp() {
+        assertEquals(false, AgentChat.replayCaughtUp(null, 0, 5))           // nothing yet
+        assertEquals(false, AgentChat.replayCaughtUp(700, 1000, 0))         // still short of the copy
+        assertEquals(false, AgentChat.replayCaughtUp(700, 1000, 1))
+        assertEquals(true, AgentChat.replayCaughtUp(1000, 1000, 0))         // reached the copy
+        assertEquals(false, AgentChat.replayCaughtUp(40, 0, 1))             // no copy: until it pauses
+        assertEquals(true, AgentChat.replayCaughtUp(40, 0, 2))
+        assertEquals(true, AgentChat.replayCaughtUp(40, 1000, 2))           // made again: lower numbers
+    }
+}

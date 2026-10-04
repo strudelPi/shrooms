@@ -13,6 +13,9 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -480,11 +483,18 @@ private fun SessionRow(s: AgentSession, where: String = "", reachable: Boolean =
         else -> (if (s.running) "idle" else "asleep") to Palette.Ash
         }
     }
-    Column(
-        Modifier.fillMaxWidth()
+    // The star has a column of its own, the card's full height and the same
+    // place on every row: tucked in after the badge it moved with the badge's
+    // width and sat where a thumb lands to open the session.
+    Row(
+        Modifier.fillMaxWidth().height(IntrinsicSize.Min)
+            .clip(RoundedCornerShape(12.dp))
             .background(Palette.Panel.copy(alpha = 0.85f), RoundedCornerShape(12.dp))
             .border(1.dp, if (reachable && s.state == "waiting") Palette.Amber else Palette.Line, RoundedCornerShape(12.dp))
-            .alpha(if (reachable) 1f else 0.5f)
+            .alpha(if (reachable) 1f else 0.5f),
+    ) {
+    Column(
+        Modifier.weight(1f)
             .combinedClickable(onClick = onOpen, onLongClick = onLongPress)
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -499,9 +509,6 @@ private fun SessionRow(s: AgentSession, where: String = "", reachable: Boolean =
             Spacer(Modifier.weight(1f))
             if (reachable && s.state != "idle") { Pulse(colour); Spacer(Modifier.width(6.dp)) }
             Text(badge, style = MaterialTheme.typography.labelSmall, color = colour)
-            // Starred: listed first. Faint until it is.
-            Text("🍄", modifier = Modifier.padding(start = 10.dp).alpha(if (s.starred) 1f else 0.25f)
-                .clickable(onClick = onStar).padding(4.dp))
         }
         if (s.preview.isNotEmpty()) {
             Text(s.preview, style = MaterialTheme.typography.bodySmall, color = Palette.Ash,
@@ -513,6 +520,15 @@ private fun SessionRow(s: AgentSession, where: String = "", reachable: Boolean =
         Text((meta + s.dir.replace(Regex("^/home/[^/]+"), "~")).joinToString("  ·  "),
             style = MaterialTheme.typography.labelSmall, color = Palette.Ash,
             maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+    Box(Modifier.fillMaxHeight().width(1.dp).background(Palette.Line))
+    // Starred: listed first. Faint until it is.
+    Box(
+        Modifier.fillMaxHeight().width(52.dp).clickable(onClick = onStar),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text("🍄", modifier = Modifier.alpha(if (s.starred) 1f else 0.25f))
+    }
     }
 }
 
@@ -809,17 +825,35 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
         streaming = ""
         // Shown until the machine answers: the end of the conversation as it
         // was last seen here.
+        var keptLast = 0L
         if (tail == SESSION_TAIL) withContext(Dispatchers.IO) { History.load(ctx, o.host, o.session) }?.let { h ->
             if (events.isEmpty() && h.events.isNotEmpty()) {
                 events.addAll(h.events)
                 if (earlier.isEmpty()) earlier = h.earlier
                 keptAt = h.saved
+                keptLast = h.events.last().seq
             }
         }
         val after = java.util.concurrent.atomic.AtomicLong(0)
         val pending = java.util.concurrent.ConcurrentLinkedQueue<AgentEvent>()
+        // The opening replay is gathered and shown in one go once it has
+        // caught up: shown as it trickled in over the mesh, the list was
+        // rebuilt from its oldest end, scrolling, on every switch.
+        val replay = ArrayList<AgentEvent>()
+        var replaying = true
+        var quiet = 0
         launch {
             while (isActive) {
+                if (replaying) {
+                    if (pending.isEmpty() && replay.isNotEmpty()) quiet++
+                    if (AgentChat.replayCaughtUp(replay.lastOrNull()?.seq, keptLast, quiet)) {
+                        events.clear()
+                        events.addAll(replay)
+                        replay.clear()
+                        keptAt = 0
+                        replaying = false
+                    }
+                }
                 if (pending.isNotEmpty()) {
                     val batch = ArrayList<AgentEvent>()
                     while (true) batch += pending.poll() ?: break
@@ -833,8 +867,8 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                         kept += e
                     }
                     streaming = text
-                    if (keptAt != 0L) { events.clear(); keptAt = 0 }
-                    if (kept.isNotEmpty()) events.addAll(kept)
+                    if (replaying) { replay.addAll(kept); quiet = 0 }
+                    else if (kept.isNotEmpty()) events.addAll(kept)
                     connError = ""
                 }
                 delay(120)

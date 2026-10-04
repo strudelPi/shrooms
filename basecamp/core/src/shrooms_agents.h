@@ -213,9 +213,12 @@ private:
     std::vector<std::string> events_;
     long long base_ = 0;
     long long kept_ = 0;   // when the shown events were kept; 0 when live
+    long long keptLast_ = 0;            // the newest kept event's seq
+    std::vector<std::string> replay_;   // the live replay, until it has caught up
     unsigned epoch_ = 0;
     // The end of each watched conversation, kept on disk for when its machine
     // cannot be reached.
+    void replaceKept();
     void saveHistory(const std::string& address, const std::string& session);
     static std::string dataDir(const std::string& sub);
     bool connected_ = false;

@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -78,4 +80,40 @@ func TestAQuestionCanBeDeclined(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, s, 0, func(e Event) bool { return assistantText(e) == "denied: not tonight" })
+}
+
+// Background work: the turn ends, heartbeats and thinking keep coming, and
+// Claude Code resumes by itself. The session is working again while it does,
+// and the turns counted are the two that ended — not the events in between,
+// which is what notified a phone every fifteen seconds (2026-10-04).
+func TestATurnClaudeResumesByItselfIsWorkAndOneTurn(t *testing.T) {
+	hold := filepath.Join(t.TempDir(), "go-on")
+	t.Setenv("FAKE_HOLD", hold)
+	m := newTestManager(t, t.TempDir())
+	m.Create("proj", t.TempDir())
+	s, _ := m.Get("proj")
+	s.Send("background", "")
+	waitFor(t, s, 0, func(e Event) bool { return assistantText(e) == "started it in the background" })
+	waitFor(t, s, 0, func(e Event) bool {
+		var d struct {
+			Message struct{ Content []struct{ Type, Name string } }
+		}
+		json.Unmarshal(e.Data, &d)
+		return len(d.Message.Content) > 0 && d.Message.Content[0].Name == "Bash"
+	})
+	time.Sleep(100 * time.Millisecond)
+	if in := s.Info(); in.State != Working || in.Turns != 1 {
+		t.Errorf("resumed by itself: %s after %d turns; want working after 1", in.State, in.Turns)
+	}
+	os.WriteFile(hold, nil, 0o600)
+	waitFor(t, s, 0, func(e Event) bool { return assistantText(e) == "the build passed" })
+	time.Sleep(100 * time.Millisecond)
+	if in := s.Info(); in.State != Idle || in.Turns != 2 {
+		t.Errorf("after: %s, %d turns", in.State, in.Turns)
+	}
+	// Counted from the log too, so a restarted agent does not renotify.
+	m2, _ := NewManager(t.Context(), slog.New(slog.DiscardHandler), m.dir, "claude")
+	if s2, _ := m2.Get("proj"); s2.Info().Turns != 2 {
+		t.Errorf("turns after a restart: %d", s2.Info().Turns)
+	}
 }

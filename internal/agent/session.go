@@ -70,6 +70,10 @@ type Info struct {
 	// Starred sessions are listed first, above every machine's others. Kept
 	// here, not in an app, so a star set on the phone shows in Basecamp.
 	Starred bool `json:"starred,omitempty"`
+	// Turns counts the turns that have ended: what the phone notifies on,
+	// once each. The event count is no use for that — a session sends
+	// progress, heartbeats and thinking while it waits on background work.
+	Turns uint64 `json:"turns"`
 }
 
 // Session is one conversation in one directory.
@@ -92,6 +96,7 @@ type Session struct {
 
 	autoApprove bool
 	starred     bool
+	turns       uint64
 	ctxUsed     uint64
 	ctxWindow   uint64
 	preview     string
@@ -373,7 +378,7 @@ func (s *Session) Info() Info {
 	in := Info{Name: s.name, Dir: s.dir, State: s.state, Pending: len(s.pending),
 		Running: s.proc != nil, LastSeq: s.seq, AutoApprove: s.autoApprove,
 		ContextUsed: s.ctxUsed, ContextWindow: s.ctxWindow, Preview: s.preview, Model: s.model,
-		Harness: s.harness.Name(), Caps: s.harness.Caps(), Starred: s.starred}
+		Harness: s.harness.Name(), Caps: s.harness.Caps(), Starred: s.starred, Turns: s.turns}
 	if n := len(s.events); n > 0 {
 		in.LastTime = s.events[n-1].Time
 	}
@@ -501,6 +506,7 @@ func (s *Session) observe(raw json.RawMessage) {
 			s.preview = t
 		}
 	case "result":
+		s.turns++
 		// The main model has the largest window; a helper model used for a
 		// quick task is listed too, with a smaller one.
 		for _, u := range m.ModelUsage {
@@ -734,6 +740,12 @@ func (s *Session) read(p *proc) {
 			}
 		case head.Type == "result":
 			s.state = Idle
+		case s.state == Idle && (head.Type == "assistant" || head.Type == "user" ||
+			(head.Type == "system" && head.Subtype == "task_notification")):
+			// A turn nobody sent: Claude Code resumes by itself when
+			// background work it started finishes. Working, not idle, or the
+			// session reads as done while it is busy (2026-10-04).
+			s.state = Working
 		}
 		if s.state != Idle {
 			s.lastUsed = time.Now()

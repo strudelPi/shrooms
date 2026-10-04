@@ -172,6 +172,30 @@ func fakeClaude() {
 				}
 			}
 			result("success")
+		case content == "background":
+			// Observed 2026-10-04: a turn ends while a background command
+			// runs, heartbeats keep coming, and when it finishes Claude Code
+			// starts a turn of its own — no user message — and ends it.
+			text("started it in the background")
+			result("success")
+			for i := 0; i < 3; i++ {
+				emit(map[string]any{"type": "tool_progress", "tool_name": "Bash", "heartbeat": true, "elapsed_time_seconds": 30 * (i + 1)})
+				emit(map[string]any{"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 50})
+			}
+			emit(map[string]any{"type": "system", "subtype": "task_notification", "status": "completed"})
+			emit(map[string]any{"type": "assistant", "message": map[string]any{"role": "assistant",
+				"content": []any{map[string]any{"type": "tool_use", "id": "toolu_b", "name": "Bash",
+					"input": map[string]any{"command": "cat build.log"}}}}})
+			if marker := os.Getenv("FAKE_HOLD"); marker != "" {
+				for { // until the test lets the resumed turn go on
+					if _, err := os.Stat(marker); err == nil {
+						break
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
+			text("the build passed")
+			result("success")
 		case content == "slow":
 			for {
 				c := next()

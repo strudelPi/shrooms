@@ -41,6 +41,8 @@ data class AgentSession(
     val approves: Boolean = true,
     /** Listed first, above every machine's others; kept on the agent. */
     val starred: Boolean = false,
+    /** Turns that have ended, as the agent counts them; -1 from an agent too old to. */
+    val turns: Long = -1,
 )
 
 /** A coding agent a machine can run sessions of (GET /v1/harnesses). */
@@ -114,6 +116,7 @@ class AgentClient(address: String) {
                 // An agent from before harnesses has no caps, and is Claude Code.
                 approves = s.optJSONObject("caps")?.optBoolean("approve") ?: true,
                 starred = s.optBoolean("starred"),
+                turns = s.optLong("turns", -1),
             )
         }
     }

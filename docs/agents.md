@@ -102,7 +102,7 @@ On each machine's overlay addresses, port 7387.
 
 | | |
 |---|---|
-| `GET /v1/sessions` | list: name, directory, state (idle / working / waiting), pending prompts, context used and window, model, the last reply, auto-approve, `harness` and its `caps` |
+| `GET /v1/sessions` | list: name, directory, state (idle / working / waiting), pending prompts, context used and window, model, the last reply, auto-approve, `harness` and its `caps`, and `turns` — how many turns have ended, which the phone notifies on, once each (events are no use for that: a session waiting on background work sends heartbeats and progress between turns). A turn Claude Code starts by itself, when background work finishes, makes the session working |
 | `GET /v1/harnesses` | `{"harnesses":[{name, title, caps:{approve, takeover}}]}` — the coding agents this machine runs sessions of, Claude Code first (docs/agents-harnesses.md) |
 | `POST /v1/sessions` | `{name, dir, harness?, auto_approve?}` — create, with Claude Code unless `harness` names another; `{name, resume: id}` — continue an existing Claude Code conversation, in the directory it ran in |
 | `DELETE /v1/sessions/{name}` | stop and forget |

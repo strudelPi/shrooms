@@ -39,14 +39,22 @@ object AgentWatch {
     @Volatile var visible: String? = null
 
     /** What a session looked like at the last poll. */
-    data class Seen(val state: String, val lastSeq: Long)
+    data class Seen(val state: String, val lastSeq: Long, val turns: Long = -1)
 
     /**
      * What to say about a change, if anything. Pure, so the rules are tested
      * off-device (AgentWatchTest).
      *
      * - started waiting for an answer → it needs you;
-     * - a turn ended with something new → it replied, with what it said.
+     * - a turn ended → it replied, with what it said. Once, however many
+     *   ended between two polls.
+     *
+     * Turns as the agent counts them, not events: a session waiting on
+     * background work sends heartbeats, thinking and progress while it sits
+     * between turns, and every one of them read as a new reply — a
+     * notification every fifteen seconds, with the same text (2026-10-04).
+     * An agent too old to count turns gets the old rule without that part:
+     * working, then idle with something new.
      *
      * A session seen for the first time is only remembered: on start, every
      * existing session is "new", and a burst of stale notifications is noise.
@@ -54,10 +62,10 @@ object AgentWatch {
     fun change(before: Seen?, now: AgentSession): String? = when {
         before == null -> null
         now.state == "waiting" && before.state != "waiting" -> "needs you — something is waiting for approval"
+        now.turns >= 0 && before.turns >= 0 ->
+            if (now.turns > before.turns) now.preview.ifEmpty { "finished" } else null
         now.state == "idle" && now.lastSeq > before.lastSeq && before.state != "idle" ->
             now.preview.ifEmpty { "finished" }
-        // A whole turn happened between two polls.
-        now.state == "idle" && now.lastSeq > before.lastSeq && now.preview.isNotEmpty() -> now.preview
         else -> null
     }
 }
@@ -113,7 +121,7 @@ class AgentWatcher(private val ctx: Context) {
                 for (s in sessions) {
                     val key = "${h.address}/${s.name}"
                     val said = AgentWatch.change(seen[key], s)
-                    seen[key] = AgentWatch.Seen(s.state, s.lastSeq)
+                    seen[key] = AgentWatch.Seen(s.state, s.lastSeq, s.turns)
                     if (said != null && AgentWatch.visible != key) notify(h, s, said)
                 }
             }

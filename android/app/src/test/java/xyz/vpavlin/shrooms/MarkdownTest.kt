@@ -76,12 +76,31 @@ class AgentWatchTest {
         assertEquals(null, AgentWatch.change(seen("waiting", 5), s("waiting", 5)))
         // A turn ends with a reply.
         assertEquals("All done.", AgentWatch.change(seen("working", 7), s("idle", 9, "All done.")))
-        // A whole turn between two polls.
-        assertEquals("Quick one.", AgentWatch.change(seen("idle", 9), s("idle", 14, "Quick one.")))
         // Nothing happened.
         assertEquals(null, AgentWatch.change(seen("idle", 9), s("idle", 9, "old")))
         // Still working.
         assertEquals(null, AgentWatch.change(seen("working", 9), s("working", 12)))
+        // An old agent: events while idle are not a reply.
+        assertEquals(null, AgentWatch.change(seen("idle", 9), s("idle", 14, "same text")))
+    }
+
+    // An agent that counts turns: one notification per poll in which turns
+    // ended — heartbeats and progress while it waits on background work are
+    // not replies (2026-10-04).
+    @Test fun turnsNotEventsAreReplies() {
+        fun s(state: String, seq: Long, turns: Long, preview: String = "") =
+            AgentSession("bv", "/x", state, 0, true, seq, preview = preview, turns = turns)
+        val seen = { st: String, seq: Long, turns: Long -> AgentWatch.Seen(st, seq, turns) }
+        // Idle between turns, events arriving: nothing.
+        assertEquals(null, AgentWatch.change(seen("idle", 100, 7), s("idle", 140, 7, "Running it in the background")))
+        // Resumed by itself and still at it: nothing.
+        assertEquals(null, AgentWatch.change(seen("idle", 140, 7), s("working", 160, 7, "Running it in the background")))
+        // That turn ended: one.
+        assertEquals("The build passed.", AgentWatch.change(seen("working", 160, 7), s("idle", 170, 8, "The build passed.")))
+        // Two turns between polls, and already working on the next: still one.
+        assertEquals("Next.", AgentWatch.change(seen("working", 170, 8), s("working", 200, 10, "Next.")))
+        // Needing an answer is still said.
+        assertTrue(AgentWatch.change(seen("working", 200, 10), s("waiting", 201, 10))!!.startsWith("needs you"))
     }
 }
 

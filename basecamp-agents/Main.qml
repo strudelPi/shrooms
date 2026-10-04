@@ -820,6 +820,7 @@ Item {
                     textFormat: root.reading && root.reading.role !== "user" ? TextEdit.MarkdownText : TextEdit.RichText
                     text: !root.reading ? "" : root.reading.role !== "user" ? root.linkMarkdown(root.reading.text) : root.linkPlain(root.reading.text)
                     onLinkActivated: function(link) { root.openUrl(link) }
+                    LinkCursor {}
                     color: cBone; font.family: "monospace"; font.pixelSize: root.fs(12)
                 }
             }
@@ -909,6 +910,15 @@ Item {
             MouseArea { id: starMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                         onClicked: root.setStarred(srow.host, srow.sess.name, !srow.sess.starred) }
         }
+    }
+
+    // A hand over a link in text: TextEdit shows none of its own. Hover only
+    // (no buttons), so clicks still reach the text — links and selection.
+    component LinkCursor: MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.NoButton
+        hoverEnabled: true
+        cursorShape: parent.linkAt(mouseX, mouseY) !== "" ? Qt.PointingHandCursor : Qt.IBeamCursor
     }
 
     component Lnk: Text {
@@ -1366,6 +1376,7 @@ Item {
                                     textFormat: TextEdit.MarkdownText
                                     text: root.linkMarkdown(root.agentStreaming) + " ▍"
                                     onLinkActivated: function(link) { root.openUrl(link) }
+                                    LinkCursor {}
                                     color: cBone; font.family: "monospace"; font.pixelSize: root.fs(12)
                                 }
                             }
@@ -1445,6 +1456,7 @@ Item {
                                         color: cBone; selectionColor: Qt.rgba(0.21, 0.94, 0.63, 0.35)
                                         font.family: "monospace"; font.pixelSize: root.fs(12)
                                         onLinkActivated: function(link) { root.openUrl(link) }
+                                        LinkCursor {}
                                     }
                                 }
                             }

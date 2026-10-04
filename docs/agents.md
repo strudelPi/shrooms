@@ -179,8 +179,12 @@ reason some conversations showed empty after switching to them (not proven).
 `scripts/install-agent.sh`, run with sudo by the user whose agents it serves
 (`--user NAME` otherwise), on a machine where shrooms runs:
 
-- takes `shrooms-agent` out of the shrooms image (it is built in, from
-  2026-10-04) into `/usr/local/bin` — no Go toolchain, no other download;
+- takes `shrooms-agent` out of its own image, `ghcr.io/vpavlin/shrooms-agent`
+  (`make push-agent-image`: a static binary per architecture, amd64 and arm64,
+  and nothing else), into `/usr/local/bin`, with the docker or podman shrooms
+  already uses. Not a layer of the shrooms image: nodes follow
+  `shrooms:latest` with podman auto-update, so publishing the agent there
+  would roll a new daemon onto all of them;
 - if that user cannot read the control socket, grants it by ACL, kept across
   reboots by `/etc/tmpfiles.d/shrooms-agent-USER.conf` (directory line first;
   see below for why);

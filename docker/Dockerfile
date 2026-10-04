@@ -26,10 +26,6 @@ ENV LD_LIBRARY_PATH=/opt/logos/lib
 
 COPY shrooms /usr/bin/shrooms
 
-# Not run in here: shrooms-agent runs on the host, as a user, and
-# scripts/install-agent.sh copies it out of this image (docs/agents.md).
-COPY shrooms-agent /usr/bin/shrooms-agent
-
 # NAT-topology helpers, used by compose-nat.yml (M2).
 COPY gateway.sh entrypoint-nat.sh /usr/bin/
 

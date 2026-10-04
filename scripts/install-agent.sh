@@ -10,8 +10,9 @@
 # serves only on this machine's mesh addresses, which it asks the daemon for.
 #
 # What it does, each step the one that was done by hand on the first machines:
-#   - takes shrooms-agent out of the shrooms image this machine already runs
-#     (no other download, no Go toolchain) into /usr/local/bin;
+#   - takes shrooms-agent out of its image, ghcr.io/vpavlin/shrooms-agent (a
+#     binary per architecture and nothing else; no Go toolchain) into
+#     /usr/local/bin, with the docker or podman shrooms already uses;
 #   - lets the user read the daemon's control socket, if they cannot already:
 #     an ACL, kept across reboots by /etc/tmpfiles.d/shrooms-agent-USER.conf —
 #     the daemon runs in a container, so its socket_group setting cannot name
@@ -31,7 +32,7 @@
 # build, which is the user's, in ~/.local).
 set -euo pipefail
 
-IMAGE=${IMAGE:-ghcr.io/vpavlin/shrooms:latest}
+IMAGE=${IMAGE:-ghcr.io/vpavlin/shrooms-agent:latest}
 PORT=7387
 WHISPER_COMMIT=60c0be6ac8fa71b1a2ae2dd938a31a34a508e774
 MODEL=ggml-parakeet-tdt-0.6b-v3-q4_k.bin
@@ -49,7 +50,7 @@ usage: sudo $0 [--user NAME] [--voice] [--image REF] [--uninstall]
 
   --user NAME   whose agents to serve (default: the user running sudo)
   --voice       also build parakeet-cli and fetch its model, for voice notes
-  --image REF   the shrooms image to take shrooms-agent from (default: $IMAGE)
+  --image REF   the image to take shrooms-agent from (default: $IMAGE)
   --uninstall   remove the agent, its service, socket access and firewall rule
 EOF
     exit 1
@@ -148,7 +149,7 @@ echo "==> checking this machine"
 [ -S "$SOCK" ] || { echo "no shrooms daemon here ($SOCK): install shrooms first (scripts/install.sh)"; exit 1; }
 [ -n "$(overlays)" ] || { echo "the shrooms daemon reports no mesh yet: join one first"; exit 1; }
 RUNTIME=$(command -v docker || command -v podman || true)
-[ -n "$RUNTIME" ] || { echo "neither docker nor podman: shrooms-agent comes out of the shrooms image"; exit 1; }
+[ -n "$RUNTIME" ] || { echo "neither docker nor podman: shrooms-agent comes out of an image"; exit 1; }
 echo "  for $USER_NAME, on $(overlays | tr '\n' ' ')"
 
 # --- the binary --------------------------------------------------------------
@@ -161,7 +162,7 @@ cid=$("$RUNTIME" create "$IMAGE")
 trap '"$RUNTIME" rm -f "$cid" >/dev/null 2>&1 || true' EXIT
 tmp=$(mktemp)
 "$RUNTIME" cp "$cid:/usr/bin/shrooms-agent" "$tmp" 2>/dev/null ||
-    { rm -f "$tmp"; echo "this image has no shrooms-agent — an older one; pull a newer image"; exit 1; }
+    { rm -f "$tmp"; echo "$IMAGE has no /usr/bin/shrooms-agent"; exit 1; }
 install -m 0755 "$tmp" /usr/local/bin/shrooms-agent
 rm -f "$tmp"
 command -v restorecon >/dev/null && restorecon /usr/local/bin/shrooms-agent 2>/dev/null || true

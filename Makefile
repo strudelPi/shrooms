@@ -32,7 +32,7 @@ GO ?= go
 VERSION ?= $(shell git describe --tags --match 'v*' --always --dirty 2>/dev/null || echo dev)
 
 .PHONY: all deps deps-basecamp check-lib shrooms wakuspike s3topics m0demo \
-        s1 s3 probe relay relay-image m0 m1 m2 m2-edm m3 m3-remote dist image push-image deps-release install uninstall test-uninstall purge build-all vet-cgo vet-pcsc test test-unit e2e e2e-two-nodes e2e-keycard e2e-keycard-mesh android-deps android-core aar apk fdroid basecamp-check basecamp-lgx basecamp-agents-lgx site-adrs fmt clean
+        s1 s3 probe relay relay-image m0 m1 m2 m2-edm m3 m3-remote dist image push-image agent-image agent-image-ctx push-agent-image deps-release install uninstall test-uninstall purge build-all vet-cgo vet-pcsc test test-unit e2e e2e-two-nodes e2e-keycard e2e-keycard-mesh android-deps android-core aar apk fdroid basecamp-check basecamp-lgx basecamp-agents-lgx site-adrs fmt clean
 
 all: shrooms
 
@@ -106,9 +106,6 @@ TAG   ?= latest
 image: shrooms check-lib
 	@rm -rf docker/build/ctx && mkdir -p docker/build/ctx/lib
 	@cp bin/shrooms docker/build/ctx/
-	@# shrooms-agent rides in the image so scripts/install-agent.sh can take
-	@# it from what a machine already runs: pure Go, static, no library.
-	CGO_ENABLED=0 $(GO) build -trimpath -o docker/build/ctx/shrooms-agent ./cmd/shrooms-agent
 	@cp docker/gateway.sh docker/entrypoint-nat.sh docker/build/ctx/
 	@cp $(LD_LIB)/*.so $(LD_LIB)/*.so.* docker/build/ctx/lib/ 2>/dev/null || true
 	docker build -t $(IMAGE):$(TAG) -f docker/Dockerfile docker/build/ctx
@@ -117,6 +114,26 @@ image: shrooms check-lib
 push-image: image
 	docker push $(IMAGE):$(TAG)
 	@echo "pushed $(IMAGE):$(TAG) — other machines need only 'docker pull'"
+
+## shrooms-agent's own image, amd64 and arm64: what scripts/install-agent.sh
+## copies the agent out of. Separate from the shrooms image so publishing it
+## rolls nothing onto nodes that auto-update shrooms (docker/agent.Dockerfile).
+AGENT_IMAGE ?= ghcr.io/vpavlin/shrooms-agent
+agent-image-ctx:
+	@rm -rf docker/build/agent && mkdir -p docker/build/agent
+	for arch in amd64 arm64; do \
+		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch $(GO) build -trimpath -o docker/build/agent/shrooms-agent-$$arch ./cmd/shrooms-agent || exit 1; \
+	done
+
+## This machine's architecture only, loaded here: for trying install-agent.sh.
+agent-image: agent-image-ctx
+	docker build -t $(AGENT_IMAGE):$(TAG) -f docker/agent.Dockerfile docker/build/agent
+
+push-agent-image: agent-image-ctx
+	docker buildx inspect shrooms-multi >/dev/null 2>&1 || docker buildx create --name shrooms-multi --driver docker-container >/dev/null
+	docker buildx build --builder shrooms-multi --platform linux/amd64,linux/arm64 \
+		-t $(AGENT_IMAGE):$(TAG) -f docker/agent.Dockerfile --push docker/build/agent
+	@echo "pushed $(AGENT_IMAGE):$(TAG) (amd64, arm64)"
 
 ## Fetch a prebuilt liblogosdelivery from this repo's releases, so a machine
 ## without Logos Basecamp can still build.

@@ -813,7 +813,7 @@ curl -fsSLO https://raw.githubusercontent.com/vpavlin/shrooms/master/scripts/ins
 sudo bash install-agent.sh --voice                  # on each machine with coding agents
 ```
 
-It takes the agent from the shrooms image, lets your user read the shrooms
+It takes the agent from its image, lets your user read the shrooms
 socket, opens it to the mesh only, and starts it as a user service;
 `--voice` builds speech-to-text there too. From a checkout, `sudo make install`
 installs it with shrooms.

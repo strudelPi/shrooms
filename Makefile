@@ -106,6 +106,9 @@ TAG   ?= latest
 image: shrooms check-lib
 	@rm -rf docker/build/ctx && mkdir -p docker/build/ctx/lib
 	@cp bin/shrooms docker/build/ctx/
+	@# shrooms-agent rides in the image so scripts/install-agent.sh can take
+	@# it from what a machine already runs: pure Go, static, no library.
+	CGO_ENABLED=0 $(GO) build -trimpath -o docker/build/ctx/shrooms-agent ./cmd/shrooms-agent
 	@cp docker/gateway.sh docker/entrypoint-nat.sh docker/build/ctx/
 	@cp $(LD_LIB)/*.so $(LD_LIB)/*.so.* docker/build/ctx/lib/ 2>/dev/null || true
 	docker build -t $(IMAGE):$(TAG) -f docker/Dockerfile docker/build/ctx

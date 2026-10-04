@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,7 +49,7 @@ func run() error {
 	sttModel := flag.String("stt-model", filepath.Join(home, ".local", "share", "whisper", "ggml-parakeet-tdt-0.6b-v3-q4_k.bin"),
 		"ggml model for voice notes, Parakeet or Whisper (docs/speech-to-text.md); voice notes are off when it is missing")
 	sttBin := flag.String("stt-bin", "", "the CLI that runs it (default: parakeet-cli for a Parakeet model, else whisper-cli)")
-	sttThreads := flag.Int("stt-threads", 12, "threads for transcription")
+	sttThreads := flag.Int("stt-threads", 0, "threads for transcription (default: this machine's cores, up to 12)")
 	piBin := flag.String("pi", "pi", "pi (pi.dev), offered for new sessions when found; \"\" to leave it out")
 	piArgs := flag.String("pi-args", "", "extra arguments for every pi session, e.g. \"--provider ollama --model qwen3\"")
 	flag.Parse()
@@ -111,7 +112,11 @@ func run() error {
 	} else if bin, err := exec.LookPath(sttEngine(*sttBin, *sttModel)); err != nil {
 		log.Info("voice notes off: its CLI was not found", "bin", sttEngine(*sttBin, *sttModel))
 	} else {
-		m.STT = &agent.Transcriber{Bin: bin, Model: *sttModel, FFmpeg: "ffmpeg", FFprobe: "ffprobe", Threads: *sttThreads}
+		threads := *sttThreads
+		if threads <= 0 {
+			threads = min(runtime.NumCPU(), 12)
+		}
+		m.STT = &agent.Transcriber{Bin: bin, Model: *sttModel, FFmpeg: "ffmpeg", FFprobe: "ffprobe", Threads: threads}
 		log.Info("voice notes on", "model", filepath.Base(*sttModel), "bin", bin)
 	}
 

@@ -75,6 +75,35 @@ Item {
         root.said = "copied"
         root.saidBad = false
     }
+    // Bare URLs as links, by the phone's rule (Markdown.kt bareUrl): no
+    // trailing punctuation, nothing inside brackets or quotes.
+    readonly property var bareUrl: /https?:\/\/[^\s<>()\[\]`"']+[^\s<>()\[\]`"'.,;:!?]/g
+    // Markdown with its bare URLs made autolinks (<url>), leaving code — fenced
+    // or inline — and URLs already in a link alone. Qt's markdown does not
+    // link a bare URL by itself.
+    function linkMarkdown(md) {
+        var lines = String(md || "").split("\n"), fenced = false
+        for (var i = 0; i < lines.length; i++) {
+            if (/^\s*(```|~~~)/.test(lines[i])) { fenced = !fenced; continue }
+            if (fenced) continue
+            var parts = lines[i].split("`")
+            for (var j = 0; j < parts.length; j += 2) {
+                parts[j] = parts[j].replace(bareUrl, function(u, at, whole) {
+                    var before = at > 0 ? whole.charAt(at - 1) : ""
+                    return (before === "(" || before === "<" || before === "[") ? u : "<" + u + ">"
+                })
+            }
+            lines[i] = parts.join("`")
+        }
+        return lines.join("\n")
+    }
+    // Plain text — what somebody typed, where a * is just a * — as rich text
+    // with only its URLs made links.
+    function linkPlain(t) {
+        var esc = String(t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        esc = esc.replace(bareUrl, function(u) { return '<a href="' + u.replace(/"/g, "%22") + '" style="color:#5AA9FF">' + u + "</a>" })
+        return '<span style="white-space:pre-wrap">' + esc + "</span>"
+    }
     function openUrl(u) {
         if (!u) return
         if (!Qt.openUrlExternally(u)) { copyText(u); root.said = "could not open " + u + " — copied it instead" }
@@ -771,8 +800,9 @@ Item {
                 TextEdit {
                     width: readingDialog.availableWidth
                     readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap
-                    textFormat: root.reading && root.reading.role !== "user" ? TextEdit.MarkdownText : TextEdit.PlainText
-                    text: root.reading ? root.reading.text : ""
+                    textFormat: root.reading && root.reading.role !== "user" ? TextEdit.MarkdownText : TextEdit.RichText
+                    text: !root.reading ? "" : root.reading.role !== "user" ? root.linkMarkdown(root.reading.text) : root.linkPlain(root.reading.text)
+                    onLinkActivated: function(link) { root.openUrl(link) }
                     color: cBone; font.family: "monospace"; font.pixelSize: root.fs(12)
                 }
             }
@@ -1317,7 +1347,8 @@ Item {
                                     x: root.sz(10); y: root.sz(10); width: parent.width - root.sz(20)
                                     readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap
                                     textFormat: TextEdit.MarkdownText
-                                    text: root.agentStreaming + " ▍"
+                                    text: root.linkMarkdown(root.agentStreaming) + " ▍"
+                                    onLinkActivated: function(link) { root.openUrl(link) }
                                     color: cBone; font.family: "monospace"; font.pixelSize: root.fs(12)
                                 }
                             }
@@ -1392,8 +1423,8 @@ Item {
                                     TextEdit {
                                         width: parent.width
                                         readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap
-                                        textFormat: crow.kind === "said" ? TextEdit.MarkdownText : TextEdit.PlainText
-                                        text: crow.text
+                                        textFormat: crow.kind === "said" ? TextEdit.MarkdownText : TextEdit.RichText
+                                        text: crow.kind === "said" ? root.linkMarkdown(crow.text) : root.linkPlain(crow.text)
                                         color: cBone; selectionColor: Qt.rgba(0.21, 0.94, 0.63, 0.35)
                                         font.family: "monospace"; font.pixelSize: root.fs(12)
                                         onLinkActivated: function(link) { root.openUrl(link) }

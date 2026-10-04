@@ -230,6 +230,10 @@ expect "READING=true TEXT=Earlier: the tests, in a terminal." "a result from bef
 # Row 3: two earlier lines from the transcript, the first message, then it.
 expect "JUMP lit=3 row=3 kind=said searchOpen=false stick=false reach=521,0" "a search result does not jump to its message"
 expect 'QUESTION open=true before=null posted={"allow":true,"answers":{"Which user?":"agent","What else?":"voice, logs"}} after=false [answered: agent; voice, logs from desk]' "a question is not offered, answered or closed"
+expect 'LINKMD=see <https://pi.dev>, or [docs](https://x.io/a) and `curl http://no.pe`' "a bare URL in the model's text is not a link, or code or a link was touched"
+expect '<https://already.io>' "an autolink was wrapped twice"
+if echo "$out" | grep -qF '<http://in.code>' || echo "$out" | grep -qF '<<https://already.io>>'; then echo "FAIL: a URL in a code block or an autolink was made a link again"; exit 1; fi
+expect 'LINKPLAIN=<span style="white-space:pre-wrap">a &lt;b&gt; &amp; <a href="http://vps.office.mesh:8099/x" style="color:#5AA9FF">http://vps.office.mesh:8099/x</a>.</span>' "a bare URL in typed text is not a link, or the text is not escaped"
 expect "FLAKY stayed=laptop:2 now=true later=false forgotten=0" "a machine that misses a round vanishes, or is never greyed or forgotten"
 expect 'STARRED=laptop/shrooms rest=notes sent={"starred":true}' "a starred session is not listed first, or the star not kept on the agent"
 expect 'UNSTARRED=0 sent={"starred":false}' "a session cannot be unstarred"

@@ -188,6 +188,11 @@ Item {
             console.error("QUESTION open=" + (qrow !== null) + " before=" + before + " posted=" + JSON.stringify(posted)
                           + " after=" + qrow.open + " [" + qrow.answer + "]")
 
+            // Bare URLs are links, in the model's markdown and in what was typed;
+            // code and links already written are left alone.
+            console.error("LINKMD=" + view.linkMarkdown("see https://pi.dev, or [docs](https://x.io/a) and `curl http://no.pe`\n```\nhttp://in.code\n```\n<https://already.io>"))
+            console.error("LINKPLAIN=" + view.linkPlain("a <b> & http://vps.office.mesh:8099/x."))
+
             // A machine that misses a round of finding stays, as last seen;
             // greyed once quiet a while; forgotten only after days.
             top.findNone = true

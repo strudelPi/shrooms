@@ -66,10 +66,51 @@ object History {
     fun save(ctx: Context, host: String, session: String, events: List<AgentEvent>, earlier: List<Earlier>) {
         runCatching {
             val f = file(ctx, host, session)
-            val tmp = File(f.path + ".tmp")
+            // Its own temporary file: the watcher and the screen may save the
+            // same conversation at once.
+            val tmp = File.createTempFile(f.name, ".tmp", f.parentFile)
             tmp.writeText(encode(System.currentTimeMillis(), events, earlier))
-            tmp.renameTo(f)
+            if (!tmp.renameTo(f)) tmp.delete()
         }
+    }
+
+    /**
+     * What to fetch to bring a kept copy up to [lastSeq], the session's newest
+     * event: null when it is up to date; otherwise the event to read after,
+     * 0 for the whole tail — nothing kept yet, or the session is not the one
+     * kept (its numbers went backwards: deleted and made again).
+     */
+    fun after(kept: KeptHistory?, lastSeq: Long): Long? {
+        val have = kept?.events?.lastOrNull()?.seq ?: 0L
+        return when {
+            lastSeq <= 0L || have == lastSeq -> null
+            have > lastSeq -> 0L
+            else -> have
+        }
+    }
+
+    /** A kept copy with [more] after it; [after] 0 means [more] is all of it. */
+    fun extend(kept: KeptHistory?, after: Long, more: List<AgentEvent>): List<AgentEvent> =
+        if (after == 0L || kept == null) more else kept.events + more
+
+    /**
+     * Brings the copy of one session up to date from its machine, reading only
+     * what it lacks — so a conversation is there offline without having been
+     * opened first. Called by the watcher in the background.
+     */
+    fun refresh(ctx: Context, client: AgentClient, host: String, session: String, lastSeq: Long) {
+        val kept = load(ctx, host, session)
+        val after = after(kept, lastSeq) ?: return
+        val more = ArrayList<AgentEvent>()
+        var last = after
+        client.follow(session, after, stop = { last >= lastSeq }, tail = EVENTS) { e ->
+            if (e.kind != "partial") { more += e; last = e.seq }
+        }
+        if (more.isEmpty()) return
+        val earlier = if (after == 0L || kept == null) {
+            runCatching { client.history(session, 30) }.getOrDefault(emptyList())
+        } else kept.earlier
+        save(ctx, host, session, extend(kept, after, more), earlier)
     }
 
     fun forget(ctx: Context, host: String, session: String) {

@@ -322,6 +322,9 @@ class AgentClient(address: String) {
                     if (e.seq <= last) continue
                     last = e.seq
                     onEvent(e)
+                    // Asked to stop by what it was just given: without
+                    // waiting for the next line, which may be 20 s away.
+                    if (stop()) break
                 }
             }
         } finally {

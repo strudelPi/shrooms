@@ -126,6 +126,10 @@ class AgentWatcher(private val ctx: Context) {
                     val said = AgentWatch.change(seen[key], s)
                     seen[key] = AgentWatch.Seen(s.state, s.lastSeq, s.turns)
                     if (said != null && AgentWatch.visible != key) notify(h, s, said)
+                    // Kept up to date for offline; the one on screen keeps itself.
+                    if (AgentWatch.visible != key) {
+                        runCatching { History.refresh(ctx, AgentClient(h.address), h.name, s.name, s.lastSeq) }
+                    }
                 }
             }
             delay(AgentWatch.EVERY_MS)

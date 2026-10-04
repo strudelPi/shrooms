@@ -197,7 +197,10 @@ opened (at most a megabyte, streamed text left out), saved while it is on
 screen. Opened while its machine cannot be reached, it shows that copy,
 marked "offline — as it was HH:MM", never as working; the machine's own
 events replace it as soon as it answers. On the phone in the app's files
-(`history/`), with the 30 turns from before the agent had the conversation;
+(`history/`), with the 30 turns from before the agent had the conversation,
+and kept up to date by the background watcher for every session it sees —
+reading only the events the copy lacks — so a conversation is there offline
+without having been opened first;
 in Basecamp by the core in `~/.local/share/shrooms/history`, one file per
 machine address and session — `agentEvents` then says `"kept":MS` and,
 when the live events replace the copy, a new `"epoch"`, on which the view

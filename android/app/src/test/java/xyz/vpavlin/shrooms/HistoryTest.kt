@@ -43,3 +43,24 @@ class HistoryTest {
         assertEquals(null, History.decode("not json"))
     }
 }
+
+class HistoryRefreshTest {
+    private fun ev(seq: Long) = AgentEvent(seq, "message", "", JSONObject().put("text", "m$seq"))
+    private fun kept(vararg seqs: Long) = KeptHistory(1, seqs.map { ev(it) }, emptyList())
+
+    // Only what the copy lacks is read; nothing when it is up to date; the
+    // whole tail when there is none, or when the session was made again.
+    @Test fun readsOnlyWhatIsMissing() {
+        assertEquals(0L, History.after(null, 40))
+        assertEquals(null, History.after(null, 0))
+        assertEquals(null, History.after(kept(9, 10), 10))
+        assertEquals(10L, History.after(kept(9, 10), 14))
+        assertEquals(0L, History.after(kept(9, 10), 3))
+    }
+
+    @Test fun addsToTheCopyOrReplacesIt() {
+        assertEquals(listOf(9L, 10L, 11L), History.extend(kept(9, 10), 10, listOf(ev(11))).map { it.seq })
+        assertEquals(listOf(1L, 2L), History.extend(kept(9, 10), 0, listOf(ev(1), ev(2))).map { it.seq })
+        assertEquals(listOf(5L), History.extend(null, 4, listOf(ev(5))).map { it.seq })
+    }
+}

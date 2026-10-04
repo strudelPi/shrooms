@@ -174,7 +174,11 @@ Running: the laptop, the VPS, atlas and jimmy-crib (2026-10-04). On atlas
 and jimmy-crib it runs as the owner (vpavlin), as on a desktop: they are the
 owner's machines, with Claude Code and pi already logged in there. Both run
 the shrooms daemon in a container, so the socket is reached by ACL as on the
-VPS below. atlas also runs firewalld, whose default zone takes the mesh
+VPS below — with the tmpfiles file's `d /run/shrooms 0750 root root -` line
+first. Without it the ACL is applied only if the directory already exists at
+boot, which it does not: jimmy-crib rebooted, the container made the
+directory without it, and the agent waited for a socket it could not read
+(2026-10-04; its log now says why it waits). atlas also runs firewalld, whose default zone takes the mesh
 interface and dropped port 7387; one rich rule opens it to atlas's own mesh
 address only:
 `rule family=ipv6 destination address=<its overlay>/128 port port=7387 protocol=tcp accept`.

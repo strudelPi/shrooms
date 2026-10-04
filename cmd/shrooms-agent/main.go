@@ -79,7 +79,10 @@ func run() error {
 		} else if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		log.Info("waiting for the shrooms daemon", "socket", *sock)
+		// With why: "permission denied" is a socket this user may not read
+		// (docs/agents.md, On a server), not a daemon still starting — and
+		// the two looked the same in the log after jimmy-crib rebooted.
+		log.Info("waiting for the shrooms daemon", "socket", *sock, "why", err)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

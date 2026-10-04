@@ -541,6 +541,8 @@ a.card::after {
 .card.t2 { border-top: 2px solid var(--blossom); }
 .card.t3 { border-top: 2px solid var(--chartreuse); }
 .card.t4 { border-top: 2px solid var(--violet); }
+.card.t5 { border-top: 2px solid var(--phosphor); }
+.hero > img { display: block; border-radius: 16px; margin-bottom: 18px; }
 
 /* --- callouts ---------------------------------------------------------- */
 

@@ -241,6 +241,7 @@ expect 'STARRED=laptop/shrooms rest=notes sent={"starred":true}' "a starred sess
 expect 'UNSTARRED=0 sent={"starred":false}' "a session cannot be unstarred"
 expect "KEPT seqs=1,2,3 kept=1759500000000 working=false then=1,2,3,4 kept=0 rows=4" "a session's kept copy is not shown while its machine is away, or not replaced once it answers"
 expect "REMADE watch=fdb0:9afc:a5ef:388c:8264:7716:36fc:64eb shrooms -300 rows=0" "a copy of a session since made again is not dropped"
+expect "STOPPED=/v1/sessions/shrooms/interrupt" "stopping the reply does not interrupt the session"
 expect "FORMCLOSED=true" "opening a session leaves the new-session form in front of it"
 expect "HARNESS offered=claude,pi sent=pi auto=false label=[pi][]" "another harness is not offered, or a session of it not asked for"
 expect "STREAMING=[Pushing **now**…] WORKING=true" "the streamed reply is not shown as it grows"

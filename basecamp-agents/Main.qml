@@ -856,6 +856,12 @@ Item {
         if (state === "waiting") t += "\n\nIt is waiting for an answer to a permission prompt, which will be dropped."
         return t
     }
+    // Ends the turn running now, as Esc does in Claude Code's terminal; the
+    // session stays and takes the next message.
+    function stopTurn() {
+        if (!agentOpen) return
+        agentCall("agentPost", [agentOpen.address, "/v1/sessions/" + agentOpen.session + "/interrupt", ""])
+    }
     function askDelete() { deleteDialog.open() }
     function deleteDialogOpen() { return deleteDialog.visible }
     function deleteOpenSession() {
@@ -1333,8 +1339,7 @@ Item {
                         Lnk { text: root.searchOpen ? "close search" : "search"; base: cSky
                               onClicked: { root.searchOpen = !root.searchOpen; if (root.searchOpen) searchField.forceActiveFocus() } }
                         Lnk { text: "delete"; base: cAsh; onClicked: root.askDelete() }
-                        Lnk { visible: root.agentWorking; text: "stop"; base: cRust
-                              onClicked: root.agentCall("agentPost", [root.agentOpen.address, "/v1/sessions/" + root.agentOpen.session + "/interrupt", ""]) }
+                        Lnk { visible: root.agentWorking; text: "■ stop"; base: cRust; onClicked: root.stopTurn() }
                     }
                     Text {
                         text: root.agentOpen ? [root.agentOpen.name, root.agentOpen.mesh,
@@ -1536,11 +1541,15 @@ Item {
                                     color: cBone; font.family: "monospace"; font.pixelSize: root.fs(12)
                                 }
                             }
+                            // Where the eye is while it works: stopping the reply
+                            // is offered here too, not only in the header, where
+                            // a bare "stop" did not say what it stopped.
                             RowLayout {
-                                visible: root.agentStreaming === "" && root.agentWorking
+                                visible: root.agentWorking
                                 spacing: 8
                                 Pulse {}
-                                Text { text: "thinking…"; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                                Text { text: root.agentStreaming === "" ? "thinking…" : "writing…"; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                                Lnk { text: "■ stop"; base: cRust; font.pixelSize: root.fs(10); onClicked: root.stopTurn() }
                             }
                         }
                     }

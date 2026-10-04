@@ -154,6 +154,8 @@ Item {
             for (var i = 0; i < chatCount(); i++) kinds.push(view.chatModelAt(i).kind)
             console.error("ROWS=" + kinds.join(","))
             console.error("WATCH=" + top.lastWatch)
+            view.stopTurn()
+            console.error("STOPPED=" + top.lastPostPath)
             console.error("STREAMING=[" + view.agentStreaming + "] WORKING=" + view.agentWorking
                           + " CONTEXT=" + view.contextLabel(view.agentInfo.context_used, view.agentInfo.context_window)
                           + " MODEL=" + view.shortModel(view.agentInfo.model))

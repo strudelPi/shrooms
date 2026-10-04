@@ -933,6 +933,9 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
             last !is ChatItem.Earlier && last !is ChatItem.Note && last !is ChatItem.Voice &&
             !(last is ChatItem.Prompt && !last.open)))
     val waiting = items.any { it is ChatItem.Prompt && it.open }
+    // Ends the turn running now, as Esc does in Claude Code's terminal; the
+    // session stays and takes the next message.
+    fun stopTurn() { scope.launch(Dispatchers.IO) { runCatching { client.interrupt(o.session) } } }
 
     // Laid out from the bottom, as chats are: the newest message is item 0, so
     // a reader at the bottom stays there as messages arrive and one who has
@@ -1031,9 +1034,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                     }
                 }
                 Spacer(Modifier.weight(1f))
-                if (working) Link("stop", Palette.Rust) {
-                    scope.launch(Dispatchers.IO) { runCatching { client.interrupt(o.session) } }
-                }
+                if (working) Link("■ stop", Palette.Rust) { stopTurn() }
                 Link(if (searching) "close search" else "search", Palette.Sky) { searching = !searching }
                 Link("delete", Palette.Ash) { askDelete = true }
             }
@@ -1103,15 +1104,20 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                 }
                 // Then what is happening now.
                 item(key = "live") {
-                    when {
-                        streaming.isNotEmpty() -> Bubble(Palette.Panel) {
+                    Column {
+                        if (streaming.isNotEmpty()) Bubble(Palette.Panel) {
                             MarkdownText(streaming)
                             Text("▍", color = Palette.Phosphor, style = MaterialTheme.typography.bodyMedium)
                         }
-                        working && !waiting -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(4.dp)) {
-                            Pulse(Palette.Phosphor); Spacer(Modifier.width(8.dp)); Label("thinking…")
-                        }
-                        else -> Spacer(Modifier.height(4.dp))
+                        // Where the eye is while it works: stopping the reply is
+                        // offered here too — a bare "stop" in the header did not
+                        // say what it stopped.
+                        if (working && !waiting) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(4.dp)) {
+                            Pulse(Palette.Phosphor); Spacer(Modifier.width(8.dp))
+                            Label(if (streaming.isEmpty()) "thinking…" else "writing…")
+                            Spacer(Modifier.width(14.dp))
+                            Link("■ stop", Palette.Rust) { stopTurn() }
+                        } else if (streaming.isEmpty()) Spacer(Modifier.height(4.dp))
                     }
                 }
                 // Then newest to oldest. Stable keys: history arriving, or a

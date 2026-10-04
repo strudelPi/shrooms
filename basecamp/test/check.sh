@@ -240,6 +240,7 @@ expect "FLAKY stayed=laptop:2 now=true later=false forgotten=0" "a machine that 
 expect 'STARRED=laptop/shrooms rest=notes sent={"starred":true}' "a starred session is not listed first, or the star not kept on the agent"
 expect 'UNSTARRED=0 sent={"starred":false}' "a session cannot be unstarred"
 expect "KEPT seqs=1,2,3 kept=1759500000000 working=false then=1,2,3,4 kept=0 rows=4" "a session's kept copy is not shown while its machine is away, or not replaced once it answers"
+expect "CARDCLICK found=true deferred=true" "a click on a session card runs its work inside the card, which a refresh can destroy"
 expect "PLACEHOLDER first=[reaching laptop…] then=[no messages yet]" "an empty pane does not say it is loading, or that it is empty"
 expect "REMADE watch=fdb0:9afc:a5ef:388c:8264:7716:36fc:64eb shrooms -300 rows=0" "a copy of a session since made again is not dropped"
 expect "STOPPED=/v1/sessions/shrooms/interrupt" "stopping the reply does not interrupt the session"

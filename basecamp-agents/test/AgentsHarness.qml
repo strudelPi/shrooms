@@ -59,6 +59,14 @@ Item {
     // 1: the core shows the copy kept on disk; 2: the machine's events have
     // replaced it (a new epoch).
     property int keptPhase: 0
+    function findByName(item, name) {
+        if (item.objectName === name) return item
+        for (var i = 0; i < item.children.length; i++) {
+            var f = findByName(item.children[i], name)
+            if (f) return f
+        }
+        return null
+    }
     property var jobsNow: []
 
     Main {
@@ -312,6 +320,15 @@ Item {
             console.error("KEPT seqs=" + keptSeqs + " kept=" + keptAt + " working=" + keptWorking
                           + " then=" + view.agentEventsList.map(function(e) { return e.seq }).join(",")
                           + " kept=" + view.agentKept + " rows=" + chatCount())
+            // A click on a session card only schedules the opening. Run inside
+            // the card, a refresh during the core call (Basecamp spins a nested
+            // event loop for each) destroyed the card mid-handler and Qt
+            // aborted. The abort itself needs that nested loop, which a test
+            // cannot spin; this checks the work is not done in the handler.
+            view.agentOpen = null
+            var card = top.findByName(view, "sessionCardArea")
+            card.clicked(null)
+            console.error("CARDCLICK found=" + (card !== null) + " deferred=" + (view.agentOpen === null))
             // Nothing yet, then caught up with nothing: said, not blank.
             top.keptPhase = 4
             view.openSession(view.agentHosts[0], "shrooms")

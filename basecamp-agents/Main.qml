@@ -1063,7 +1063,11 @@ Item {
                 color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(9); elide: Text.ElideRight
             }
         }
-        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.openSession(srow.host, srow.sess.name) }
+        // Handlers in a list's items only schedule their work (Qt.callLater):
+        // openSession calls the core, each call spins a nested event loop, and
+        // a refresh of the machines in it rebuilt this very card while its
+        // handler ran — Qt aborts the process on that (2026-10-04).
+        MouseArea { objectName: "sessionCardArea"; anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: Qt.callLater(root.openSession, srow.host, srow.sess.name) }
         // Starred: listed first. Faint until it is. Above the row's own area.
         Text {
             anchors.right: parent.right; anchors.top: parent.top; anchors.margins: root.sz(6)
@@ -1071,7 +1075,7 @@ Item {
             text: "🍄"; font.pixelSize: root.fs(13)
             opacity: srow.sess.starred ? 1 : (starMouse.containsMouse ? 0.6 : 0.25)
             MouseArea { id: starMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onClicked: root.setStarred(srow.host, srow.sess.name, !srow.sess.starred) }
+                        onClicked: Qt.callLater(root.setStarred, srow.host, srow.sess.name, !srow.sess.starred) }
         }
     }
 
@@ -1310,7 +1314,7 @@ Item {
                                 id: convMouse
                                 anchors.fill: parent; hoverEnabled: true
                                 cursorShape: conv.taken ? Qt.ArrowCursor : Qt.PointingHandCursor
-                                onClicked: if (!conv.taken) root.takeOver(newSession.host, conv.modelData)
+                                onClicked: if (!conv.taken) Qt.callLater(root.takeOver, newSession.host, conv.modelData)
                             }
                             Column {
                                 id: convCol
@@ -1336,7 +1340,7 @@ Item {
                                         Text { text: "open in a terminal: " + (term.modelData.tmux ? "tmux " + term.modelData.tmux : "pid " + term.modelData.pid)
                                                color: cAmber; font.family: "monospace"; font.pixelSize: root.fs(10) }
                                         Lnk { text: "stop it"; base: cRust; font.pixelSize: root.fs(10)
-                                              onClicked: root.stopTerminal(newSession.host, term.modelData.pid) }
+                                              onClicked: Qt.callLater(root.stopTerminal, newSession.host, term.modelData.pid) }
                                     }
                                 }
                             }
@@ -1454,7 +1458,7 @@ Item {
                                 }
                             }
                             MouseArea { id: frowMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                        onClicked: root.openFound(frow.modelData) }
+                                        onClicked: Qt.callLater(root.openFound, frow.modelData) }
                         }
                     }
                 }
@@ -1526,7 +1530,7 @@ Item {
                             font.pixelSize: root.fs(10)
                             onClicked: {
                                 var h = { address: root.agentOpen.address, name: root.agentOpen.name, mesh: root.agentOpen.mesh }
-                                root.openSession(h, root.agentOpen.session, 0)
+                                Qt.callLater(root.openSession, h, root.agentOpen.session, 0)
                             }
                         }
                     }
@@ -1559,7 +1563,7 @@ Item {
                                             Pulse { tint: cAsh }
                                             Text { Layout.fillWidth: true; elide: Text.ElideRight; text: root.queuedLabel(qrow.modelData)
                                                    color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(9); font.letterSpacing: 1 }
-                                            Lnk { text: "cancel"; base: cRust; font.pixelSize: root.fs(9); onClicked: root.cancelQueued(qrow.modelData.id) }
+                                            Lnk { text: "cancel"; base: cRust; font.pixelSize: root.fs(9); onClicked: Qt.callLater(root.cancelQueued, qrow.modelData.id) }
                                         }
                                         Text { width: parent.width; wrapMode: Text.Wrap
                                                text: qrow.modelData.kind === "voice" ? "🎤 voice note" : qrow.modelData.text
@@ -1654,7 +1658,7 @@ Item {
                                             font.family: "monospace"; font.pixelSize: root.fs(9); font.letterSpacing: 1
                                             Layout.fillWidth: true
                                         }
-                                        Lnk { text: "copy"; base: cAsh; font.pixelSize: root.fs(9); onClicked: root.copyText(crow.text) }
+                                        Lnk { text: "copy"; base: cAsh; font.pixelSize: root.fs(9); onClicked: Qt.callLater(root.copyText, crow.text) }
                                     }
                                     TextEdit {
                                         width: parent.width
@@ -1734,8 +1738,8 @@ Item {
                                     RowLayout {
                                         visible: crow.open
                                         spacing: root.sz(16)
-                                        Lnk { text: "ALLOW"; font.pixelSize: root.fs(12); onClicked: root.answerPrompt(crow.pid, true) }
-                                        Lnk { text: "DENY"; base: cRust; font.pixelSize: root.fs(12); onClicked: root.answerPrompt(crow.pid, false) }
+                                        Lnk { text: "ALLOW"; font.pixelSize: root.fs(12); onClicked: Qt.callLater(root.answerPrompt, crow.pid, true) }
+                                        Lnk { text: "DENY"; base: cRust; font.pixelSize: root.fs(12); onClicked: Qt.callLater(root.answerPrompt, crow.pid, false) }
                                     }
                                     Text { visible: !crow.open; text: crow.answer; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
                                 }
@@ -1819,7 +1823,7 @@ Item {
                                         Lnk { readonly property bool ready: root.questionAnswers(crow.pid, qcard.questions) !== null
                                               text: "ANSWER"; base: ready ? cSky : cAsh; font.pixelSize: root.fs(12)
                                               onClicked: if (ready) root.answerQuestion(crow.pid, qcard.questions) }
-                                        Lnk { text: "DECLINE"; base: cRust; font.pixelSize: root.fs(12); onClicked: root.answerPrompt(crow.pid, false) }
+                                        Lnk { text: "DECLINE"; base: cRust; font.pixelSize: root.fs(12); onClicked: Qt.callLater(root.answerPrompt, crow.pid, false) }
                                     }
                                     Text { visible: !crow.open; width: parent.width; wrapMode: Text.Wrap; text: crow.answer; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
                                 }
@@ -1844,7 +1848,7 @@ Item {
                                     color: cRust; font.family: "monospace"; font.pixelSize: root.fs(11)
                                 }
                                 Lnk { visible: crow.error; text: "transcribe again"; base: cSky; font.pixelSize: root.fs(10)
-                                      onClicked: root.retryVoice(crow.pid) }
+                                      onClicked: Qt.callLater(root.retryVoice, crow.pid) }
                             }
 
                             Text {

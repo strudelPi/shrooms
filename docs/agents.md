@@ -193,23 +193,33 @@ fails does not hold up what came after it; transcribed again later, it goes
 then.
 
 **A conversation is kept on the device**: the newest 300 events of each one
-opened (at most a megabyte, streamed text left out), saved while it is on
-screen. Opened while its machine cannot be reached, it shows that copy,
-marked "offline — as it was HH:MM", never as working; the machine's own
-events replace it once their replay has caught up with it — reached its
-newest event, or paused (the backlog comes at once, so a pause is its end) —
-in one go. Replaced as soon as the stream opened, the conversation was
-rebuilt from its oldest end as the replay trickled in over the mesh, which
-scrolled on every switch. A conversation with no copy is gathered the same
-way before it is shown. On the phone in the app's files
+(at most a megabyte; streamed text left out, and any string over 4 KB —
+nearly always a tool's output, shown folded anyway — cut). A conversation
+opens on its copy at once, marked "offline — as it was HH:MM" until the
+machine answers and never shown as working, and only the events after the
+copy's last are asked for — usually none or a few. Opening by replaying the
+last 300 instead, tool output and all, took tens of seconds over the mesh,
+and the conversation was rebuilt under the reader as it came: the scrolling
+on every switch. With no copy, the replay is gathered and shown once it
+reaches the session's newest event as listed. A session whose numbers are
+below its copy's was deleted and made again: the copy is dropped and it is
+opened without one. On the phone the copies are in the app's files
 (`history/`), with the 30 turns from before the agent had the conversation,
-and kept up to date by the background watcher for every session it sees —
-reading only the events the copy lacks — so a conversation is there offline
-without having been opened first;
-in Basecamp by the core in `~/.local/share/shrooms/history`, one file per
-machine address and session — `agentEvents` then says `"kept":MS` and,
-when the live events replace the copy, a new `"epoch"`, on which the view
-drops what it shows and reads again. Deleting a session deletes its copy.
+and kept up to date by the background watcher for every session it sees,
+reading only what a copy lacks, so a conversation is there offline without
+having been opened first; in Basecamp the core keeps them in
+`~/.local/share/shrooms/history`, one file per machine address and session,
+saved while a conversation is open (`agentEvents` says `"kept":MS` while the
+copy is unconfirmed; a negative tail to `agentWatch` opens without it).
+The turns from the transcript ("earlier") are shown only above a session's
+own first event: above a later one they repeated, out of place, turns the
+agent also has.
+Deleting a session deletes its copy.
+
+**Unread replies** show as a count on each session in both apps: the
+session's turns (one per reply, counted by the agent) less those there were
+when it was last open on that device with the app in front. Each device
+keeps its own; a session seen for the first time starts read.
 
 Search (both apps) finds words anywhere in a conversation, on the agent's
 machine, so it covers what the app has not loaded and what was said in a

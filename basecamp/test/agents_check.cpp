@@ -124,8 +124,10 @@ int main(int argc, char** argv)
         CHECK(ordered && last > 0, "events skipped or repeated, %lld..%lld", first, last);
         CHECK(overs == 0, "%lld replies over the size with more than one event in them", overs);
 
-        // Opened at its tail: the last five, nothing before.
-        hub.watch(addr, session, 5);
+        // Opened at its tail: the last five, nothing before (no copy kept of
+        // it yet — with one, it opens at the copy).
+        Hub::forgetHistory(addr, session);
+        hub.watch(addr, session, -5);
         std::string t;
         for (int i = 0; i < 50; i++) {
             t = hub.events(0);
@@ -171,23 +173,33 @@ int main(int argc, char** argv)
         r = hub.events(0);
         CHECK(r.find("{\"seq\":") == std::string::npos, "kept shown for the whole history");
 
-        // Kept, then replaced: a new epoch, and the machine's events from next.
+        // Kept, then continued: the copy first, then only what came after it
+        // — every event once, in order, from the copy's first.
         std::rename(away.c_str(), kept.c_str());
         hub.watch(addr, session, 5);
         r = hub.events(0);
-        long long keptNext = std::atoll(r.c_str() + 8);
-        size_t e = r.find("\"epoch\":");
-        long long epoch0 = e == std::string::npos ? -1 : std::atoll(r.c_str() + e + 8);
-        CHECK(r.find("\"kept\":0") == std::string::npos && keptNext > 0, "not shown kept first: %s", r.substr(0, 160).c_str());
+        size_t p0 = r.find("{\"seq\":");
+        long long keptFirst = p0 == std::string::npos ? -1 : std::atoll(r.c_str() + p0 + 7);
+        CHECK(r.find("\"kept\":0") == std::string::npos && keptFirst > 0, "not shown kept first: %s", r.substr(0, 160).c_str());
         for (int i = 0; i < 50; i++) {
-            r = hub.events(keptNext);
-            if (r.find("\"kept\":0") != std::string::npos && r.find("{\"seq\":") != std::string::npos) break;
+            r = hub.events(0);
+            if (r.find("\"kept\":0") != std::string::npos) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        e = r.find("\"epoch\":");
-        long long epoch1 = e == std::string::npos ? -1 : std::atoll(r.c_str() + e + 8);
-        CHECK(r.find("\"kept\":0") != std::string::npos && epoch1 == epoch0 + 1 && r.find("{\"seq\":") != std::string::npos,
-              "not replaced: epoch %lld -> %lld, %s", epoch0, epoch1, r.substr(0, 160).c_str());
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        r = hub.events(0);
+        long long prev = 0, n = 0, firstSeen = 0;
+        bool once = true;
+        for (size_t q = r.find("{\"seq\":"); q != std::string::npos; q = r.find("{\"seq\":", q + 1)) {
+            long long sq = std::atoll(r.c_str() + q + 7);
+            if (firstSeen == 0) firstSeen = sq;
+            if (prev && sq != prev + 1) once = false;
+            prev = sq;
+            n++;
+        }
+        CHECK(r.find("\"kept\":0") != std::string::npos && firstSeen == keptFirst && once && n >= 5,
+              "not continued from the copy: first %lld (copy %lld), %lld events, in order %d: %s",
+              firstSeen, keptFirst, n, once, r.substr(0, 160).c_str());
 
         Hub::forgetHistory(addr, session);
         CHECK(std::fopen(kept.c_str(), "r") == nullptr, "forgotten, still there");

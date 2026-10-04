@@ -419,6 +419,9 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
             val (starred, rest) = starredFirst(hs.orEmpty())
             // Read on each round's recomposition: what has gone quiet greys.
             val now = System.currentTimeMillis()
+            // Replies not yet seen here, redrawn as sessions are read.
+            val unreadTick by Unread.changed.collectAsState()
+            fun unread(h: AgentHost, sess: AgentSession) = unreadTick.let { Unread.of(ctx, h.name, sess) }
             fun star(h: AgentHost, sess: AgentSession) {
                 hosts = withStar(hosts.orEmpty(), h.name, sess.name, !sess.starred)
                 scope.launch {
@@ -433,7 +436,7 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
                             modifier = Modifier.padding(top = 14.dp))
                     }
                     itemsIndexed(starred, key = { _, p -> "s-" + p.first.name + "/" + p.second.name }) { _, (h, sess) ->
-                        SessionRow(sess, where = h.name, reachable = HostCache.reachable(h, now), onStar = { star(h, sess) }, onLongPress = { deleting = h to sess }) {
+                        SessionRow(sess, where = h.name, reachable = HostCache.reachable(h, now), unread = unread(h, sess), onStar = { star(h, sess) }, onLongPress = { deleting = h to sess }) {
                             open = OpenSession(h.address, h.name, h.mesh, sess.name)
                         }
                     }
@@ -461,7 +464,7 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
                         item(key = "e-" + h.name) { Label(if (all.isEmpty()) "no sessions yet" else "all starred") }
                     }
                     itemsIndexed(h.sessions, key = { _, s -> h.name + "/" + s.name }) { _, s ->
-                        SessionRow(s, reachable = up, onStar = { star(h, s) }, onLongPress = { deleting = h to s }) {
+                        SessionRow(s, reachable = up, unread = unread(h, s), onStar = { star(h, s) }, onLongPress = { deleting = h to s }) {
                             open = OpenSession(h.address, h.name, h.mesh, s.name)
                         }
                     }
@@ -474,7 +477,7 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
 
 @Composable
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-private fun SessionRow(s: AgentSession, where: String = "", reachable: Boolean = true, onStar: () -> Unit, onLongPress: () -> Unit, onOpen: () -> Unit) {
+private fun SessionRow(s: AgentSession, where: String = "", reachable: Boolean = true, unread: Int = 0, onStar: () -> Unit, onLongPress: () -> Unit, onOpen: () -> Unit) {
     val (badge, colour) = when {
         !reachable -> "unreachable" to Palette.Ash
         else -> when (s.state) {
@@ -502,6 +505,12 @@ private fun SessionRow(s: AgentSession, where: String = "", reachable: Boolean =
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(s.name, style = MaterialTheme.typography.titleMedium, color = Palette.Bone,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+            if (unread > 0) {
+                Spacer(Modifier.width(8.dp))
+                Text(if (unread > 99) "99+" else unread.toString(), style = MaterialTheme.typography.labelSmall,
+                    color = Palette.Void,
+                    modifier = Modifier.background(Palette.Bone, RoundedCornerShape(50)).padding(horizontal = 7.dp, vertical = 1.dp))
+            }
             if (where.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))
                 Text(where, style = MaterialTheme.typography.labelSmall, color = Palette.Ash, maxLines = 1)
@@ -772,10 +781,19 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(o, lifecycle) {
         val key = "${o.address}/${o.session}"
+        // Leaving it — back to the list, or the app to the background — reads
+        // what was on screen: a reply that came since the last look at the
+        // session's figures would otherwise count as unread.
+        fun readNow() {
+            kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                runCatching { client.sessions() }.getOrNull()?.firstOrNull { it.name == o.session }
+                    ?.let { Unread.seen(ctx, o.host, o.session, it.turns) }
+            }
+        }
         val obs = LifecycleEventObserver { _, e ->
             when (e) {
                 Lifecycle.Event.ON_RESUME -> AgentWatch.visible = key
-                Lifecycle.Event.ON_PAUSE -> if (AgentWatch.visible == key) AgentWatch.visible = null
+                Lifecycle.Event.ON_PAUSE -> if (AgentWatch.visible == key) { AgentWatch.visible = null; readNow() }
                 else -> {}
             }
         }
@@ -783,7 +801,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) AgentWatch.visible = key
         onDispose {
             lifecycle.removeObserver(obs)
-            if (AgentWatch.visible == key) AgentWatch.visible = null
+            if (AgentWatch.visible == key) { AgentWatch.visible = null; readNow() }
         }
     }
 
@@ -809,7 +827,11 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     LaunchedEffect(o) {
         while (isActive) {
             withContext(Dispatchers.IO) { runCatching { client.sessions() } }.getOrNull()
-                ?.firstOrNull { it.name == o.session }?.let { info = it }
+                ?.firstOrNull { it.name == o.session }?.let {
+                    info = it
+                    // Read: on screen, with the app in front.
+                    if (AgentWatch.visible == "${o.address}/${o.session}") Unread.seen(ctx, o.host, o.session, it.turns)
+                }
             delay(10_000)
         }
     }
@@ -820,37 +842,50 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     // It opens at the last SESSION_TAIL events, and what arrives is applied in
     // batches: a long session replayed one event and one re-render at a time
     // scrolled through its own history for ten seconds before settling.
-    LaunchedEffect(o, tail) {
+    // Made again since its copy was kept: start over without the copy.
+    var copyStale by remember(o) { mutableStateOf(0) }
+    LaunchedEffect(o, tail, copyStale) {
         events.clear()
         streaming = ""
-        // Shown until the machine answers: the end of the conversation as it
-        // was last seen here.
+        // The end of the conversation as it was last seen here, at once; then
+        // only what came after it is asked for — usually nothing or a few
+        // events. Replaying the last SESSION_TAIL instead, tool output and
+        // all, took tens of seconds over the mesh, and the list was rebuilt
+        // under the reader as it trickled in.
         var keptLast = 0L
-        if (tail == SESSION_TAIL) withContext(Dispatchers.IO) { History.load(ctx, o.host, o.session) }?.let { h ->
-            if (events.isEmpty() && h.events.isNotEmpty()) {
+        if (tail == SESSION_TAIL && copyStale == 0) withContext(Dispatchers.IO) { History.load(ctx, o.host, o.session) }?.let { h ->
+            if (h.events.isNotEmpty()) {
                 events.addAll(h.events)
                 if (earlier.isEmpty()) earlier = h.earlier
                 keptAt = h.saved
                 keptLast = h.events.last().seq
             }
         }
-        val after = java.util.concurrent.atomic.AtomicLong(0)
+        val after = java.util.concurrent.atomic.AtomicLong(keptLast)
+        val answered = java.util.concurrent.atomic.AtomicBoolean(false)
         val pending = java.util.concurrent.ConcurrentLinkedQueue<AgentEvent>()
-        // The opening replay is gathered and shown in one go once it has
-        // caught up: shown as it trickled in over the mesh, the list was
-        // rebuilt from its oldest end, scrolling, on every switch.
+        // Without a copy, the opening replay is gathered and shown in one go
+        // once it reaches the session's newest event.
         val replay = ArrayList<AgentEvent>()
-        var replaying = true
+        var replaying = keptLast == 0L
         var quiet = 0
         launch {
             while (isActive) {
+                // The machine answered: what is shown is its own from here.
+                if (answered.get() && keptAt != 0L) keptAt = 0
+                val i = info
+                // Its numbers went back: deleted and made again. The copy is
+                // of something else.
+                if (keptLast > 0 && i != null && i.lastSeq in 1 until keptLast) {
+                    withContext(Dispatchers.IO) { History.forget(ctx, o.host, o.session) }
+                    copyStale++
+                    return@launch
+                }
                 if (replaying) {
                     if (pending.isEmpty() && replay.isNotEmpty()) quiet++
-                    if (AgentChat.replayCaughtUp(replay.lastOrNull()?.seq, keptLast, quiet)) {
-                        events.clear()
+                    if (AgentChat.replayCaughtUp(replay.lastOrNull()?.seq, i?.lastSeq ?: 0, quiet)) {
                         events.addAll(replay)
                         replay.clear()
-                        keptAt = 0
                         replaying = false
                     }
                 }
@@ -878,7 +913,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
             val r = withContext(Dispatchers.IO) {
                 runCatching {
                     client.follow(o.session, after.get(), stop = { !isActive },
-                        tail = tail) { e ->
+                        tail = tail, onOpen = { answered.set(true) }) { e ->
                         if (e.kind != "partial") after.set(e.seq)
                         pending += e
                     }
@@ -943,7 +978,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     if (askDelete) {
         DeleteSessionDialog(o.host, o.address,
             i ?: AgentSession(o.session, "", "idle", 0, false, 0),
-            onDismiss = { askDelete = false }, onDeleted = { askDelete = false; History.forget(ctx, o.host, o.session); onBack() })
+            onDismiss = { askDelete = false }, onDeleted = { askDelete = false; History.forget(ctx, o.host, o.session); Unread.forget(ctx, o.host, o.session); onBack() })
     }
     reading?.let { f ->
         androidx.compose.material3.AlertDialog(

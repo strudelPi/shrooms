@@ -18,6 +18,20 @@ object History {
     const val EVENTS = SESSION_TAIL
     /** …and at most this much of them: a tool's output can be megabytes. */
     const val BYTES = 1 shl 20
+    /**
+     * Strings longer than this — a tool's output, nearly always, folded to its
+     * first line when shown — are kept cut: whole, a few of them filled the
+     * megabyte and a busy session's copy held 66 events.
+     */
+    const val STRING = 4096
+
+    /** [v] with every string in it cut to [STRING]; a copy, [v] untouched. */
+    fun trimmed(v: Any?): Any? = when (v) {
+        is String -> if (v.length > STRING) v.take(STRING) + "…" else v
+        is JSONObject -> JSONObject().also { o -> v.keys().forEach { k -> o.put(k, trimmed(v.opt(k))) } }
+        is JSONArray -> JSONArray().also { a -> for (i in 0 until v.length()) a.put(trimmed(v.opt(i))) }
+        else -> v
+    }
 
     /**
      * The newest of [events] that fit in [EVENTS] and [BYTES], oldest first.
@@ -28,7 +42,7 @@ object History {
         var size = 0
         for (e in events.asReversed()) {
             if (e.kind == "partial") continue
-            val o = JSONObject().put("seq", e.seq).put("kind", e.kind).put("by", e.by).put("data", e.data)
+            val o = JSONObject().put("seq", e.seq).put("kind", e.kind).put("by", e.by).put("data", trimmed(e.data))
                 .put("time", if (e.time > 0) java.time.Instant.ofEpochMilli(e.time).toString() else "")
             val n = o.toString().length
             if (kept.size >= EVENTS || size + n > BYTES) break

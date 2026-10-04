@@ -59,6 +59,9 @@ android {
             initWith(getByName("release"))
             applicationIdSuffix = ".agents"
             signingConfig = signingConfigs.findByName("agents")
+            // -Pdebuggable=true: a copy to inspect in an emulator (run-as,
+            // its prefs). Never published.
+            isDebuggable = project.findProperty("debuggable") == "true"
             matchingFallbacks += "release"
         }
     }

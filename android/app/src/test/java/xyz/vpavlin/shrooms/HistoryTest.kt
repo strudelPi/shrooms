@@ -19,7 +19,9 @@ class HistoryTest {
         assertEquals(events[2].time, h.events[1].time)
         assertEquals("phone", h.events[1].by)
         assertEquals(earlier, h.earlier)
-        // What is shown from it is what the live events would show.
+        // What is shown from it is what the live events would show; and the
+        // transcript's turns only above the session's first event.
+        assertEquals(0, AgentChat.items(listOf(ev(40)), earlier).count { it is ChatItem.Earlier })
         assertEquals(AgentChat.items(listOf(events[0], events[2]), earlier), AgentChat.items(h.events, h.earlier))
     }
 
@@ -30,13 +32,26 @@ class HistoryTest {
         assertEquals(1000L - History.EVENTS + 1, h.events.first().seq)
     }
 
-    @Test fun aHugeOutputDoesNotMakeAHugeFile() {
+    // A tool's output is kept cut, so a busy session's copy still holds its
+    // last events rather than the three that fit whole.
+    @Test fun aHugeOutputIsKeptCut() {
         val big = "x".repeat(History.BYTES / 3)
-        val json = History.encode(0, (1L..10L).map { ev(it, text = big) }, emptyList())
-        assertTrue(json.length < History.BYTES + 4096)
+        val events = (1L..10L).map { e ->
+            AgentEvent(e, "claude", "", JSONObject().put("type", "user").put("message", JSONObject()
+                .put("content", org.json.JSONArray().put(JSONObject().put("type", "tool_result").put("content", big)))))
+        }
+        val json = History.encode(0, events, emptyList())
+        assertTrue(json.length < History.BYTES)
         val h = History.decode(json)!!
-        assertEquals(2, h.events.size)
-        assertEquals(10L, h.events.last().seq)
+        assertEquals(10, h.events.size)
+        val kept = h.events[0].data.getJSONObject("message").getJSONArray("content").getJSONObject(0).getString("content")
+        assertEquals(History.STRING + 1, kept.length)
+        assertEquals(big.length, events[0].data.getJSONObject("message").getJSONArray("content").getJSONObject(0).getString("content").length)
+    }
+
+    @Test fun theMegabyteStillHolds() {
+        val json = History.encode(0, (1L..1000L).map { ev(it, text = "y".repeat(History.STRING)) }, emptyList())
+        assertTrue(json.length <= History.BYTES + 100)
     }
 
     @Test fun somethingUnreadableIsNothing() {
@@ -66,14 +81,16 @@ class HistoryRefreshTest {
 }
 
 class ReplayTest {
-    // The opening replay is shown in one go: not while it is still arriving.
+    // A conversation with no copy is shown once its replay has reached the
+    // session's newest event — not at the first pause, which over the mesh
+    // comes mid-replay.
     @Test fun shownOnceCaughtUp() {
-        assertEquals(false, AgentChat.replayCaughtUp(null, 0, 5))           // nothing yet
-        assertEquals(false, AgentChat.replayCaughtUp(700, 1000, 0))         // still short of the copy
-        assertEquals(false, AgentChat.replayCaughtUp(700, 1000, 1))
-        assertEquals(true, AgentChat.replayCaughtUp(1000, 1000, 0))         // reached the copy
-        assertEquals(false, AgentChat.replayCaughtUp(40, 0, 1))             // no copy: until it pauses
-        assertEquals(true, AgentChat.replayCaughtUp(40, 0, 2))
-        assertEquals(true, AgentChat.replayCaughtUp(40, 1000, 2))           // made again: lower numbers
+        assertEquals(false, AgentChat.replayCaughtUp(null, 0, 500))        // nothing yet
+        assertEquals(false, AgentChat.replayCaughtUp(700, 1000, 0))
+        assertEquals(false, AgentChat.replayCaughtUp(700, 1000, 5))        // a pause mid-replay
+        assertEquals(true, AgentChat.replayCaughtUp(1000, 1000, 0))
+        assertEquals(true, AgentChat.replayCaughtUp(1003, 1000, 0))
+        assertEquals(false, AgentChat.replayCaughtUp(40, 0, 10))           // target unknown: wait
+        assertEquals(true, AgentChat.replayCaughtUp(40, 0, 80))            // …but not for ever
     }
 }

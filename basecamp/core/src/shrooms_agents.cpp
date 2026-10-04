@@ -11,7 +11,6 @@
 #include <cstring>
 #include <fcntl.h>
 #include <netinet/in.h>
-#include <poll.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/stat.h>
@@ -343,8 +342,16 @@ void Hub::stopFollower()
 void Hub::watch(const std::string& address, const std::string& session, int tail)
 {
     stopFollower();
-    // What was kept of it, shown until the machine answers. Only when opening
-    // at the end, which is what was kept.
+    // What was kept of it, shown at once; then only what came after it is
+    // asked for — usually nothing or a few events. Replaying the last `tail`
+    // instead, tool output and all, took tens of seconds over the mesh, and
+    // the conversation was rebuilt under the reader as it came. Only when
+    // opening at the end, which is what was kept; a negative tail opens at
+    // the end without the copy (it is of a session since made again).
+    if (tail < 0) {
+        tail = -tail;
+        forgetHistory(address, session);
+    }
     long long kept = 0;
     std::vector<std::string> keptEvents;
     if (tail > 0) {
@@ -357,6 +364,7 @@ void Hub::watch(const std::string& address, const std::string& session, int tail
             }
         }
     }
+    long long from = 0;
     {
         std::lock_guard<std::mutex> g(mu_);
         base_ += static_cast<long long>(events_.size());
@@ -365,20 +373,19 @@ void Hub::watch(const std::string& address, const std::string& session, int tail
         error_.clear();
         kept_ = 0;
         keptLast_ = 0;
-        replay_.clear();
         if (kept > 0 && !keptEvents.empty()) {
             keptLast_ = seqOf(keptEvents.back());
             events_ = std::move(keptEvents);
             kept_ = kept;
         }
+        from = keptLast_;
     }
     unsigned gen = generation_.load();
-    follower_ = std::thread(&Hub::follow, this, address, session, tail, gen);
+    follower_ = std::thread(&Hub::follow, this, address, session, tail, from, gen);
 }
 
-void Hub::follow(std::string address, std::string session, int tail, unsigned generation)
+void Hub::follow(std::string address, std::string session, int tail, long long after, unsigned generation)
 {
-    long long after = 0;
     bool dirty = false;
     // The first events are kept at once; after that, at most every 5 seconds.
     std::chrono::steady_clock::time_point lastSave{};
@@ -412,6 +419,8 @@ void Hub::follow(std::string address, std::string session, int tail, unsigned ge
                         std::lock_guard<std::mutex> g(mu_);
                         connected_ = true;
                         error_.clear();
+                        // The machine answered: what follows is its own.
+                        kept_ = 0;
                     }
                     // Lines of the stream. Chunk framing, when present, sits on
                     // lines of its own and is skipped as not being data.
@@ -429,15 +438,6 @@ void Hub::follow(std::string address, std::string session, int tail, unsigned ge
                             after = s;
                         }
                         std::lock_guard<std::mutex> g(mu_);
-                        // The kept copy stays until the replay has caught up
-                        // with it, then is replaced in one go: replaced as soon
-                        // as the stream opened, the view rebuilt the
-                        // conversation as the replay trickled in.
-                        if (kept_ != 0) {
-                            replay_.push_back(ev);
-                            if (!partial && seqOf(ev) >= keptLast_) replaceKept();
-                            continue;
-                        }
                         events_.push_back(ev);
                         if (events_.size() > kKeepEvents) {
                             size_t drop = events_.size() - kKeepEvents;
@@ -445,21 +445,6 @@ void Hub::follow(std::string address, std::string session, int tail, unsigned ge
                             base_ += static_cast<long long>(drop);
                         }
                         if (!partial) dirty = true;
-                    }
-                    // Or once the replay pauses: the backlog is sent at once, so
-                    // a pause is its end (a session made again since it was
-                    // kept never reaches the kept copy's numbers).
-                    bool gathering = false;
-                    if (inBody) {
-                        std::lock_guard<std::mutex> g(mu_);
-                        gathering = kept_ != 0 && !replay_.empty();
-                    }
-                    if (gathering) {
-                        pollfd p{fd, POLLIN, 0};
-                        if (::poll(&p, 1, 250) == 0) {
-                            std::lock_guard<std::mutex> g(mu_);
-                            if (kept_ != 0) replaceKept();
-                        }
                     }
                     if (dirty && std::chrono::steady_clock::now() - lastSave > std::chrono::seconds(5)) {
                         saveHistory(address, session);
@@ -485,18 +470,6 @@ void Hub::follow(std::string address, std::string session, int tail, unsigned ge
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
-}
-
-// The live replay replaces the kept copy: a new epoch, read again from next.
-// Called with mu_ held.
-void Hub::replaceKept()
-{
-    base_ += static_cast<long long>(events_.size());
-    events_ = std::move(replay_);
-    replay_.clear();
-    kept_ = 0;
-    keptLast_ = 0;
-    epoch_++;
 }
 
 void Hub::forgetHistory(const std::string& address, const std::string& session)

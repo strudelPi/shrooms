@@ -135,6 +135,10 @@ Item {
             if (Array.isArray(kept) && root.agentHosts.length === 0)
                 root.agentHosts = kept.filter(function(h) { return h && h.name && h.address && Array.isArray(h.sessions) })
         } catch (e) {}
+        try {
+            var rd = JSON.parse(String(callCore("getPref", ["agent_read"]) || "{}"))
+            if (rd && typeof rd === "object" && !Array.isArray(rd)) root.readTurns = rd
+        } catch (e) {}
         var n = parseFloat(String(callCore("getPref", ["ui_nudge"]) || ""))
         if (!isNaN(n)) root.uiNudge = Math.max(-0.4, Math.min(1.0, n))
     }
@@ -251,6 +255,7 @@ Item {
         var now = Date.now()
         root.nowMs = now
         root.agentHosts = mergeHosts(agentHosts, hosts, now)
+        noteRead()
         // Kept for the next start, now and then rather than every round.
         if (now - lastHostsSave > 30000) {
             lastHostsSave = now
@@ -283,6 +288,42 @@ Item {
     }
     function hostReachable(h, now) { return (now === undefined ? nowMs : now) - (h.lastSeen || 0) < staleMs }
 
+    // Replies not yet seen in this Basecamp, per session (the phone's Unread):
+    // the session's turns — one per reply, counted by the agent — less those
+    // there were when it was last open here with the window in front.
+    // host/session -> turns read; kept in the core's prefs.
+    property var readTurns: ({})
+    function readKey(h, s) { return h.name + "/" + s }
+    function unreadOf(h, sess) {
+        var t = sess.turns, r = readTurns[readKey(h, sess.name)]
+        if (t === undefined || t < 0 || r === undefined || t < r) return 0
+        return t - r
+    }
+    // What is read now: a session seen for the first time (its past is not
+    // news), one whose count went down (made again), and the open one while
+    // the window is in front. Pure, for the test.
+    function nextRead(read, hosts, open, active) {
+        var out = {}, changed = false
+        for (var k in read) out[k] = read[k]
+        for (var i = 0; i < hosts.length; i++) {
+            var ss = hosts[i].sessions || []
+            for (var j = 0; j < ss.length; j++) {
+                var t = ss[j].turns
+                if (t === undefined || t < 0) continue
+                var key = readKey(hosts[i], ss[j].name)
+                var isOpen = active && open && open.address === hosts[i].address && open.session === ss[j].name
+                if (out[key] === undefined || t < out[key] || (isOpen && out[key] !== t)) { out[key] = t; changed = true }
+            }
+        }
+        return { read: out, changed: changed }
+    }
+    function noteRead() {
+        var r = nextRead(readTurns, agentHosts, agentOpen, Qt.application.state === Qt.ApplicationActive)
+        if (!r.changed) return
+        root.readTurns = r.read
+        savePref("agent_read", JSON.stringify(r.read))
+    }
+
     // The open session's figures, from the last round of finding.
     readonly property var agentInfo: {
         if (!agentOpen) return null
@@ -298,7 +339,7 @@ Item {
     // (0), and a search result further back for as many as reach it.
     readonly property int agentTail: 300
     property int agentTailNow: agentTail
-    function openSession(h, s, tail) {
+    function openSession(h, s, tail, fresh) {
         var t = (tail === undefined || tail === null) ? agentTail : tail
         root.agentTailNow = t
         root.searchOpen = false
@@ -306,7 +347,10 @@ Item {
         // Picking a session in the list leaves the "+ session" form, which
         // otherwise stayed in front of it (2026-10-04).
         root.agentCreating = false
+        // The one left was read up to what it showed.
+        noteRead()
         root.agentOpen = { address: h.address, name: h.name, mesh: h.mesh, session: s }
+        noteRead()
         root.agentEventsList = []
         root.agentEarlier = []
         root.agentStreaming = ""
@@ -316,7 +360,9 @@ Item {
         root.chatStick = true
         root.agentAttached = []
         chatModel.clear()
-        agentCall("agentWatch", [h.address, s, String(t)])
+        // fresh: without the copy kept by the core (it is of a session since
+        // made again), which a negative tail says.
+        agentCall("agentWatch", [h.address, s, String(fresh && t > 0 ? -t : t)])
         // After the first paint: a call during construction of what it fills
         // freezes the view.
         Qt.callLater(function() {
@@ -359,6 +405,15 @@ Item {
         root.agentEventsList = evs
         root.agentStreaming = streaming
         rebuildChat()
+        // While the copy is what is shown: the session's numbers are below
+        // the copy's — deleted and made again since it was kept. Opened again
+        // without it. (Not once live: the list's last_seq trails a session
+        // that is talking.)
+        var li = root.agentInfo
+        if (r.kept > 0 && li && li.last_seq > 0 && li.last_seq < evs[evs.length - 1].seq) {
+            openSession(root.agentOpen, root.agentOpen.session, root.agentTailNow, true)
+            return
+        }
         // The core answers in pieces of about half a megabyte: keep reading
         // until caught up, without waiting for the next tick.
         if (r.more) Qt.callLater(pumpAgent)
@@ -404,7 +459,11 @@ Item {
         }
         var first = 0
         for (i = 0; i < evs.length; i++) if (epoch(evs[i].time)) { first = epoch(evs[i].time); break }
-        for (i = 0; i < agentEarlier.length; i++) {
+        // Only above the session's own first event (the phone's rule): above
+        // a later one, the transcript's turns from after the agent took it
+        // over would show again as "earlier".
+        var fromStart = evs.length === 0 || evs[0].seq <= 1
+        for (i = 0; fromStart && i < agentEarlier.length; i++) {
             var h = agentEarlier[i], ht = epoch(h.time)
             if (first && ht >= first) continue
             out.push({ key: "h" + i, seq: 0, kind: h.role === "user" ? "you" : "said", earlier: true, text: h.text, time: ht, by: "" })
@@ -933,6 +992,14 @@ Item {
             RowLayout {
                 width: parent.width
                 Text { text: srow.sess.name; color: cBone; font.family: "monospace"; font.pixelSize: root.fs(12); elide: Text.ElideRight; Layout.fillWidth: !srow.showHost }
+                Rectangle {
+                    readonly property int n: root.unreadOf(srow.host, srow.sess)
+                    visible: n > 0
+                    implicitWidth: unreadText.implicitWidth + root.sz(10); implicitHeight: unreadText.implicitHeight + root.sz(2)
+                    radius: height / 2; color: cBone
+                    Text { id: unreadText; anchors.centerIn: parent; text: parent.n > 99 ? "99+" : String(parent.n)
+                           color: cVoid; font.family: "monospace"; font.pixelSize: root.fs(9); font.bold: true }
+                }
                 Text { visible: srow.showHost; text: srow.host.name; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10); Layout.fillWidth: true }
                 Pulse { visible: srow.up && srow.sess.state !== "idle"; tint: srow.sess.state === "waiting" ? cAmber : cPhosphor }
                 Text {

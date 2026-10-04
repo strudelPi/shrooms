@@ -299,7 +299,8 @@ class AgentClient(address: String) {
      * caller reconnects from there and loses nothing — the server keeps every
      * event, numbered.
      */
-    fun follow(session: String, after: Long, stop: () -> Boolean, tail: Int = 0, onEvent: (AgentEvent) -> Unit): Long {
+    fun follow(session: String, after: Long, stop: () -> Boolean, tail: Int = 0, onOpen: () -> Unit = {},
+               onEvent: (AgentEvent) -> Unit): Long {
         var last = after
         // tail: on a first connection, only the last N events — a long
         // session's whole history is thousands, and replaying them is slow.
@@ -311,6 +312,7 @@ class AgentClient(address: String) {
         c.setRequestProperty("Accept", "text/event-stream")
         try {
             if (c.responseCode != 200) throw AgentError(errorOf(c))
+            onOpen()
             BufferedReader(InputStreamReader(c.inputStream, Charsets.UTF_8)).use { r ->
                 while (!stop()) {
                     val line = r.readLine() ?: break

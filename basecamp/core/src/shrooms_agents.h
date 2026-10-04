@@ -86,11 +86,12 @@ public:
      * Events are the agent's own JSON, verbatim; "partial" ones carry
      * streamed reply text.
      *
-     * Until the machine answers, the events are the end of the conversation
-     * as it was last seen here (kept on disk, History below), and "kept" is
-     * when that was, in epoch milliseconds; 0 once they are the machine's
-     * own. When the machine's replace them, "epoch" changes: what was shown
-     * is dropped and read again from "next".
+     * Opened at its end, the events start with the end of the conversation
+     * as it was last seen here (kept on disk, History below), and only what
+     * came after it is asked of the machine; until the machine answers,
+     * "kept" is when the copy was made, in epoch milliseconds, then 0.
+     * "epoch" is for a view to notice the events were replaced; nothing
+     * replaces them today.
      */
     std::string events(long long after);
 
@@ -200,7 +201,7 @@ private:
     };
     long addJob(const std::string& kind, const std::string& name);
     void finishJob(long id, bool ok, const std::string& path, const std::string& text, const std::string& error);
-    void follow(std::string address, std::string session, int tail, unsigned generation);
+    void follow(std::string address, std::string session, int tail, long long after, unsigned generation);
     void stopFollower();
 
     std::mutex mu_;
@@ -214,11 +215,9 @@ private:
     long long base_ = 0;
     long long kept_ = 0;   // when the shown events were kept; 0 when live
     long long keptLast_ = 0;            // the newest kept event's seq
-    std::vector<std::string> replay_;   // the live replay, until it has caught up
     unsigned epoch_ = 0;
     // The end of each watched conversation, kept on disk for when its machine
     // cannot be reached.
-    void replaceKept();
     void saveHistory(const std::string& address, const std::string& session);
     static std::string dataDir(const std::string& sub);
     bool connected_ = false;

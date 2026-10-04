@@ -85,13 +85,16 @@ object AgentChat {
      * stays everything.
      */
     /**
-     * Whether a conversation's opening replay has caught up, and is shown:
-     * once it reaches the newest event of the copy on screen ([keptLast], 0
-     * when none), or has been quiet for two rounds after its last event —
-     * the whole backlog is sent at once, so a pause is its end.
+     * Whether a conversation's opening replay — for one with no copy kept on
+     * the phone — has caught up, and is shown: once it reaches [target], the
+     * session's newest event as last listed. A pause is not taken for the
+     * end: over the mesh the replay comes in bursts, and shown at the first
+     * pause it was rebuilt under the reader. Only a long silence (about ten
+     * seconds of rounds) shows what there is — the target may be newer than
+     * anything this replay will hold, or unknown.
      */
-    fun replayCaughtUp(lastSeq: Long?, keptLast: Long, quietRounds: Int): Boolean =
-        lastSeq != null && ((keptLast > 0 && lastSeq >= keptLast) || quietRounds >= 2)
+    fun replayCaughtUp(lastSeq: Long?, target: Long, quietRounds: Int): Boolean =
+        lastSeq != null && ((target > 0 && lastSeq >= target) || quietRounds >= 80)
 
     fun tailReaching(current: Int, lastSeq: Long, seq: Long): Int =
         if (current == 0) 0 else maxOf(current.toLong(), lastSeq - seq + 1 + 20).toInt()
@@ -102,6 +105,11 @@ object AgentChat {
      * the same conversation the events already show — then the events.
      */
     fun items(events: List<AgentEvent>, earlier: List<Earlier>): List<ChatItem> {
+        // Only above the session's own first event: above a later one — the
+        // last few hundred loaded, a short copy kept on the phone — the
+        // transcript's turns from after the agent took it over would be
+        // shown again, out of place, as "earlier".
+        if ((events.firstOrNull()?.seq ?: 0) > 1) return items(events)
         val first = events.firstOrNull { it.time > 0 }?.time ?: Long.MAX_VALUE
         return earlier.filter { it.time in 1 until first }
             .map { ChatItem.Earlier(it.time, it.role == "user", it.text) } + items(events)

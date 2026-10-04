@@ -153,6 +153,12 @@ the options offered (several where it allows), or an answer in your own
 words, sent together, or declined. Commands are shown by their first line,
 the rest on a tap, as their output is.
 
+The list of machines and sessions is kept between rounds of finding, and
+across restarts: a machine that misses a round — a moment of a flaky network
+— stays where it is with its sessions as last seen, greyed as "unreachable ·
+seen …" once it has been quiet for 25 seconds, and is forgotten after a week
+unreachable. It used to vanish and come back, moving the whole list.
+
 Search (both apps) finds words anywhere in a conversation, on the agent's
 machine, so it covers what the app has not loaded and what was said in a
 terminal before the agent had it. A result the agent has an event for jumps to

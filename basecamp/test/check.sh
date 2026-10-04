@@ -230,6 +230,7 @@ expect "READING=true TEXT=Earlier: the tests, in a terminal." "a result from bef
 # Row 3: two earlier lines from the transcript, the first message, then it.
 expect "JUMP lit=3 row=3 kind=said searchOpen=false stick=false reach=521,0" "a search result does not jump to its message"
 expect 'QUESTION open=true before=null posted={"allow":true,"answers":{"Which user?":"agent","What else?":"voice, logs"}} after=false [answered: agent; voice, logs from desk]' "a question is not offered, answered or closed"
+expect "FLAKY stayed=laptop:2 now=true later=false forgotten=0" "a machine that misses a round vanishes, or is never greyed or forgotten"
 expect 'STARRED=laptop/shrooms rest=notes sent={"starred":true}' "a starred session is not listed first, or the star not kept on the agent"
 expect 'UNSTARRED=0 sent={"starred":false}' "a session cannot be unstarred"
 expect "FORMCLOSED=true" "opening a session leaves the new-session form in front of it"

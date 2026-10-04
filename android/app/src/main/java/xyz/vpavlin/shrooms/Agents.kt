@@ -54,6 +54,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import org.json.JSONObject
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -90,7 +91,64 @@ data class AgentHost(
     val mesh: String,
     val address: String,
     val sessions: List<AgentSession>,
+    /** When it last answered, epoch millis; 0 for "just now" (found this round). */
+    val lastSeen: Long = 0,
 )
+
+/**
+ * The list kept between rounds of finding, so a machine that misses a round —
+ * a moment of a flaky network — stays where it is with its sessions as last
+ * seen, rather than vanishing and coming back and moving everything under the
+ * reader. Shown as unreachable once it has missed [STALE_MS]; forgotten after
+ * [FORGET_MS].
+ */
+object HostCache {
+    const val STALE_MS = 25_000L
+    const val FORGET_MS = 7L * 24 * 3600 * 1000
+
+    fun reachable(h: AgentHost, now: Long): Boolean = now - h.lastSeen < STALE_MS
+
+    /** This round's [found] hosts, and the [previous] ones that did not answer, by name. */
+    fun merge(previous: List<AgentHost>, found: List<AgentHost>, now: Long): List<AgentHost> {
+        val fresh = found.map { it.copy(lastSeen = now) }
+        val names = fresh.map { it.name }.toSet()
+        val kept = previous.filter { it.name !in names && now - it.lastSeen < FORGET_MS }
+        return (fresh + kept).sortedBy { it.name }
+    }
+
+    fun encode(hosts: List<AgentHost>): String = org.json.JSONArray(hosts.map { h ->
+        JSONObject().put("name", h.name).put("mesh", h.mesh).put("address", h.address).put("seen", h.lastSeen)
+            .put("sessions", org.json.JSONArray(h.sessions.map { s ->
+                JSONObject().put("name", s.name).put("dir", s.dir).put("state", s.state).put("pending", s.pending)
+                    .put("running", s.running).put("last_seq", s.lastSeq).put("last_time", s.lastTime)
+                    .put("auto_approve", s.autoApprove).put("context_used", s.contextUsed)
+                    .put("context_window", s.contextWindow).put("preview", s.preview).put("model", s.model)
+                    .put("harness", s.harness).put("approves", s.approves).put("starred", s.starred)
+            }))
+    }).toString()
+
+    fun decode(json: String): List<AgentHost> = runCatching {
+        val a = org.json.JSONArray(json)
+        (0 until a.length()).map { i ->
+            val h = a.getJSONObject(i)
+            val ss = h.optJSONArray("sessions") ?: org.json.JSONArray()
+            AgentHost(h.optString("name"), h.optString("mesh"), h.optString("address"),
+                (0 until ss.length()).map { j ->
+                    val s = ss.getJSONObject(j)
+                    AgentSession(
+                        name = s.optString("name"), dir = s.optString("dir"), state = s.optString("state"),
+                        pending = s.optInt("pending"), running = s.optBoolean("running"), lastSeq = s.optLong("last_seq"),
+                        lastTime = s.optLong("last_time"), autoApprove = s.optBoolean("auto_approve"),
+                        contextUsed = s.optLong("context_used"), contextWindow = s.optLong("context_window"),
+                        preview = s.optString("preview"), model = s.optString("model"),
+                        harness = s.optString("harness").ifEmpty { "claude" }, approves = s.optBoolean("approves", true),
+                        starred = s.optBoolean("starred"),
+                    )
+                },
+                lastSeen = h.optLong("seen"))
+        }.filter { it.name.isNotEmpty() && AgentClient.isMeshAddress(it.address) }
+    }.getOrDefault(emptyList())
+}
 
 /**
  * The list as shown: starred sessions first, from every machine, by name;
@@ -243,7 +301,10 @@ private fun Link(text: String, colour: Color = Palette.Phosphor, onClick: () -> 
 @Composable
 fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? = null) {
     val ctx = LocalContext.current
-    var hosts by remember { mutableStateOf<List<AgentHost>?>(null) }
+    val cachePrefs = remember { ctx.getSharedPreferences("agents", android.content.Context.MODE_PRIVATE) }
+    // The list as last seen, at once: the agents answer within seconds, and
+    // until then this is what there was (HostCache).
+    var hosts by remember { mutableStateOf(HostCache.decode(cachePrefs.getString("cache", "") ?: "").ifEmpty { null }) }
     var open by remember(initial) { mutableStateOf(initial) }
     var creatingOn by remember { mutableStateOf<AgentHost?>(null) }
     var refresh by remember { mutableStateOf(0) }
@@ -262,8 +323,11 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
         if (open != null) return@LaunchedEffect
         while (isActive) {
             val found = discoverAgents(peers, named, AgentHosts.peers(ctx))
-            hosts = found
-            if (found.isNotEmpty()) AgentHosts.save(ctx, found.map { AgentHosts.Host(it.name, it.mesh, it.address) })
+            val merged = HostCache.merge(hosts.orEmpty(), found, System.currentTimeMillis())
+            hosts = merged
+            cachePrefs.edit().putString("cache", HostCache.encode(merged)).apply()
+            // The watcher keeps asking a machine that missed a round, too.
+            if (merged.isNotEmpty()) AgentHosts.save(ctx, merged.map { AgentHosts.Host(it.name, it.mesh, it.address) })
             delay(10_000)
         }
     }
@@ -279,7 +343,7 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
         BackHandler { if (creatingOn != null) creatingOn = null else onClose() }
         deleting?.let { (h, sess) ->
             DeleteSessionDialog(h.name, h.address, sess, onDismiss = { deleting = null },
-                onDeleted = { deleting = null; refresh++; hosts = null })
+                onDeleted = { deleting = null; refresh++ })
         }
 
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = 20.dp)) {
@@ -292,7 +356,7 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
             // Actions on a line of their own, so nothing has to squeeze in
             // beside the title.
             Row(Modifier.padding(top = 2.dp)) {
-                Link("refresh") { refresh++; hosts = null }
+                Link("refresh") { refresh++ }
                 Link(if (addingMachine) "cancel" else "+ machine") { addingMachine = !addingMachine }
                 Spacer(Modifier.weight(1f))
                 Link("close", Palette.Ash) { onClose() }
@@ -307,7 +371,7 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
                             named = (named + adding).distinct().sorted()
                             prefs.edit().putStringSet("named", named.toSet()).apply()
                             addingMachine = false
-                            hosts = null
+                            refresh++
                         }
                     }
                     if (named.isNotEmpty()) Link("forget ${named.size} named", Palette.Ash) {
@@ -340,6 +404,8 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
 
             val meshes = hs.orEmpty().map { it.mesh }.distinct().sorted()
             val (starred, rest) = starredFirst(hs.orEmpty())
+            // Read on each round's recomposition: what has gone quiet greys.
+            val now = System.currentTimeMillis()
             fun star(h: AgentHost, sess: AgentSession) {
                 hosts = withStar(hosts.orEmpty(), h.name, sess.name, !sess.starred)
                 scope.launch {
@@ -354,21 +420,27 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
                             modifier = Modifier.padding(top = 14.dp))
                     }
                     itemsIndexed(starred, key = { _, p -> "s-" + p.first.name + "/" + p.second.name }) { _, (h, sess) ->
-                        SessionRow(sess, where = h.name, onStar = { star(h, sess) }, onLongPress = { deleting = h to sess }) {
+                        SessionRow(sess, where = h.name, reachable = HostCache.reachable(h, now), onStar = { star(h, sess) }, onLongPress = { deleting = h to sess }) {
                             open = OpenSession(h.address, h.name, h.mesh, sess.name)
                         }
                     }
                 }
                 for (h in rest) {
+                    val up = HostCache.reachable(h, now)
                     item(key = "h-" + h.name) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 14.dp).alpha(if (up) 1f else 0.45f)) {
                             Box(Modifier.size(10.dp).border(2.dp, meshColour(h.mesh, meshes), CircleShape))
                             Spacer(Modifier.width(10.dp))
                             Text(h.name, style = MaterialTheme.typography.titleMedium, color = Palette.Bone)
                             Spacer(Modifier.width(8.dp))
                             Text(h.mesh, style = MaterialTheme.typography.labelSmall, color = meshColour(h.mesh, meshes))
+                            if (!up) {
+                                Spacer(Modifier.width(8.dp))
+                                Text("unreachable · seen ${whenSaid(h.lastSeen)}", style = MaterialTheme.typography.labelSmall,
+                                    color = Palette.Ash, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                             Spacer(Modifier.weight(1f))
-                            Link("+ session") { creatingOn = h }
+                            if (up) Link("+ session") { creatingOn = h }
                         }
                     }
                     if (h.sessions.isEmpty()) {
@@ -376,7 +448,7 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
                         item(key = "e-" + h.name) { Label(if (all.isEmpty()) "no sessions yet" else "all starred") }
                     }
                     itemsIndexed(h.sessions, key = { _, s -> h.name + "/" + s.name }) { _, s ->
-                        SessionRow(s, onStar = { star(h, s) }, onLongPress = { deleting = h to s }) {
+                        SessionRow(s, reachable = up, onStar = { star(h, s) }, onLongPress = { deleting = h to s }) {
                             open = OpenSession(h.address, h.name, h.mesh, s.name)
                         }
                     }
@@ -389,16 +461,20 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
 
 @Composable
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-private fun SessionRow(s: AgentSession, where: String = "", onStar: () -> Unit, onLongPress: () -> Unit, onOpen: () -> Unit) {
-    val (badge, colour) = when (s.state) {
+private fun SessionRow(s: AgentSession, where: String = "", reachable: Boolean = true, onStar: () -> Unit, onLongPress: () -> Unit, onOpen: () -> Unit) {
+    val (badge, colour) = when {
+        !reachable -> "unreachable" to Palette.Ash
+        else -> when (s.state) {
         "waiting" -> "NEEDS YOU" to Palette.Amber
         "working" -> "WORKING" to Palette.Phosphor
         else -> (if (s.running) "idle" else "asleep") to Palette.Ash
+        }
     }
     Column(
         Modifier.fillMaxWidth()
             .background(Palette.Panel.copy(alpha = 0.85f), RoundedCornerShape(12.dp))
-            .border(1.dp, if (s.state == "waiting") Palette.Amber else Palette.Line, RoundedCornerShape(12.dp))
+            .border(1.dp, if (reachable && s.state == "waiting") Palette.Amber else Palette.Line, RoundedCornerShape(12.dp))
+            .alpha(if (reachable) 1f else 0.5f)
             .combinedClickable(onClick = onOpen, onLongClick = onLongPress)
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -411,7 +487,7 @@ private fun SessionRow(s: AgentSession, where: String = "", onStar: () -> Unit, 
                 Text(where, style = MaterialTheme.typography.labelSmall, color = Palette.Ash, maxLines = 1)
             }
             Spacer(Modifier.weight(1f))
-            if (s.state != "idle") { Pulse(colour); Spacer(Modifier.width(6.dp)) }
+            if (reachable && s.state != "idle") { Pulse(colour); Spacer(Modifier.width(6.dp)) }
             Text(badge, style = MaterialTheme.typography.labelSmall, color = colour)
             // Starred: listed first. Faint until it is.
             Text("🍄", modifier = Modifier.padding(start = 10.dp).alpha(if (s.starred) 1f else 0.25f)

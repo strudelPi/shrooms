@@ -50,6 +50,7 @@ Item {
     property string lastDelete: ""
     property string lastWatch: ""
     property string lastSearch: ""
+    property bool findNone: false
     property int searchAsked: 0
     property var jobsNow: []
 
@@ -63,6 +64,7 @@ Item {
                     meshes: [ { label: "office", overlay: "fdb0:9afc:a5ef:1111:2222:3333:4444:5555" } ], peers: [
                     { name: "laptop", mesh: "office", overlay: "fdb0:9afc:a5ef:388c:8264:7716:36fc:64eb", online: true } ] })
                 // The same machine answering on a second mesh address.
+                if (method === "agentsFind" && top.findNone) return JSON.stringify([])
                 if (method === "agentsFind") { top.lastFind = args[0]
                     return JSON.stringify(top.hosts.concat([Object.assign({}, top.hosts[0], { mesh: "home", address: "fd7b::1" })])) }
                 if (method === "agentSearch") { top.lastSearch = args.join(" "); return JSON.stringify({ search: 1 }) }
@@ -185,6 +187,18 @@ Item {
             for (i = 0; i < chatCount(); i++) if (view.chatModelAt(i).kind === "question") qrow = view.chatModelAt(i)
             console.error("QUESTION open=" + (qrow !== null) + " before=" + before + " posted=" + JSON.stringify(posted)
                           + " after=" + qrow.open + " [" + qrow.answer + "]")
+
+            // A machine that misses a round of finding stays, as last seen;
+            // greyed once quiet a while; forgotten only after days.
+            top.findNone = true
+            view.refreshAgents()
+            var stayed = view.agentHosts.map(function(x) { return x.name + ":" + x.sessions.length }).join(",")
+            var kept = view.agentHosts[0]
+            console.error("FLAKY stayed=" + stayed + " now=" + view.hostReachable(kept, Date.now())
+                          + " later=" + view.hostReachable(kept, Date.now() + 30000)
+                          + " forgotten=" + view.mergeHosts([{ name: "old", lastSeen: 1, sessions: [] }], [], Date.now()).length)
+            top.findNone = false
+            view.refreshAgents()
 
             // Starring: first in the list, out of its machine's, and kept on the agent.
             var h0 = view.agentHosts[0]

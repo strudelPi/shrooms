@@ -92,6 +92,12 @@ Item {
     function loadPrefs() {
         if (prefsLoaded || !haveCore) return
         prefsLoaded = true
+        // The machines as last seen, at once (mergeHosts).
+        try {
+            var kept = JSON.parse(String(callCore("getPref", ["agent_hosts"]) || "[]"))
+            if (Array.isArray(kept) && root.agentHosts.length === 0)
+                root.agentHosts = kept.filter(function(h) { return h && h.name && h.address && Array.isArray(h.sessions) })
+        } catch (e) {}
         var n = parseFloat(String(callCore("getPref", ["ui_nudge"]) || ""))
         if (!isNaN(n)) root.uiNudge = Math.max(-0.4, Math.min(1.0, n))
     }
@@ -192,9 +198,40 @@ Item {
             hosts.push({ name: h.name, mesh: h.mesh, address: h.address,
                          sessions: (h.list && h.list.sessions) ? h.list.sessions : [] })
         }
-        hosts.sort(function(a, b) { return a.name < b.name ? -1 : 1 })
-        root.agentHosts = hosts
+        var now = Date.now()
+        root.nowMs = now
+        root.agentHosts = mergeHosts(agentHosts, hosts, now)
+        // Kept for the next start, now and then rather than every round.
+        if (now - lastHostsSave > 30000) {
+            lastHostsSave = now
+            savePref("agent_hosts", JSON.stringify(agentHosts))
+        }
     }
+
+    // The list kept between rounds of finding — the phone's HostCache: a
+    // machine that misses a round stays where it is, with its sessions as last
+    // seen, rather than vanishing, coming back, and moving everything under
+    // the reader. Greyed once quiet for staleMs; forgotten after forgetMs.
+    readonly property double staleMs: 25000
+    readonly property double forgetMs: 7 * 24 * 3600 * 1000
+    property double nowMs: Date.now()
+    property double lastHostsSave: 0
+    function mergeHosts(prev, found, now) {
+        var out = [], names = {}
+        for (var i = 0; i < found.length; i++) {
+            var h = Object.assign({}, found[i], { lastSeen: now })
+            names[h.name] = true
+            out.push(h)
+        }
+        for (i = 0; i < (prev || []).length; i++) {
+            var p = prev[i]
+            if (names[p.name] || !(now - (p.lastSeen || 0) < forgetMs)) continue
+            out.push(p)
+        }
+        out.sort(function(a, b) { return a.name < b.name ? -1 : 1 })
+        return out
+    }
+    function hostReachable(h, now) { return (now === undefined ? nowMs : now) - (h.lastSeen || 0) < staleMs }
 
     // The open session's figures, from the last round of finding.
     readonly property var agentInfo: {
@@ -773,13 +810,15 @@ Item {
         required property var host
         required property var sess
         property bool showHost: false
+        readonly property bool up: root.hostReachable(srow.host)
+        opacity: up ? 1 : 0.5
 
         readonly property bool isOpen: root.agentOpen !== null && root.agentOpen.address === srow.host.address && root.agentOpen.session === srow.sess.name
         height: sCol.implicitHeight + root.sz(16)
         radius: root.sz(8)
         color: isOpen ? Qt.rgba(0.21, 0.94, 0.63, 0.08) : cPanel
         border.width: 1
-        border.color: srow.sess.state === "waiting" ? cAmber : (isOpen ? cPhosphor : cLine)
+        border.color: srow.up && srow.sess.state === "waiting" ? cAmber : (isOpen ? cPhosphor : cLine)
         Column {
             id: sCol
             anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -789,11 +828,11 @@ Item {
                 width: parent.width
                 Text { text: srow.sess.name; color: cBone; font.family: "monospace"; font.pixelSize: root.fs(12); elide: Text.ElideRight; Layout.fillWidth: !srow.showHost }
                 Text { visible: srow.showHost; text: srow.host.name; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10); Layout.fillWidth: true }
-                Pulse { visible: srow.sess.state !== "idle"; tint: srow.sess.state === "waiting" ? cAmber : cPhosphor }
+                Pulse { visible: srow.up && srow.sess.state !== "idle"; tint: srow.sess.state === "waiting" ? cAmber : cPhosphor }
                 Text {
                     Layout.rightMargin: root.sz(22)
-                    text: srow.sess.state === "waiting" ? "NEEDS YOU" : (srow.sess.state === "working" ? "WORKING" : (srow.sess.running ? "idle" : "asleep"))
-                    color: srow.sess.state === "waiting" ? cAmber : (srow.sess.state === "working" ? cPhosphor : cAsh)
+                    text: !srow.up ? "unreachable" : srow.sess.state === "waiting" ? "NEEDS YOU" : (srow.sess.state === "working" ? "WORKING" : (srow.sess.running ? "idle" : "asleep"))
+                    color: !srow.up ? cAsh : srow.sess.state === "waiting" ? cAmber : (srow.sess.state === "working" ? cPhosphor : cAsh)
                     font.family: "monospace"; font.pixelSize: root.fs(9); font.letterSpacing: 1
                 }
             }
@@ -918,14 +957,17 @@ Item {
                         required property var modelData
                         width: hostList.width
                         spacing: root.sz(6)
+                        readonly property bool up: root.hostReachable(hostCol.modelData)
                         RowLayout {
                             width: parent.width
                             spacing: 8
+                            opacity: hostCol.up ? 1 : 0.45
                             Rectangle { width: root.sz(9); height: width; radius: width / 2; color: "transparent"; border.width: 2; border.color: root.meshTint(hostCol.modelData.mesh) }
                             Text { text: hostCol.modelData.name; color: cBone; font.family: "monospace"; font.pixelSize: root.fs(14) }
                             Text { text: hostCol.modelData.mesh; color: root.meshTint(hostCol.modelData.mesh); font.family: "monospace"; font.pixelSize: root.fs(10) }
+                            Text { visible: !hostCol.up; text: "unreachable · seen " + root.clock(hostCol.modelData.lastSeen); color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
                             Item { Layout.fillWidth: true }
-                            Lnk { text: "+ session"; onClicked: {
+                            Lnk { visible: hostCol.up; text: "+ session"; onClicked: {
                                 newSession.host = hostCol.modelData
                                 root.agentCreating = true
                                 Qt.callLater(function() { root.loadHarnesses(hostCol.modelData); root.loadConversations(hostCol.modelData) })

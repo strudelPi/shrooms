@@ -95,6 +95,28 @@ class AgentChatTest {
         assertEquals(listOf(true, false), after[1].sessions.map { it.starred })
     }
 
+    // A machine that misses a round of finding stays, greyed once it has been
+    // quiet a while, and is forgotten only after days.
+    @Test fun aMachineThatMissesARoundStays() {
+        fun sess(n: String) = AgentSession(n, "/x", "idle", 0, false, 0, preview = "hi\nthere", harness = "pi", approves = false, starred = true)
+        val now = 1_000_000_000_000L
+        val prev = listOf(
+            AgentHost("atlas", "office", "fdb0::1", listOf(sess("a")), lastSeen = now - 5_000),
+            AgentHost("old", "office", "fdb0::2", listOf(sess("b")), lastSeen = now - HostCache.FORGET_MS - 1),
+        )
+        val found = listOf(AgentHost("vps", "home", "fdb0::3", listOf(sess("c"))))
+        val merged = HostCache.merge(prev, found, now)
+        assertEquals(listOf("atlas", "vps"), merged.map { it.name })
+        assertEquals("found this round: seen now", now, merged[1].lastSeen)
+        assertEquals("missed it: as last seen", listOf("a"), merged[0].sessions.map { it.name })
+        assertTrue("five seconds quiet is still reachable", HostCache.reachable(merged[0], now))
+        assertFalse("half a minute quiet is not", HostCache.reachable(merged[0], now + 30_000))
+        // Kept across a restart of the app, as it was.
+        assertEquals(merged, HostCache.decode(HostCache.encode(merged)))
+        assertEquals(emptyList<AgentHost>(), HostCache.decode("not json"))
+        assertEquals(emptyList<AgentHost>(), HostCache.decode("""[{"name":"x","address":"8.8.8.8","sessions":[]}]"""))
+    }
+
     // A search result jumps to its event: the first of that event's items, in a
     // list laid out from the bottom with the live row as item 0.
     @Test fun aSearchResultIsFoundInTheList() {

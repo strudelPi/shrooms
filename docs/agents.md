@@ -185,6 +185,23 @@ log), so sending again after a lost answer cannot send twice.
 transcribes it on its machine and sends what was said — nothing comes back
 to read and confirm. Kept first, so one that fails (no model, nothing
 heard) says why and can be transcribed again from the same recording.
+The agent sends a session's turns in the order they arrived: a message that
+comes while a voice note is still being transcribed waits behind it (it is
+taken — answered 202, its id remembered — and sent once the note has gone or
+failed), so recorded-then-typed reaches the model in that order. A note that
+fails does not hold up what came after it; transcribed again later, it goes
+then.
+
+**A conversation is kept on the device**: the newest 300 events of each one
+opened (at most a megabyte, streamed text left out), saved while it is on
+screen. Opened while its machine cannot be reached, it shows that copy,
+marked "offline — as it was HH:MM", never as working; the machine's own
+events replace it as soon as it answers. On the phone in the app's files
+(`history/`), with the 30 turns from before the agent had the conversation;
+in Basecamp by the core in `~/.local/share/shrooms/history`, one file per
+machine address and session — `agentEvents` then says `"kept":MS` and,
+when the live events replace the copy, a new `"epoch"`, on which the view
+drops what it shows and reads again. Deleting a session deletes its copy.
 
 Search (both apps) finds words anywhere in a conversation, on the agent's
 machine, so it covers what the app has not loaded and what was said in a

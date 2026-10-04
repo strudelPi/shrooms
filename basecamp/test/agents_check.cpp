@@ -139,6 +139,60 @@ int main(int argc, char** argv)
         CHECK(tailFirst >= last - 4 && tailFirst > 1, "the tail started at %lld of %lld", tailFirst, last);
     }
 
+    // What is shown of a session is kept on disk, and shown — marked — when
+    // its machine cannot be reached; replaced once it answers.
+    {
+        std::string kept = Hub::historyPath(addr, session);
+        std::remove(kept.c_str());
+        hub.watch(addr, session, 5);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        hub.watch(addr, "no-such-session", 5);  // leaving it keeps it, at the latest
+        FILE* f = std::fopen(kept.c_str(), "r");
+        int lines = 0;
+        char buf[1 << 16];
+        std::string firstLine;
+        while (f && std::fgets(buf, sizeof buf, f)) {
+            if (lines++ == 0) firstLine = buf;
+        }
+        if (f) std::fclose(f);
+        CHECK(firstLine.compare(0, 9, "{\"saved\":") == 0 && lines >= 2 && lines <= 6,
+              "kept: %d lines, first %s", lines, firstLine.c_str());
+
+        // The same, as for a machine that does not answer.
+        std::string away = Hub::historyPath("fd00::1", session);
+        std::rename(kept.c_str(), away.c_str());
+        hub.watch("fd00::1", session, 5);
+        std::string r = hub.events(0);
+        CHECK(r.find("\"connected\":false") != std::string::npos && r.find("\"kept\":0") == std::string::npos &&
+              r.find("{\"seq\":") != std::string::npos, "offline: %s", r.substr(0, 160).c_str());
+        // Opened at the whole history, nothing kept is shown: it is not what
+        // was asked for.
+        hub.watch("fd00::1", session, 0);
+        r = hub.events(0);
+        CHECK(r.find("{\"seq\":") == std::string::npos, "kept shown for the whole history");
+
+        // Kept, then replaced: a new epoch, and the machine's events from next.
+        std::rename(away.c_str(), kept.c_str());
+        hub.watch(addr, session, 5);
+        r = hub.events(0);
+        long long keptNext = std::atoll(r.c_str() + 8);
+        size_t e = r.find("\"epoch\":");
+        long long epoch0 = e == std::string::npos ? -1 : std::atoll(r.c_str() + e + 8);
+        CHECK(r.find("\"kept\":0") == std::string::npos && keptNext > 0, "not shown kept first: %s", r.substr(0, 160).c_str());
+        for (int i = 0; i < 50; i++) {
+            r = hub.events(keptNext);
+            if (r.find("\"kept\":0") != std::string::npos && r.find("{\"seq\":") != std::string::npos) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        e = r.find("\"epoch\":");
+        long long epoch1 = e == std::string::npos ? -1 : std::atoll(r.c_str() + e + 8);
+        CHECK(r.find("\"kept\":0") != std::string::npos && epoch1 == epoch0 + 1 && r.find("{\"seq\":") != std::string::npos,
+              "not replaced: epoch %lld -> %lld, %s", epoch0, epoch1, r.substr(0, 160).c_str());
+
+        Hub::forgetHistory(addr, session);
+        CHECK(std::fopen(kept.c_str(), "r") == nullptr, "forgotten, still there");
+    }
+
     // Go escapes <, > and & as \u sequences: they must come back as written.
     CHECK(field("{\"text\":\"A \\u0026 B \\u003cx\\u003e \\\"q\\\" Vašek\"}", "text") == "A & B <x> \"q\" Vašek",
           "%s", field("{\"text\":\"A \\u0026 B \\u003cx\\u003e\"}", "text").c_str());

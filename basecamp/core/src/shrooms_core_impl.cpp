@@ -917,5 +917,9 @@ std::string ShroomsCoreImpl::agentDelete(const std::string& address, const std::
     if (!agents::safePath(path)) return errorJson("not an agent path", path);
     std::string out, err;
     if (!agents::request(address, "DELETE", path, "", 8, out, err)) return errorJson("agent", err);
+    const std::string sessions = "/v1/sessions/";
+    if (path.compare(0, sessions.size(), sessions) == 0 && path.find('/', sessions.size()) == std::string::npos) {
+        agents::Hub::forgetHistory(address, path.substr(sessions.size()));
+    }
     return "{\"ok\":true}";
 }

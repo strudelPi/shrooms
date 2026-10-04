@@ -683,6 +683,9 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     var info by remember(o) { mutableStateOf<AgentSession?>(null) }
     var streaming by remember(o) { mutableStateOf("") }
     var connError by remember { mutableStateOf("") }
+    // When what is shown is the copy kept on the phone (History), the time it
+    // was kept; 0 once the machine's own events have arrived.
+    var keptAt by remember(o) { mutableStateOf(0L) }
     var input by remember { mutableStateOf("") }
     var actionError by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
@@ -770,7 +773,21 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
 
     // What came before this agent had the conversation, once.
     LaunchedEffect(o) {
-        earlier = withContext(Dispatchers.IO) { runCatching { client.history(o.session, 30) }.getOrDefault(emptyList()) }
+        withContext(Dispatchers.IO) { runCatching { client.history(o.session, 30) } }.onSuccess { earlier = it }
+    }
+    // Kept on the phone, as it is now, for when the machine cannot be reached.
+    LaunchedEffect(o) {
+        var saved = -1L to -1
+        while (isActive) {
+            delay(5_000)
+            val now = (events.lastOrNull()?.seq ?: 0L) to earlier.size
+            if (keptAt == 0L && events.isNotEmpty() && now != saved) {
+                val ev = events.toList()
+                val ea = earlier
+                withContext(Dispatchers.IO) { History.save(ctx, o.host, o.session, ev, ea) }
+                saved = now
+            }
+        }
     }
     // The session's own figures — context, model, auto-approve — kept fresh.
     LaunchedEffect(o) {
@@ -790,6 +807,15 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     LaunchedEffect(o, tail) {
         events.clear()
         streaming = ""
+        // Shown until the machine answers: the end of the conversation as it
+        // was last seen here.
+        if (tail == SESSION_TAIL) withContext(Dispatchers.IO) { History.load(ctx, o.host, o.session) }?.let { h ->
+            if (events.isEmpty() && h.events.isNotEmpty()) {
+                events.addAll(h.events)
+                if (earlier.isEmpty()) earlier = h.earlier
+                keptAt = h.saved
+            }
+        }
         val after = java.util.concurrent.atomic.AtomicLong(0)
         val pending = java.util.concurrent.ConcurrentLinkedQueue<AgentEvent>()
         launch {
@@ -807,6 +833,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                         kept += e
                     }
                     streaming = text
+                    if (keptAt != 0L) { events.clear(); keptAt = 0 }
                     if (kept.isNotEmpty()) events.addAll(kept)
                     connError = ""
                 }
@@ -831,10 +858,11 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     val items = remember(events.size, earlier) { AgentChat.items(events.toList(), earlier) }
     val keys = remember(items) { keysOf(items) }
     val last = items.lastOrNull()
-    val working = info?.state == "working" ||
+    // A kept copy says nothing about now.
+    val working = keptAt == 0L && (info?.state == "working" ||
         (items.isNotEmpty() && last !is ChatItem.Done && last !is ChatItem.Stopped &&
             last !is ChatItem.Earlier && last !is ChatItem.Note && last !is ChatItem.Voice &&
-            !(last is ChatItem.Prompt && !last.open))
+            !(last is ChatItem.Prompt && !last.open)))
     val waiting = items.any { it is ChatItem.Prompt && it.open }
 
     // Laid out from the bottom, as chats are: the newest message is item 0, so
@@ -881,7 +909,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
     if (askDelete) {
         DeleteSessionDialog(o.host, o.address,
             i ?: AgentSession(o.session, "", "idle", 0, false, 0),
-            onDismiss = { askDelete = false }, onDeleted = { askDelete = false; onBack() })
+            onDismiss = { askDelete = false }, onDeleted = { askDelete = false; History.forget(ctx, o.host, o.session); onBack() })
     }
     reading?.let { f ->
         androidx.compose.material3.AlertDialog(
@@ -939,6 +967,10 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                 }
                 Link(if (searching) "close search" else "search", Palette.Sky) { searching = !searching }
                 Link("delete", Palette.Ash) { askDelete = true }
+            }
+            if (keptAt != 0L) {
+                Text("offline — as it was ${whenSaid(keptAt)}", style = MaterialTheme.typography.labelSmall, color = Palette.Amber,
+                    modifier = Modifier.padding(start = 30.dp))
             }
             if (connError.isNotEmpty()) {
                 Text("reconnecting — $connError", style = MaterialTheme.typography.labelSmall, color = Palette.Amber,

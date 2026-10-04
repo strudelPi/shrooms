@@ -82,10 +82,22 @@ public:
 
     /**
      * The watched session's events after a local index, as
-     * {"next":N,"connected":bool,"error":"...","events":[...]}. Events are the
-     * agent's own JSON, verbatim; "partial" ones carry streamed reply text.
+     * {"next":N,"connected":bool,"error":"...","kept":MS,"epoch":E,"events":[...]}.
+     * Events are the agent's own JSON, verbatim; "partial" ones carry
+     * streamed reply text.
+     *
+     * Until the machine answers, the events are the end of the conversation
+     * as it was last seen here (kept on disk, History below), and "kept" is
+     * when that was, in epoch milliseconds; 0 once they are the machine's
+     * own. When the machine's replace them, "epoch" changes: what was shown
+     * is dropped and read again from "next".
      */
     std::string events(long long after);
+
+    /** Where what is kept of a session is, on disk. */
+    static std::string historyPath(const std::string& address, const std::string& session);
+    /** Drops what is kept on disk of a session: it was deleted. */
+    static void forgetHistory(const std::string& address, const std::string& session);
 
     /**
      * Sends a local file to a session's machine in the background (an agent
@@ -200,6 +212,12 @@ private:
     std::atomic<int> followFd_{-1};
     std::vector<std::string> events_;
     long long base_ = 0;
+    long long kept_ = 0;   // when the shown events were kept; 0 when live
+    unsigned epoch_ = 0;
+    // The end of each watched conversation, kept on disk for when its machine
+    // cannot be reached.
+    void saveHistory(const std::string& address, const std::string& session);
+    static std::string dataDir(const std::string& sub);
     bool connected_ = false;
     std::string error_;
 

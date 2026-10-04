@@ -58,6 +58,9 @@ namespace {
 constexpr size_t kMaxBody = 8 * 1024 * 1024;
 constexpr size_t kKeepEvents = 4000;
 constexpr size_t kMaxReply = 512 * 1024;
+// What is kept on disk of each conversation: as the phone keeps.
+constexpr size_t kHistoryEvents = 300;
+constexpr size_t kHistoryBytes = 1 << 20;
 
 std::string jsonEscape(const std::string& s)
 {
@@ -339,12 +342,31 @@ void Hub::stopFollower()
 void Hub::watch(const std::string& address, const std::string& session, int tail)
 {
     stopFollower();
+    // What was kept of it, shown until the machine answers. Only when opening
+    // at the end, which is what was kept.
+    long long kept = 0;
+    std::vector<std::string> keptEvents;
+    if (tail > 0) {
+        std::ifstream in(historyPath(address, session));
+        std::string line;
+        if (std::getline(in, line) && line.compare(0, 9, "{\"saved\":") == 0) {
+            kept = std::atoll(line.c_str() + 9);
+            while (std::getline(in, line)) {
+                if (!line.empty()) keptEvents.push_back(line);
+            }
+        }
+    }
     {
         std::lock_guard<std::mutex> g(mu_);
         base_ += static_cast<long long>(events_.size());
         events_.clear();
         connected_ = false;
         error_.clear();
+        kept_ = 0;
+        if (kept > 0 && !keptEvents.empty()) {
+            events_ = std::move(keptEvents);
+            kept_ = kept;
+        }
     }
     unsigned gen = generation_.load();
     follower_ = std::thread(&Hub::follow, this, address, session, tail, gen);
@@ -353,6 +375,9 @@ void Hub::watch(const std::string& address, const std::string& session, int tail
 void Hub::follow(std::string address, std::string session, int tail, unsigned generation)
 {
     long long after = 0;
+    bool dirty = false;
+    // The first events are kept at once; after that, at most every 5 seconds.
+    std::chrono::steady_clock::time_point lastSave{};
     while (generation_.load() == generation) {
         std::string err;
         // A long read timeout: the agent sends a comment every 20 seconds, so
@@ -383,6 +408,13 @@ void Hub::follow(std::string address, std::string session, int tail, unsigned ge
                         std::lock_guard<std::mutex> g(mu_);
                         connected_ = true;
                         error_.clear();
+                        // The machine's own events replace the kept ones.
+                        if (kept_ != 0) {
+                            base_ += static_cast<long long>(events_.size());
+                            events_.clear();
+                            kept_ = 0;
+                            epoch_++;
+                        }
                     }
                     // Lines of the stream. Chunk framing, when present, sits on
                     // lines of its own and is skipped as not being data.
@@ -406,6 +438,12 @@ void Hub::follow(std::string address, std::string session, int tail, unsigned ge
                             events_.erase(events_.begin(), events_.begin() + static_cast<long>(drop));
                             base_ += static_cast<long long>(drop);
                         }
+                        if (!partial) dirty = true;
+                    }
+                    if (dirty && std::chrono::steady_clock::now() - lastSave > std::chrono::seconds(5)) {
+                        saveHistory(address, session);
+                        dirty = false;
+                        lastSave = std::chrono::steady_clock::now();
                     }
                 }
             }
@@ -417,10 +455,64 @@ void Hub::follow(std::string address, std::string session, int tail, unsigned ge
             connected_ = false;
             if (!err.empty()) error_ = err;
         }
+        if (dirty) {
+            saveHistory(address, session);
+            dirty = false;
+            lastSave = std::chrono::steady_clock::now();
+        }
         for (int i = 0; i < 20 && generation_.load() == generation; i++) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
+}
+
+void Hub::forgetHistory(const std::string& address, const std::string& session)
+{
+    std::remove(historyPath(address, session).c_str());
+}
+
+std::string Hub::historyPath(const std::string& address, const std::string& session)
+{
+    // FNV-1a: a file name for the pair, not a secret.
+    unsigned long long h = 14695981039346656037ULL;
+    for (unsigned char c : address + "/" + session) {
+        h ^= c;
+        h *= 1099511628211ULL;
+    }
+    char name[32];
+    std::snprintf(name, sizeof name, "%016llx.jsonl", h);
+    return dataDir("history") + "/" + name;
+}
+
+// The newest events that fit in kHistoryEvents and kHistoryBytes, streamed
+// text left out, after a first line saying when: {"saved":MS}.
+void Hub::saveHistory(const std::string& address, const std::string& session)
+{
+    std::vector<const std::string*> keep;
+    std::string out;
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        if (kept_ != 0 || events_.empty()) return;
+        size_t bytes = 0;
+        for (auto it = events_.rbegin(); it != events_.rend() && keep.size() < kHistoryEvents; ++it) {
+            if (it->find("\"kind\":\"partial\"") != std::string::npos) continue;
+            if (bytes + it->size() > kHistoryBytes) break;
+            bytes += it->size() + 1;
+            keep.push_back(&*it);
+        }
+        long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch()).count();
+        out = "{\"saved\":" + std::to_string(now) + "}\n";
+        out.reserve(out.size() + bytes);
+        for (auto it = keep.rbegin(); it != keep.rend(); ++it) out += **it + "\n";
+    }
+    std::string path = historyPath(address, session), tmp = path + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::trunc);
+        f << out;
+        if (!f) return;
+    }
+    std::rename(tmp.c_str(), path.c_str());
 }
 
 std::string Hub::events(long long after)
@@ -442,6 +534,7 @@ std::string Hub::events(long long after)
     bool more = i < static_cast<long long>(events_.size());
     return "{\"next\":" + std::to_string(base_ + i) + ",\"more\":" + (more ? "true" : "false") +
            ",\"connected\":" + (connected_ ? "true" : "false") +
+           ",\"kept\":" + std::to_string(kept_) + ",\"epoch\":" + std::to_string(epoch_) +
            ",\"error\":\"" + jsonEscape(error_) + "\",\"events\":[" + body + "]}";
 }
 
@@ -915,6 +1008,11 @@ std::vector<std::string> splitTabs(const std::string& line)
 // cache. Voice notes wait beside the list.
 std::string Hub::outboxDir()
 {
+    return dataDir("outbox");
+}
+
+std::string Hub::dataDir(const std::string& sub)
+{
     const char* xdg = std::getenv("XDG_DATA_HOME");
     std::string base;
     if (xdg && *xdg) {
@@ -926,7 +1024,7 @@ std::string Hub::outboxDir()
     std::string dir = base + "/shrooms";
     ::mkdir(base.c_str(), 0700);
     ::mkdir(dir.c_str(), 0700);
-    dir += "/outbox";
+    dir += "/" + sub;
     ::mkdir(dir.c_str(), 0700);
     return dir;
 }

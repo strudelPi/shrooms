@@ -56,6 +56,9 @@ Item {
     property string lastQueued: ""
     property string lastPostPath: ""
     property int searchAsked: 0
+    // 1: the core shows the copy kept on disk; 2: the machine's events have
+    // replaced it (a new epoch).
+    property int keptPhase: 0
     property var jobsNow: []
 
     Main {
@@ -92,6 +95,10 @@ Item {
                     { seq: 3, time: "2026-10-03T14:22:00+02:00", role: "assistant", snippet: "All **tests** pass." },
                     { seq: 0, time: "2026-10-02T10:00:00+02:00", role: "user", snippet: "the tests, in a terminal", text: "Earlier: the tests, in a terminal." } ] })
                 if (method === "agentWatch") { top.lastWatch = args.join(" "); return JSON.stringify({ ok: true }) }
+                if (method === "agentEvents" && top.keptPhase === 1) return JSON.stringify({ next: 3, more: false, connected: false,
+                    error: "connect: no route to host", kept: 1759500000000, epoch: 4, events: Number(args[0]) >= 3 ? [] : top.events.slice(0, 3) })
+                if (method === "agentEvents" && top.keptPhase === 2) return JSON.stringify({ next: 7, more: false, connected: true,
+                    error: "", kept: 0, epoch: 5, events: Number(args[0]) >= 7 ? [] : top.events.slice(0, 4) })
                 if (method === "agentEvents") {
                     top.eventCalls++
                     var after = Number(args[0])
@@ -286,6 +293,20 @@ Item {
             view.agentCreating = true
             view.openSession(view.agentHosts[0], "shrooms")
             console.error("FORMCLOSED=" + !view.agentCreating)
+
+            // A machine that cannot be reached: what was kept of it is shown,
+            // marked, and not as working; replaced, not added to, once it answers.
+            top.keptPhase = 1
+            view.openSession(view.agentHosts[0], "shrooms")
+            view.pumpAgent()
+            var keptSeqs = view.agentEventsList.map(function(e) { return e.seq }).join(",")
+            var keptWorking = view.agentWorking, keptAt = view.agentKept
+            top.keptPhase = 2
+            view.pumpAgent()
+            console.error("KEPT seqs=" + keptSeqs + " kept=" + keptAt + " working=" + keptWorking
+                          + " then=" + view.agentEventsList.map(function(e) { return e.seq }).join(",")
+                          + " kept=" + view.agentKept + " rows=" + chatCount())
+            top.keptPhase = 0
 
             // Taking over a conversation from a terminal.
             view.loadConversations(view.agentHosts[0])

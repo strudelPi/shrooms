@@ -105,7 +105,11 @@ type Session struct {
 	idOrder []string
 	// voices are the voice notes taken, by id: where each is kept, and
 	// whether it failed — what RetryVoice needs, and a failed one has.
-	voices    map[string]voiceNote
+	voices map[string]voiceNote
+	// queued are the turns taken from devices that wait behind a voice note
+	// still being transcribed, in the order they arrived: a message typed
+	// after recording one is sent after it.
+	queued    []*queuedTurn
 	ctxUsed   uint64
 	ctxWindow uint64
 	preview   string
@@ -647,7 +651,50 @@ func (s *Session) SendID(text, by, id string) (duplicate bool, err error) {
 	if s.seen(id) {
 		return true, nil
 	}
+	if len(s.queued) > 0 {
+		// Behind a voice note. Starting the process now is what can fail;
+		// that is said to the device, which keeps the message to send again.
+		if err := s.ensureRunning(); err != nil {
+			return false, err
+		}
+		s.remember(id)
+		s.queued = append(s.queued, &queuedTurn{id: id, by: by, text: text, ready: true})
+		return false, nil
+	}
 	return false, s.send(text, by, map[string]any{"id": id})
+}
+
+// queuedTurn is a turn waiting its turn: a voice note being transcribed, or a
+// message that came after one.
+type queuedTurn struct {
+	id, by, text string
+	voice        string // the recording, for a voice note
+	ready        bool   // text is what to send
+	failed       error  // the voice note could not be transcribed
+}
+
+// drain sends the queued turns from the front for as long as the first is
+// ready, and gives up on voice notes that failed. Called with s.mu held.
+func (s *Session) drain() {
+	for len(s.queued) > 0 && (s.queued[0].ready || s.queued[0].failed != nil) {
+		t := s.queued[0]
+		s.queued = s.queued[1:]
+		err := t.failed
+		if err == nil {
+			err = s.send(t.text, t.by, map[string]any{"id": t.id, "voice": t.voice})
+		}
+		switch {
+		case err == nil:
+		case t.voice != "":
+			s.voices[t.id] = voiceNote{path: t.voice, failed: true}
+			s.record("voice", t.by, map[string]string{"id": t.id, "path": t.voice, "status": "failed", "error": err.Error()})
+		default:
+			// A message the device was told was taken: kept in the log with
+			// why it did not reach the model, so it is not silently lost.
+			s.m.log.Warn("queued message not sent", "session", s.name, "err", err)
+			s.record("message", t.by, map[string]string{"id": t.id, "text": t.text, "error": err.Error()})
+		}
+	}
 }
 
 // send writes a turn and records it. Called with s.mu held.
@@ -719,9 +766,11 @@ func (s *Session) RetryVoice(id, by string, stt *Transcriber) error {
 // transcribe turns a kept voice note into the device's turn, in the
 // background, saying in the log what happens.
 func (s *Session) transcribe(path, by, id string, stt *Transcriber) {
+	t := &queuedTurn{id: id, by: by, voice: path}
 	s.mu.Lock()
 	s.voices[id] = voiceNote{path: path}
 	s.record("voice", by, map[string]string{"id": id, "path": path, "status": "transcribing"})
+	s.queued = append(s.queued, t)
 	s.mu.Unlock()
 
 	go func() {
@@ -732,16 +781,14 @@ func (s *Session) transcribe(path, by, id string, stt *Transcriber) {
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if err == nil {
-			err = s.send(text, by, map[string]any{"id": id, "voice": path})
-		}
 		if err != nil {
-			s.voices[id] = voiceNote{path: path, failed: true}
-			s.record("voice", by, map[string]string{"id": id, "path": path, "status": "failed", "error": err.Error()})
-			return
+			t.failed = err
+		} else {
+			t.text, t.ready = text, true
+			s.m.log.Info("voice note transcribed", "session", s.name, "took", time.Since(start).Round(time.Millisecond),
+				"words", len(strings.Fields(text)), "by", by)
 		}
-		s.m.log.Info("voice note sent", "session", s.name, "took", time.Since(start).Round(time.Millisecond),
-			"words", len(strings.Fields(text)), "by", by)
+		s.drain()
 	}()
 }
 

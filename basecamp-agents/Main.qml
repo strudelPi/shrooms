@@ -174,6 +174,10 @@ Item {
     property string agentStreaming: ""
     property int agentNext: 0
     property bool agentConnected: false
+    // When the events shown are the copy kept here, for a machine that cannot
+    // be reached: when they were kept (ms), 0 once they are its own.
+    property real agentKept: 0
+    property int agentEpoch: -1
     property string agentProblem: ""
     property bool agentCreating: false
     // Follow new messages while at the bottom; stop once scrolled up.
@@ -307,6 +311,8 @@ Item {
         root.agentEarlier = []
         root.agentStreaming = ""
         root.agentNext = 0
+        root.agentKept = 0
+        root.agentEpoch = -1
         root.chatStick = true
         root.agentAttached = []
         chatModel.clear()
@@ -328,6 +334,17 @@ Item {
         if (!r || r.next === undefined) return
         root.agentConnected = !!r.connected
         root.agentProblem = r.error || ""
+        root.agentKept = r.kept || 0
+        // The machine's own events have replaced the kept copy: start again
+        // from what the core now has.
+        var replaced = r.epoch !== undefined && root.agentEpoch >= 0 && r.epoch !== root.agentEpoch
+        if (r.epoch !== undefined) root.agentEpoch = r.epoch
+        if (replaced) {
+            root.agentEventsList = []
+            root.agentStreaming = ""
+            root.agentNext = r.next
+            if (!r.events || r.events.length === 0) { rebuildChat(); return }
+        }
         if (!r.events || r.events.length === 0) return
         var evs = root.agentEventsList.slice()
         var streaming = root.agentStreaming
@@ -347,6 +364,10 @@ Item {
         if (r.more) Qt.callLater(pumpAgent)
     }
 
+    function keptWhen(ms) {
+        var d = new Date(ms)
+        return (new Date().toDateString() === d.toDateString() ? "" : Qt.formatDate(d, "d MMM") + " ") + Qt.formatTime(d, "HH:mm")
+    }
     function epoch(s) { var t = Date.parse(s || ""); return isNaN(t) ? 0 : t }
     function clock(ms) {
         if (!ms) return ""
@@ -531,6 +552,8 @@ Item {
     }
 
     readonly property bool agentWorking: {
+        // A kept copy says nothing about now.
+        if (agentKept > 0) return false
         if (agentInfo && agentInfo.state === "working") return true
         if (agentStreaming !== "") return true
         var n = agentEventsList.length
@@ -1251,6 +1274,7 @@ Item {
                               root.agentInfo ? root.harnessLabel(root.agentInfo.harness) : "",
                               root.agentInfo ? root.shortModel(root.agentInfo.model) : "",
                               root.agentInfo ? root.contextLabel(root.agentInfo.context_used, root.agentInfo.context_window) : "",
+                              root.agentKept > 0 ? "offline — as it was " + root.keptWhen(root.agentKept) : "",
                               root.agentConnected ? "" : ("reconnecting" + (root.agentProblem ? " — " + root.agentProblem : ""))
                              ].filter(function(x) { return x !== "" }).join("  ·  ") : ""
                         color: root.agentConnected ? cAsh : cAmber

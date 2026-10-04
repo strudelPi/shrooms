@@ -176,3 +176,87 @@ func TestAnEmptyTranscriptIsAFailure(t *testing.T) {
 		t.Error("silence was sent")
 	}
 }
+
+// slowSTT makes the transcriber wait until gate is opened (the file made),
+// then say what it says — or fail, with fail.
+func slowSTT(t *testing.T, fail bool) (*Transcriber, func()) {
+	tr, _ := fakeTools(t, "4")
+	gate := filepath.Join(t.TempDir(), "gate")
+	say := "echo 'nahráno první'"
+	if fail {
+		say = "exit 1"
+	}
+	os.WriteFile(tr.Bin, []byte("#!/bin/sh\nwhile [ ! -e "+gate+" ]; do sleep 0.02; done\n"+say+"\n"), 0o755)
+	return tr, func() { os.WriteFile(gate, nil, 0o600) }
+}
+
+func messageTexts(s *Session) []string {
+	ev, ch := s.Since(0)
+	s.Unsubscribe(ch)
+	var out []string
+	for _, e := range ev {
+		if e.Kind == "message" {
+			var d struct{ Text string }
+			json.Unmarshal(e.Data, &d)
+			out = append(out, d.Text)
+		}
+	}
+	return out
+}
+
+// Recorded, then typed: sent in that order, though the voice note is text only
+// after the typed message has arrived.
+func TestAMessageAfterAVoiceNoteWaitsForIt(t *testing.T) {
+	m := newTestManager(t, t.TempDir())
+	m.Create("proj", t.TempDir())
+	s, _ := m.Get("proj")
+	var open func()
+	m.STT, open = slowSTT(t, false)
+	srv := httptest.NewServer(Handler(slog.New(slog.DiscardHandler), m, nil))
+	t.Cleanup(srv.Close)
+
+	r, err := http.Post(srv.URL+"/v1/sessions/proj/voice?name=note.m4a&id=v-1", "audio/mp4", strings.NewReader("aac"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if code, body := postJSON(t, srv.URL+"/v1/sessions/proj/messages", `{"text":"napsáno druhé","id":"m-2"}`); code != http.StatusAccepted {
+		t.Fatalf("the message: %d %s", code, body)
+	}
+	// Taken, even before it is sent: sending it again is a duplicate.
+	if code, body := postJSON(t, srv.URL+"/v1/sessions/proj/messages", `{"text":"napsáno druhé","id":"m-2"}`); !strings.Contains(body, `"duplicate":true`) {
+		t.Errorf("again while waiting: %d %s", code, body)
+	}
+	if got := messageTexts(s); len(got) != 0 {
+		t.Fatalf("sent before the voice note: %q", got)
+	}
+	open()
+	waitFor(t, s, 0, func(e Event) bool { return assistantText(e) == "echo: napsáno druhé" })
+	if got := messageTexts(s); len(got) != 2 || got[0] != "nahráno první" || got[1] != "napsáno druhé" {
+		t.Errorf("the turns: %q", got)
+	}
+}
+
+// A voice note that fails does not hold up what came after it.
+func TestAFailedVoiceNoteDoesNotHoldUpTheNext(t *testing.T) {
+	m := newTestManager(t, t.TempDir())
+	m.Create("proj", t.TempDir())
+	s, _ := m.Get("proj")
+	var open func()
+	m.STT, open = slowSTT(t, true)
+	srv := httptest.NewServer(Handler(slog.New(slog.DiscardHandler), m, nil))
+	t.Cleanup(srv.Close)
+
+	r, err := http.Post(srv.URL+"/v1/sessions/proj/voice?name=note.m4a&id=v-1", "audio/mp4", strings.NewReader("aac"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	postJSON(t, srv.URL+"/v1/sessions/proj/messages", `{"text":"napsáno druhé","id":"m-2"}`)
+	open()
+	waitFor(t, s, 0, func(e Event) bool { return assistantText(e) == "echo: napsáno druhé" })
+	waitFor(t, s, 0, func(e Event) bool { return e.Kind == "voice" && strings.Contains(string(e.Data), `"failed"`) })
+	if got := messageTexts(s); len(got) != 1 {
+		t.Errorf("the turns: %q", got)
+	}
+}

@@ -239,6 +239,7 @@ expect "OPENURL=https://example.org/a refused=true" "a link is not handed to the
 expect "FLAKY stayed=laptop:2 now=true later=false forgotten=0" "a machine that misses a round vanishes, or is never greyed or forgotten"
 expect 'STARRED=laptop/shrooms rest=notes sent={"starred":true}' "a starred session is not listed first, or the star not kept on the agent"
 expect 'UNSTARRED=0 sent={"starred":false}' "a session cannot be unstarred"
+expect "KEPT seqs=1,2,3 kept=1759500000000 working=false then=1,2,3,4 kept=0 rows=4" "a session's kept copy is not shown while its machine is away, or not replaced once it answers"
 expect "FORMCLOSED=true" "opening a session leaves the new-session form in front of it"
 expect "HARNESS offered=claude,pi sent=pi auto=false label=[pi][]" "another harness is not offered, or a session of it not asked for"
 expect "STREAMING=[Pushing **now**…] WORKING=true" "the streamed reply is not shown as it grows"

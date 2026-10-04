@@ -26,6 +26,14 @@ int main(int argc, char** argv)
     CHECK(!safePath("/v1/../../etc"), "dotdot");
     CHECK(!safePath("/v1/x HTTP/1.0\r\nX: y"), "header injection");
     CHECK(!safePath("/admin"), "outside the API");
+    // Links the core opens for a view: web links only.
+    CHECK(safeUrl("https://github.com/users/vpavlin/packages/container/shrooms-agent/settings"), "a plain https link");
+    CHECK(safeUrl("http://vps.office.mesh:8099/x"), "a mesh http link");
+    CHECK(!safeUrl("file:///etc/passwd"), "a file URL");
+    CHECK(!safeUrl("javascript:alert(1)"), "a script URL");
+    CHECK(!safeUrl("https://x.io/a b"), "a space, which xdg-open would split");
+    CHECK(!safeUrl("https://x.io/\n--option"), "a newline");
+    CHECK(!safeUrl("-https://x.io"), "an option");
 
     std::string out, err;
     bool ok = request(addr, "GET", "/v1/sessions", "", 5, out, err);
@@ -57,13 +65,14 @@ int main(int argc, char** argv)
     }
     CHECK(ev.find("\"connected\":true") != std::string::npos && ev.find("\"seq\":1,") != std::string::npos,
           "%s", ev.substr(0, 200).c_str());
-    // Read to the end (the core answers in pieces); after that, nothing.
+    // Read to the end (the core answers in pieces); after that, only what
+    // the session has said since — it may be this one, and talking.
     long long next = std::atoll(ev.c_str() + 8);
     for (int i = 0; i < 10000 && hub.events(next).find("\"more\":true") != std::string::npos; i++)
         next = std::atoll(hub.events(next).c_str() + 8);
     next = std::atoll(hub.events(next).c_str() + 8);
     std::string more = hub.events(next);
-    CHECK(more.find("\"events\":[]") != std::string::npos, "events after next: %s", more.substr(0, 120).c_str());
+    CHECK(std::atoll(more.c_str() + 8) >= next, "next went backwards: %s", more.substr(0, 120).c_str());
 
     // The whole backlog, read in pieces: no reply much over half a megabyte,
     // and every event once, in order.
@@ -72,7 +81,9 @@ int main(int argc, char** argv)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             if (hub.events(0).find("\"more\":true") == std::string::npos && i > 10) break;
         }
-        long long at = 0, last = 0, pieces = 0;
+        // The core keeps the last 4000 events, so a longer session starts
+        // later than 1; from there, every event once, in order.
+        long long at = 0, first = 0, last = 0, pieces = 0, overs = 0;
         size_t biggest = 0;
         bool ordered = true, more = true;
         while (more && pieces < 10000) {
@@ -81,16 +92,22 @@ int main(int argc, char** argv)
             biggest = std::max(biggest, r.size());
             more = r.find("\"more\":true") != std::string::npos;
             at = std::atoll(r.c_str() + 8);
+            long long n = 0;
             // Each event starts {"seq":; inside a string it would be {\"seq\":.
             for (size_t p = r.find("{\"seq\":"); p != std::string::npos; p = r.find("{\"seq\":", p + 1)) {
                 long long s = std::atoll(r.c_str() + p + 7);
-                if (s != last + 1) ordered = false;
+                if (first == 0) first = s;
+                else if (s != last + 1) ordered = false;
                 last = s;
+                n++;
             }
+            // Over half a megabyte only when one event is that big by itself:
+            // a reply is cut between events, never inside one.
+            if (r.size() > 600 * 1024 && n > 1) overs++;
         }
-        std::printf("     backlog: %lld events in %lld pieces, the biggest %zu bytes\n", last, pieces, biggest);
-        CHECK(ordered && last > 0, "events skipped or repeated, last %lld", last);
-        CHECK(biggest < 2 * 512 * 1024 || pieces == 1, "a reply of %zu bytes", biggest);
+        std::printf("     backlog: events %lld..%lld in %lld pieces, the biggest %zu bytes\n", first, last, pieces, biggest);
+        CHECK(ordered && last > 0, "events skipped or repeated, %lld..%lld", first, last);
+        CHECK(overs == 0, "%lld replies over the size with more than one event in them", overs);
 
         // Opened at its tail: the last five, nothing before.
         hub.watch(addr, session, 5);
@@ -103,8 +120,8 @@ int main(int argc, char** argv)
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         t = hub.events(0);
         size_t p = t.find("{\"seq\":");
-        long long first = p == std::string::npos ? -1 : std::atoll(t.c_str() + p + 7);
-        CHECK(first >= last - 4 && first > 1, "the tail started at %lld of %lld", first, last);
+        long long tailFirst = p == std::string::npos ? -1 : std::atoll(t.c_str() + p + 7);
+        CHECK(tailFirst >= last - 4 && tailFirst > 1, "the tail started at %lld of %lld", tailFirst, last);
     }
 
     // Go escapes <, > and & as \u sequences: they must come back as written.

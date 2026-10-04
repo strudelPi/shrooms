@@ -394,6 +394,12 @@ public:
     std::string agentSearched();
 
     /**
+     * @brief Opens an http or https link in the desktop's browser: a view's
+     * sandbox blocks it there. {"ok":true}, or an error.
+     */
+    std::string agentOpenUrl(const std::string& url);
+
+    /**
      * @brief Sends an image on the clipboard to the session's machine, in the
      * background: {"job":N}, or {"none":true} when the clipboard holds no
      * image and the view should paste its text as usual.

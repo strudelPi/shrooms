@@ -51,6 +51,7 @@ Item {
     property string lastWatch: ""
     property string lastSearch: ""
     property bool findNone: false
+    property string lastOpen: ""
     property int searchAsked: 0
     property var jobsNow: []
 
@@ -67,6 +68,8 @@ Item {
                 if (method === "agentsFind" && top.findNone) return JSON.stringify([])
                 if (method === "agentsFind") { top.lastFind = args[0]
                     return JSON.stringify(top.hosts.concat([Object.assign({}, top.hosts[0], { mesh: "home", address: "fd7b::1" })])) }
+                if (method === "agentOpenUrl") { top.lastOpen = args[0]
+                    return JSON.stringify(String(args[0]).indexOf("http") === 0 ? { ok: true } : { error: "cannot open it", detail: "only http and https links are opened" }) }
                 if (method === "agentSearch") { top.lastSearch = args.join(" "); return JSON.stringify({ search: 1 }) }
                 // Still running the first time it is asked, as a real search is.
                 if (method === "agentSearched" && top.searchAsked++ === 0) return JSON.stringify({ id: 1, done: false, error: "", found: null })
@@ -192,6 +195,13 @@ Item {
             // code and links already written are left alone.
             console.error("LINKMD=" + view.linkMarkdown("see https://pi.dev, or [docs](https://x.io/a) and `curl http://no.pe`\n```\nhttp://in.code\n```\n<https://already.io>"))
             console.error("LINKPLAIN=" + view.linkPlain("a <b> & http://vps.office.mesh:8099/x."))
+
+            // A link goes to the core, which may open it (the view's sandbox
+            // may not); one it refuses is copied and said so.
+            view.openUrl("https://example.org/a")
+            var opened = top.lastOpen
+            view.openUrl("ftp://example.org/b")
+            console.error("OPENURL=" + opened + " refused=" + (view.said.indexOf("copied it instead") > 0))
 
             // A machine that misses a round of finding stays, as last seen;
             // greyed once quiet a while; forgotten only after days.

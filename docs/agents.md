@@ -159,6 +159,12 @@ across restarts: a machine that misses a round — a moment of a flaky network
 seen …" once it has been quiet for 25 seconds, and is forgotten after a week
 unreachable. It used to vanish and come back, moving the whole list.
 
+Links in a conversation open in the browser. In Basecamp the core opens them
+(`xdg-open`, http and https only): Basecamp's sandbox blocks every web URL
+inside a view, so `Qt.openUrlExternally` there does nothing. In Basecamp
+the core keeps a session's last 4000 events; "load them" on a longer
+session shows those, not the very first.
+
 Search (both apps) finds words anywhere in a conversation, on the agent's
 machine, so it covers what the app has not loaded and what was said in a
 terminal before the agent had it. A result the agent has an event for jumps to

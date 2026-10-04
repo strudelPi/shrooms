@@ -38,6 +38,8 @@ bool safePath(const std::string& path);
 std::string field(const std::string& json, const std::string& key);
 
 /** Whether an address is a literal mesh address. */
+/** Whether a link is one to open: http or https, printable, not huge. */
+bool safeUrl(const std::string& url);
 bool isMeshAddress(const std::string& address);
 
 /**
@@ -110,6 +112,13 @@ public:
      * "name","path","text","error"}]}. state is pending, done or failed.
      */
     std::string jobs();
+
+    /**
+     * Opens a web link in the desktop's browser (xdg-open). Basecamp's views
+     * may not: their sandbox blocks every http and https URL, so a link in a
+     * conversation went nowhere. Only http and https; false, with why, else.
+     */
+    bool openUrl(const std::string& url, std::string& err);
 
     /**
      * Searches a session's whole conversation in the background — on a long

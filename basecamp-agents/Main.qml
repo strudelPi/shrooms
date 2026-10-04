@@ -104,9 +104,17 @@ Item {
         esc = esc.replace(bareUrl, function(u) { return '<a href="' + u.replace(/"/g, "%22") + '" style="color:#5AA9FF">' + u + "</a>" })
         return '<span style="white-space:pre-wrap">' + esc + "</span>"
     }
+    // Basecamp's sandbox blocks every http and https URL in a view, so
+    // Qt.openUrlExternally does nothing here: the core opens it (xdg-open).
+    // Copied, and said so, when even that cannot.
     function openUrl(u) {
         if (!u) return
-        if (!Qt.openUrlExternally(u)) { copyText(u); root.said = "could not open " + u + " — copied it instead" }
+        var r = unwrap(callCore("agentOpenUrl", [String(u)]))
+        if (r && r.ok) return
+        if (Qt.openUrlExternally(u)) return
+        copyText(u)
+        root.said = "could not open " + u + (r && (r.detail || r.error) ? " (" + (r.detail || r.error) + ")" : "") + " — copied it instead"
+        root.saidBad = true
     }
 
     // Mesh colours as the shrooms view assigns them: by the mesh's place in

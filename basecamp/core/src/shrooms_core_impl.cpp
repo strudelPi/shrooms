@@ -866,6 +866,13 @@ std::string ShroomsCoreImpl::agentSearched()
     return hub().searched();
 }
 
+std::string ShroomsCoreImpl::agentOpenUrl(const std::string& url)
+{
+    std::string err;
+    if (!hub().openUrl(url, err)) return errorJson("cannot open it", err);
+    return "{\"ok\":true}";
+}
+
 std::string ShroomsCoreImpl::agentPaste(const std::string& address, const std::string& session)
 {
     if (!agents::isMeshAddress(address)) return errorJson("not a mesh address", address);

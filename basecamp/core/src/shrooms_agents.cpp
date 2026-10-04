@@ -647,6 +647,40 @@ long Hub::recordStop(const std::string& address, const std::string& session, con
     return id;
 }
 
+bool safeUrl(const std::string& url)
+{
+    if (url.size() > 4096) return false;
+    if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) return false;
+    for (unsigned char c : url)
+        if (c <= 0x20 || c == 0x7f) return false; // spaces and control characters
+    return true;
+}
+
+bool Hub::openUrl(const std::string& url, std::string& err)
+{
+    if (!safeUrl(url)) {
+        err = "only http and https links are opened";
+        return false;
+    }
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    std::string bin = "xdg-open";
+    char* argv[] = {const_cast<char*>(bin.c_str()), const_cast<char*>(url.c_str()), nullptr};
+    pid_t pid;
+    int rc = posix_spawnp(&pid, argv[0], &fa, nullptr, argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    if (rc != 0) {
+        err = std::string("xdg-open: ") + std::strerror(rc);
+        return false;
+    }
+    // xdg-open hands the link to the browser and exits; reaped here so it
+    // does not linger as a zombie of Basecamp's.
+    std::thread([pid]() { ::waitpid(pid, nullptr, 0); }).detach();
+    return true;
+}
+
 namespace {
 
 // Runs a command with its stdout to a file, waiting at most `secs`. Returns

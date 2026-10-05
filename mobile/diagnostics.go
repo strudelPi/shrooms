@@ -187,6 +187,24 @@ func Diagnostics(configDir string) string {
 	fmt.Fprintf(&b, "\n== memory ==\n")
 	b.WriteString(memstat.Format(memstat.Read()))
 
+	// Per mesh, what the replay guard has accepted and rejected from each
+	// device: tells genuinely old announces from marks that got ahead of the
+	// peers (mesh.ReplayReport).
+	fmt.Fprintf(&b, "\n== announces per device ==\n")
+	mu.Lock()
+	var meshes []*meshInstance
+	if running != nil {
+		meshes = running.instances
+	}
+	mu.Unlock()
+	if len(meshes) == 0 {
+		b.WriteString("(not connected)\n")
+	}
+	for _, in := range meshes {
+		fmt.Fprintf(&b, "-- %s\n", in.label)
+		b.WriteString(in.mesh.ReplayReport(time.Now()))
+	}
+
 	fmt.Fprintf(&b, "\n== recent log ==\n")
 	if l := tail(logPath(configDir), 200); l != "" {
 		b.WriteString(l)

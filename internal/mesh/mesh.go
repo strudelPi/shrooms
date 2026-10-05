@@ -86,6 +86,9 @@ type Mesh struct {
 
 	roster *Roster
 	guard  *control.ReplayGuard
+	// replays is what guard has accepted and rejected, per device, for
+	// diagnostics (ReplayReport).
+	replays replayStats
 
 	self netip.Addr
 
@@ -1964,10 +1967,12 @@ func (m *Mesh) handle(ev waku.Event) {
 	}
 
 	if !m.guard.Accept(a) {
+		m.replays.reject(a.DevicePub, a.Seq, now)
 		m.log.Warn("rejected replayed or stale announce",
 			"peer", hex.EncodeToString(a.DevicePub)[:16], "seq", a.Seq)
 		return
 	}
+	m.replays.accept(a.DevicePub, now)
 
 	peer, changed := m.roster.Apply(a, now)
 	if peer.DevicePub == nil {

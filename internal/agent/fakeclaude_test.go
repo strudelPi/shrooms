@@ -87,10 +87,15 @@ func fakeClaude() {
 			"content": []any{map[string]any{"type": "thinking", "thinking": ""}, map[string]any{"type": "text", "text": s}},
 			"usage":   map[string]any{"input_tokens": 10, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 200}}})
 	}
+	// As Claude Code's: the turn's tokens, and the process's running cost.
+	cost := 0.0
 	result := func(sub string) {
-		emit(map[string]any{"type": "result", "subtype": sub, "session_id": id, "modelUsage": map[string]any{
-			"claude-opus-5[1m]":         map[string]any{"contextWindow": 1000000},
-			"claude-haiku-4-5-20251001": map[string]any{"contextWindow": 200000}}})
+		cost += 0.01
+		emit(map[string]any{"type": "result", "subtype": sub, "session_id": id, "total_cost_usd": cost,
+			"usage": map[string]any{"input_tokens": 10, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 200, "output_tokens": 50},
+			"modelUsage": map[string]any{
+				"claude-opus-5[1m]":         map[string]any{"contextWindow": 1000000},
+				"claude-haiku-4-5-20251001": map[string]any{"contextWindow": 200000}}})
 	}
 
 	for {

@@ -137,6 +137,10 @@ class AgentClient(address: String) {
         }.ifEmpty { claudeOnly }
     }
 
+    /** What the model did, per day, session, device and model (UsageView.parse); since a local date or "". */
+    fun usage(since: String): String =
+        request("GET", "/v1/usage" + if (since.isEmpty()) "" else "?since=" + enc(since), null)
+
     /** The machine's Claude Code conversations, newest first. */
     fun conversations(limit: Int = 15): List<Conversation> {
         val a = JSONObject(request("GET", "/v1/conversations?limit=$limit", null)).optJSONArray("conversations")

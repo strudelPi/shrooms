@@ -328,6 +328,10 @@ Wants=network-online.target
 # rather than only at install. systemd owns it and cleans it up on stop.
 RuntimeDirectory=shrooms
 RuntimeDirectoryMode=0750
+# Kept over a restart, not deleted and made afresh: anything granted on it —
+# shrooms-agent's ACL on the socket (install-agent.sh) — survives the image's
+# auto-update, which restarts this service. It did not on 2026-10-05.
+RuntimeDirectoryPreserve=restart
 ExecStartPre=-$RUNTIME rm -f shrooms
 ExecStart=$RUNTIME run --rm --name shrooms \\
     --network host \\

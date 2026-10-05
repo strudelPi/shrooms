@@ -54,12 +54,13 @@ type piDialog struct {
 
 type piCodec struct {
 	mu        sync.Mutex
-	streaming bool    // between agent_start and agent_end: a turn must queue
-	sessionID string  // pi's session id, once get_state has answered
-	model     string  // provider/id
-	window    uint64  // the model's context window
-	cost      float64 // this turn's, summed over its assistant messages
-	failed    bool    // the turn ended in an error or was aborted
+	streaming bool     // between agent_start and agent_end: a turn must queue
+	sessionID string   // pi's session id, once get_state has answered
+	model     string   // provider/id
+	window    uint64   // the model's context window
+	cost      float64  // the process's, summed over its assistant messages: Claude Code's meaning of total_cost_usd
+	turn      rawUsage // this turn's tokens, summed over its assistant messages
+	failed    bool     // the turn ended in an error or was aborted
 	ui        map[string]piDialog
 }
 
@@ -229,7 +230,8 @@ func (c *piCodec) Decode(line json.RawMessage) []json.RawMessage {
 				out(map[string]any{"type": "result", "subtype": "error_during_execution", "session_id": c.sessionID})}
 		}
 	case "agent_start":
-		c.streaming, c.cost, c.failed = true, 0, false
+		c.streaming, c.failed = true, false
+		c.turn = rawUsage{}
 	case "message_update":
 		if e.Delta.Type == "text_delta" && e.Delta.Delta != "" {
 			return []json.RawMessage{out(map[string]any{"type": "stream_event", "event": map[string]any{
@@ -240,6 +242,10 @@ func (c *piCodec) Decode(line json.RawMessage) []json.RawMessage {
 		case "assistant":
 			m := e.Message
 			c.cost += m.Usage.Cost.Total
+			c.turn.Input += m.Usage.Input
+			c.turn.Output += m.Usage.Output
+			c.turn.CacheRead += m.Usage.CacheRead
+			c.turn.CacheWrite += m.Usage.CacheWrite
 			var content []any
 			for _, b := range m.blocks() {
 				switch b.Type {
@@ -285,7 +291,11 @@ func (c *piCodec) Decode(line json.RawMessage) []json.RawMessage {
 		if c.failed {
 			sub = "error_during_execution"
 		}
-		r := map[string]any{"type": "result", "subtype": sub, "session_id": c.sessionID, "total_cost_usd": c.cost}
+		// As Claude Code's result: the turn's tokens, and the process's running
+		// cost — which is what usage (usage.go) reads both from.
+		r := map[string]any{"type": "result", "subtype": sub, "session_id": c.sessionID, "total_cost_usd": c.cost,
+			"usage": map[string]uint64{"input_tokens": c.turn.Input, "output_tokens": c.turn.Output,
+				"cache_read_input_tokens": c.turn.CacheRead, "cache_creation_input_tokens": c.turn.CacheWrite}}
 		if c.window > 0 {
 			r["modelUsage"] = map[string]any{c.model: map[string]uint64{"contextWindow": c.window}}
 		}

@@ -1139,6 +1139,160 @@ Item {
         return true
     }
 
+    // Usage (the agents' GET /v1/usage, the phone's UsageView): per turn, the
+    // device that asked — its mesh address, which WireGuard makes unforgeable —
+    // the machine whose model answered, the model, tokens, cost and time; every
+    // machine asked, summed by who, where and which model.
+    property var usageRows: null         // null while asking
+    property var usageMissing: []
+    property int usageDays: 7
+    property string usageMeasure: "output"   // output, turns, cost, busy
+    function usageSince(days, today) {
+        if (days <= 0) return ""
+        var d = today ? new Date(today) : new Date()
+        d.setDate(d.getDate() - (days - 1))
+        return Qt.formatDate(d, "yyyy-MM-dd")
+    }
+    function openUsage() {
+        usageDialog.open()
+        loadUsage()
+    }
+    function loadUsage() {
+        root.usageRows = null
+        var since = usageSince(usageDays), rows = [], missing = []
+        for (var i = 0; i < agentHosts.length; i++) {
+            var h = agentHosts[i]
+            var r = unwrap(callCore("agentGet", [h.address, "/v1/usage" + (since ? "?since=" + since : "")]))
+            if (!r || r.error || !Array.isArray(r.rows)) { missing.push(h.name); continue }
+            for (var j = 0; j < r.rows.length; j++) { var row = r.rows[j]; row.machine = h.name; rows.push(row) }
+        }
+        root.usageMissing = missing
+        root.usageRows = rows
+    }
+    // Who asked, as a person reads it: "nothing.office" is "nothing"; "" is
+    // the agent's own machine, counted under its name — the same device as
+    // when it asks another machine.
+    function usageDevice(r) { return r.by ? String(r.by).split(".")[0] : r.machine }
+    function usageValue(l, m) { return m === "turns" ? l.turns : m === "cost" ? l.cost : m === "busy" ? l.busy : l.output }
+    function usageCount(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n) }
+    function usageHours(ms) { var m = Math.floor(ms / 60000); return m >= 60 ? Math.floor(m / 60) + "h " + (m % 60) + "m" : m + "m" }
+    function usageFormat(l, m) {
+        return m === "turns" ? String(l.turns) : m === "cost" ? "$" + l.cost.toFixed(2) : m === "busy" ? usageHours(l.busy) : usageCount(l.output)
+    }
+    // Rows summed by key, largest first by the measure.
+    function usageGroup(rows, key, m) {
+        var by = {}, out = []
+        for (var i = 0; i < rows.length; i++) {
+            var r = rows[i], k = key(r), l = by[k]
+            if (!l) { l = by[k] = { name: k, turns: 0, output: 0, input: 0, cost: 0, busy: 0 }; out.push(l) }
+            l.turns += r.turns || 0
+            l.output += r.output || 0
+            l.input += (r.input || 0) + (r.cache_read || 0) + (r.cache_write || 0)
+            l.cost += r.cost_usd || 0
+            l.busy += r.busy_ms || 0
+        }
+        out.sort(function(a, b) { return usageValue(b, m) - usageValue(a, m) })
+        return out
+    }
+    function usageSections() {
+        var r = usageRows || [], m = usageMeasure
+        return [
+            { title: "WHO ASKED", tint: cPhosphor, lines: usageGroup(r, usageDevice, m) },
+            { title: "WHERE IT RAN", tint: cSky, lines: usageGroup(r, function(x) { return x.machine }, m) },
+            { title: "MODEL", tint: cViolet, lines: usageGroup(r, function(x) { return x.model || "?" }, m) }
+        ]
+    }
+    Dialog {
+        id: usageDialog
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(root.sz(620), root.width - root.sz(40))
+        height: Math.min(root.sz(640), root.height - root.sz(40))
+        padding: root.sz(20)
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: Qt.rgba(0, 0, 0, 0.6) }
+        background: Rectangle { color: cPanel; radius: root.sz(12); border.color: cPhosphor }
+        header: Item {}
+        footer: Item {}
+        contentItem: ColumnLayout {
+            spacing: root.sz(10)
+            RowLayout {
+                Text { text: "USAGE"; color: cPhosphor; font.family: "monospace"; font.pixelSize: root.fs(12); font.letterSpacing: 1.5; Layout.fillWidth: true }
+                Lnk { text: "CLOSE"; base: cBone; font.pixelSize: root.fs(11); onClicked: usageDialog.close() }
+            }
+            RowLayout {
+                spacing: root.sz(14)
+                Repeater {
+                    model: [[1, "today"], [7, "7 days"], [30, "30 days"], [0, "all"]]
+                    Lnk { required property var modelData
+                          text: modelData[1]; base: root.usageDays === modelData[0] ? cPhosphor : cAsh; font.pixelSize: root.fs(10)
+                          onClicked: { root.usageDays = modelData[0]; Qt.callLater(root.loadUsage) } }
+                }
+            }
+            RowLayout {
+                spacing: root.sz(14)
+                Repeater {
+                    model: [["output", "tokens out"], ["turns", "turns"], ["cost", "cost"], ["busy", "busy"]]
+                    Lnk { required property var modelData
+                          text: modelData[1]; base: root.usageMeasure === modelData[0] ? cPhosphor : cAsh; font.pixelSize: root.fs(10)
+                          onClicked: root.usageMeasure = modelData[0] }
+                }
+            }
+            Text { visible: root.usageRows === null; text: "asking the machines…"; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(11) }
+            Text { visible: root.usageRows !== null && root.usageRows.length === 0; text: "nothing used in this period"; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(11) }
+            ScrollView {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                visible: root.usageRows !== null && root.usageRows.length > 0
+                clip: true
+                Column {
+                    width: usageDialog.availableWidth - root.sz(12)
+                    spacing: root.sz(6)
+                    Repeater {
+                        model: root.usageRows ? root.usageSections() : []
+                        Column {
+                            id: usec
+                            required property var modelData
+                            width: parent.width
+                            spacing: root.sz(6)
+                            Text { text: modelData.title; color: modelData.tint; font.family: "monospace"; font.pixelSize: root.fs(10); font.letterSpacing: 1; topPadding: root.sz(8) }
+                            Repeater {
+                                model: modelData.lines
+                                Column {
+                                    id: uline
+                                    required property var modelData
+                                    property real peak: {
+                                        var ls = usec.modelData.lines, t = 0
+                                        for (var i = 0; i < ls.length; i++) t = Math.max(t, root.usageValue(ls[i], root.usageMeasure))
+                                        return t > 0 ? t : 1
+                                    }
+                                    width: parent.width
+                                    spacing: 2
+                                    RowLayout {
+                                        width: parent.width
+                                        Text { text: uline.modelData.name; color: cBone; font.family: "monospace"; font.pixelSize: root.fs(11); elide: Text.ElideRight; Layout.fillWidth: true }
+                                        Text { text: root.usageFormat(uline.modelData, root.usageMeasure); color: cBone; font.family: "monospace"; font.pixelSize: root.fs(11) }
+                                    }
+                                    Rectangle {
+                                        width: parent.width; height: root.sz(5); radius: height / 2; color: cLine
+                                        Rectangle { height: parent.height; radius: parent.radius
+                                                    color: usec.modelData.tint
+                                                    width: parent.width * Math.max(0, Math.min(1, root.usageValue(uline.modelData, root.usageMeasure) / uline.peak)) }
+                                    }
+                                    Text {
+                                        text: uline.modelData.turns + " turns · " + root.usageCount(uline.modelData.output) + " out · " + root.usageCount(uline.modelData.input) + " in"
+                                              + (uline.modelData.cost > 0 ? " · $" + uline.modelData.cost.toFixed(2) : "") + " · " + root.usageHours(uline.modelData.busy)
+                                        color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(9)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Text { visible: root.usageMissing.length > 0; text: "not reached: " + root.usageMissing.join(", "); color: cAmber; font.family: "monospace"; font.pixelSize: root.fs(10) }
+        }
+    }
+
     // The read-aloud voice: what reads now, and the natural one set up in one
     // click (agentVoice) — Piper and an English voice, downloaded by the core.
     property var voice: null             // agentVoice's state
@@ -1428,6 +1582,7 @@ Item {
                     Pulse {}
                     Text { text: "AGENTS"; color: cPhosphor; font.family: "monospace"; font.pixelSize: root.fs(12); font.letterSpacing: 1.5 }
                     Item { Layout.fillWidth: true }
+                    Lnk { visible: root.haveCore; text: "usage"; base: cAsh; font.pixelSize: root.fs(10); onClicked: Qt.callLater(root.openUsage) }
                     Lnk { visible: root.haveCore; text: "voice"; base: cAsh; font.pixelSize: root.fs(10); onClicked: Qt.callLater(root.openVoice) }
                 }
                 Text {

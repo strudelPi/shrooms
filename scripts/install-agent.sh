@@ -189,6 +189,22 @@ a+ /run/shrooms - - - - user:$USER_NAME:rx,default:user:$USER_NAME:rw,default:ma
 EOF
     systemd-tmpfiles --create "$TMPFILES"
     setfacl -m "user:$USER_NAME:rw,mask::rw" "$SOCK"
+    # And across restarts of shrooms, not only boots. Its unit has
+    # RuntimeDirectory=shrooms: systemd deletes /run/shrooms when the service
+    # stops and makes it afresh, without the ACL, when it starts — and the
+    # image's auto-update restarts it. On 2026-10-05 an update at 18:11 cut
+    # the agents on atlas and jimmy-crib off their socket. Keep the directory
+    # over a restart, and apply the ACL after every start as well.
+    if systemctl cat shrooms.service >/dev/null 2>&1; then
+        mkdir -p /etc/systemd/system/shrooms.service.d
+        cat > /etc/systemd/system/shrooms.service.d/20-agent-access.conf <<'DROPIN'
+# shrooms-agent keeps reading the socket over a restart (install-agent.sh).
+[Service]
+RuntimeDirectoryPreserve=restart
+ExecStartPost=-/bin/sh -c 'systemd-tmpfiles --create /etc/tmpfiles.d/shrooms-agent-*.conf'
+DROPIN
+        systemctl daemon-reload
+    fi
     as_user test -r "$SOCK" || { echo "  still cannot read $SOCK"; exit 1; }
     echo "  by ACL ($TMPFILES)"
 fi

@@ -326,6 +326,7 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
     var named by remember { mutableStateOf(prefs.getStringSet("named", emptySet())!!.sorted()) }
     var addingMachine by remember { mutableStateOf(false) }
     var voiceOpen by remember { mutableStateOf(false) }
+    var usageOpen by remember { mutableStateOf(false) }
     if (voiceOpen) VoiceDialog { voiceOpen = false }
     // A session awaiting confirmation that it should be deleted.
     var deleting by remember { mutableStateOf<Pair<AgentHost, AgentSession>?>(null) }
@@ -349,6 +350,11 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
 
     Box(Modifier.fillMaxSize().background(Palette.Void)) {
         SporeBackdrop()
+        if (usageOpen) {
+            BackHandler { usageOpen = false }
+            UsageScreen(hosts.orEmpty()) { usageOpen = false }
+            return@Box
+        }
         val o = open
         if (o != null) {
             BackHandler { open = null }
@@ -374,6 +380,7 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
                 Link("refresh") { refresh++ }
                 Link(if (addingMachine) "cancel" else "+ machine") { addingMachine = !addingMachine }
                 Spacer(Modifier.weight(1f))
+                Link("usage", Palette.Ash) { usageOpen = true }
                 Link("voice", Palette.Ash) { voiceOpen = true }
                 Link("close", Palette.Ash) { onClose() }
             }

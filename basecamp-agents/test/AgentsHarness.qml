@@ -62,6 +62,7 @@ Item {
     property var spoken: []          // what the view asked the core to read
     property bool speakingNow: false
     property var voiceCalls: []
+    property var usageAsked: []
     property var voiceNow: ({ installed: false, busy: false, step: "", error: "", engine: "spd-say", voice: "en_US-lessac-medium" })
     function findByName(item, name) {
         if (item.objectName === name) return item
@@ -106,6 +107,12 @@ Item {
                 if (method === "agentSearched") return JSON.stringify({ id: 1, done: true, error: "", found: [
                     { seq: 3, time: "2026-10-03T14:22:00+02:00", role: "assistant", snippet: "All **tests** pass." },
                     { seq: 0, time: "2026-10-02T10:00:00+02:00", role: "user", snippet: "the tests, in a terminal", text: "Earlier: the tests, in a terminal." } ] })
+                if (method === "agentGet" && String(args[1]).indexOf("/v1/usage") === 0) {
+                    top.usageAsked = top.usageAsked.concat([args[1]])
+                    return JSON.stringify({ machine: "laptop", rows: [
+                        { day: "2026-10-05", session: "shrooms", by: "nothing.office", model: "claude-opus-5[1m]", turns: 3, input: 10, cache_read: 1000, cache_write: 200, output: 900, cost_usd: 1.5, busy_ms: 120000 },
+                        { day: "2026-10-05", session: "notes", by: "", model: "ollama/qwen3", turns: 5, input: 50, cache_read: 0, cache_write: 0, output: 2000, cost_usd: 0, busy_ms: 3600000 } ] })
+                }
                 if (method === "agentVoice") {
                     top.voiceCalls = top.voiceCalls.concat([args[0]])
                     if (args[0] === "setup") top.voiceNow = { installed: false, busy: true, step: "downloading Piper (25 MB)", error: "", engine: "spd-say", voice: "en_US-lessac-medium" }
@@ -373,6 +380,21 @@ Item {
                           + " lit=" + lit + " read=" + JSON.stringify(readSeq) + " done=" + done
                           + " auto=[" + afterOne + "] then=[" + top.spoken.join("|") + "] queue=" + view.speakQueue.length)
             view.setAutoPlay(view.agentOpen, false)
+
+            // Usage: every machine asked from the period's first day, summed by
+            // who asked, where it ran and which model.
+            view.usageDays = 7
+            view.loadUsage()
+            var secs = view.usageSections()
+            view.usageMeasure = "cost"
+            var byCost = view.usageSections()[0].lines.map(function(l) { return l.name }).join(",")
+            console.error("USAGE asked=" + top.usageAsked[0].replace(/since=\d{4}-\d{2}-\d{2}/, "since=D") + " who="
+                          + secs[0].lines.map(function(l) { return l.name + ":" + view.usageFormat(l, "output") }).join(",")
+                          + " where=" + secs[1].lines.map(function(l) { return l.name + ":" + l.turns }).join(",")
+                          + " model=" + secs[2].lines.map(function(l) { return l.name }).join(",")
+                          + " bycost=" + byCost + " busy=" + view.usageHours(secs[0].lines[0].busy)
+                          + " since7=" + view.usageSince(7, "2026-10-05T12:00:00") + " sinceAll=[" + view.usageSince(0) + "]")
+            view.usageMeasure = "output"
 
             // The voice section: says what reads now, sets the natural one up.
             view.openVoice()

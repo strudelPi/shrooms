@@ -241,6 +241,22 @@ TextToSpeech — with Piper when it is set up in `~/.local/share/shrooms/piper`
 speech-dispatcher's `spd-say`. Both apps' "voice" section says what reads
 now and how to get a natural voice (docs/agents-voices.md).
 
+**Usage** (both apps, "usage"): who uses the agents, how much, and where —
+the basis of sharing a model on a machine of your own fairly, or of billing
+for it. Each agent reads it out of its session logs (`GET /v1/usage
+[?since=2006-01-02]`: rows per day, session, device and model with turns,
+tokens, cost and busy time), history included; the apps ask every machine and
+sum it by **who asked**, **where it ran** and **which model**, over today, 7
+or 30 days or all, by tokens out, turns, cost or busy time. Who asked is the
+turn's sender: the mesh peer its request came from, which WireGuard makes
+unforgeable, or the agent's own machine for its local socket (Basecamp on it)
+— counted under that machine's name. A turn's tokens are its result's
+`usage`; its cost is what it took the harness's running total above its
+highest so far (Claude Code's total runs across restarts and dips on a resume;
+counting from the last figure counted every dip twice), the log's first
+result only setting where the count starts; busy time is from the asking to
+the answer, a turn left waiting over two hours counted by its own duration.
+
 **Unread replies** show as a count on each session in both apps: the
 session's turns (one per reply, counted by the agent) less those there were
 when it was last open on that device with the app in front. Each device
@@ -274,7 +290,14 @@ reason some conversations showed empty after switching to them (not proven).
   would roll a new daemon onto all of them;
 - if that user cannot read the control socket, grants it by ACL, kept across
   reboots by `/etc/tmpfiles.d/shrooms-agent-USER.conf` (directory line first;
-  see below for why);
+  see below for why) and across restarts of shrooms by a drop-in,
+  `/etc/systemd/system/shrooms.service.d/20-agent-access.conf`:
+  `RuntimeDirectoryPreserve=restart` and the ACL applied again after every
+  start. shrooms' unit has `RuntimeDirectory=shrooms`, so systemd deleted
+  `/run/shrooms` at every stop and made it afresh without the ACL — and the
+  image's auto-update restarts it: on 2026-10-05 an update cut the agents on
+  atlas and jimmy-crib off their socket. shrooms' own unit (packaging and
+  `install.sh`) now keeps the directory over a restart too;
 - opens TCP 7387 to this machine's own mesh addresses only, under firewalld
   or ufw;
 - installs `/etc/systemd/user/shrooms-agent.service`, turns lingering on and

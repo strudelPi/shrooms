@@ -126,6 +126,9 @@ var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 type Manager struct {
 	log *slog.Logger
 	dir string // state: sessions.json and one event log per session
+	// usage is what the session logs say the model did, read incrementally
+	// (Usage).
+	usage usageCache
 
 	// harnesses this machine can run sessions of, by name, and the program
 	// each is run as. Claude Code always; others when Register finds them.

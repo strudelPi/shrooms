@@ -30,6 +30,12 @@ func Handler(log *slog.Logger, m *Manager, who Who) http.Handler {
 	h := &handler{log: log, m: m, who: who}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/sessions", h.list)
+	// What the model did, turn by turn, by day, session, the device that asked
+	// and model (usage.go); ?since=2006-01-02 limits it.
+	mux.HandleFunc("GET /v1/usage", func(w http.ResponseWriter, r *http.Request) {
+		host, _ := os.Hostname()
+		writeJSON(w, http.StatusOK, map[string]any{"machine": host, "rows": m.Usage(r.URL.Query().Get("since"))})
+	})
 	mux.HandleFunc("GET /v1/harnesses", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"harnesses": m.Harnesses()})
 	})

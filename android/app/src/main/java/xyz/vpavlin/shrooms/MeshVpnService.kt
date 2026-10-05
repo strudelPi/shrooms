@@ -86,6 +86,15 @@ class MeshVpnService : VpnService() {
     @Volatile
     private var networkChangedAt = 0L
 
+    // The addresses last handed to the core (Mobile.networkChanged), so it is
+    // told only when they change. The callback fires for every INTERNET
+    // network — cellular too, while on Wi-Fi — and on every link-properties
+    // change, IPv6 temporary-address rotation and DNS updates included; each
+    // call forgets the reflexive addresses peers reported, which a phone behind
+    // NAT needs, and announces again. Null when a session starts, so its first
+    // call always goes through.
+    @Volatile private var lastAddresses: String? = null
+
     /** When the watchdog last said it was holding off because the device is offline. */
     private var offlineNoted = 0L
 
@@ -359,6 +368,7 @@ class MeshVpnService : VpnService() {
                     }
 
                 // Go dups this, so closing it here later is safe.
+                lastAddresses = null
                 Mobile.start(pfd.fd.toLong(), dir, upstream, protector, logger)
                 setUnderlying()
                 watchNetworks()
@@ -876,9 +886,14 @@ class MeshVpnService : VpnService() {
                 // apps), so without this the phone announces no endpoints.
                 // Done before the resolver check below, which returns early
                 // between networks: an empty list is correct then.
+                // Only when they changed (lastAddresses); a call that failed —
+                // no session yet — is not recorded, so the next one retries.
                 val addrs = underlyingAddresses()
-                val taken = runCatching { Mobile.networkChanged(addrs) }.getOrDefault(-1L)
-                Log.i(TAG, "network $why, our addresses now [$addrs] (announcing $taken)")
+                if (addrs != lastAddresses) {
+                    val taken = runCatching { Mobile.networkChanged(addrs) }.getOrDefault(-1L)
+                    if (taken >= 0) lastAddresses = addrs
+                    Log.i(TAG, "network $why, our addresses now [$addrs] (announcing $taken)")
+                }
 
                 val servers = underlyingDnsServers()
                 if (servers.isEmpty()) {

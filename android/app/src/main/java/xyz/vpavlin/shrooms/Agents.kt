@@ -306,7 +306,7 @@ private fun contextColour(used: Long, window: Long): Color {
 
 @Composable
 private fun Link(text: String, colour: Color = Palette.Phosphor, onClick: () -> Unit) =
-    Text(text, style = MaterialTheme.typography.labelSmall, color = colour,
+    Text(text, style = MaterialTheme.typography.labelSmall, color = colour, maxLines = 1, softWrap = false,
         modifier = Modifier.clickable { onClick() }.padding(horizontal = 8.dp, vertical = 10.dp))
 
 // --- the list ---------------------------------------------------------------
@@ -907,7 +907,10 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                     }
                     streaming = text
                     if (replaying) { replay.addAll(kept); quiet = 0 }
-                    else if (kept.isNotEmpty()) events.addAll(kept)
+                    else if (kept.isNotEmpty()) {
+                        events.addAll(kept)
+                        Speech.heard(ctx, o.host, o.session, kept)
+                    }
                     connError = ""
                 }
                 delay(120)
@@ -937,6 +940,10 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
             last !is ChatItem.Earlier && last !is ChatItem.Note && last !is ChatItem.Voice &&
             !(last is ChatItem.Prompt && !last.open)))
     val waiting = items.any { it is ChatItem.Prompt && it.open }
+    // Read aloud: what is being read now, and whether new replies are.
+    val readingNow by Speech.playing.collectAsState()
+    val autoTick by Speech.autoChanged.collectAsState()
+    val autoPlay = remember(autoTick, o) { Speech.autoPlay(ctx, o.host, o.session) }
     // Ends the turn running now, as Esc does in Claude Code's terminal; the
     // session stays and takes the next message.
     fun stopTurn() { scope.launch(Dispatchers.IO) { runCatching { client.interrupt(o.session) } } }
@@ -1030,7 +1037,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 22.dp)) {
                 val auto = i?.autoApprove == true
                 // A harness that never asks has nothing to approve.
-                if (i?.approves != false) Link(if (auto) "AUTO-APPROVE ON" else "asks first", if (auto) Palette.Phosphor else Palette.Ash) {
+                if (i?.approves != false) Link(if (auto) "AUTO-APPROVE" else "asks first", if (auto) Palette.Phosphor else Palette.Ash) {
                     scope.launch {
                         withContext(Dispatchers.IO) { runCatching { client.setAutoApprove(o.session, !auto) } }
                             .onSuccess { info = i?.copy(autoApprove = !auto) }
@@ -1038,6 +1045,10 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                     }
                 }
                 Spacer(Modifier.weight(1f))
+                Link(if (autoPlay) "AUTO-PLAY" else "auto-play", if (autoPlay) Palette.Phosphor else Palette.Ash) {
+                    val last = maxOf(info?.lastSeq ?: 0, events.lastOrNull()?.seq ?: 0)
+                    Speech.setAutoPlay(ctx, o.host, o.session, !autoPlay, last)
+                }
                 if (working) Link("■ stop", Palette.Rust) { stopTurn() }
                 Link(if (searching) "close search" else "search", Palette.Sky) { searching = !searching }
                 Link("delete", Palette.Ash) { askDelete = true }
@@ -1144,6 +1155,9 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                                 runCatching { client.retryVoice(o.session, id) }
                                     .onFailure { actionError = it.message ?: "could not transcribe it again" }
                             }
+                        }, reading = readingNow == "${o.host}/${o.session}/${item.seq}", onRead = { said ->
+                            val id = "${o.host}/${o.session}/${said.seq}"
+                            if (readingNow == id) Speech.stop() else Speech.say(ctx, id, said.text)
                         })
                     }
                 }
@@ -1296,9 +1310,10 @@ private fun Bubble(bg: Color, border: Color = Palette.Line, content: @Composable
 }
 
 @Composable
-private fun Stamp(text: String, colour: Color = Palette.Ash, copy: String? = null) {
+private fun Stamp(text: String, colour: Color = Palette.Ash, copy: String? = null, extra: (@Composable () -> Unit)? = null) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 4.dp)) {
         Text(text, style = MaterialTheme.typography.labelSmall, color = colour, modifier = Modifier.weight(1f))
+        extra?.invoke()
         if (copy != null) CopyLink(copy)
     }
 }
@@ -1325,7 +1340,7 @@ private fun CopyLink(text: String) {
 
 @Composable
 private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean, Map<String, String>?) -> Unit,
-                    onRetryVoice: (String) -> Unit = {}) {
+                    onRetryVoice: (String) -> Unit = {}, reading: Boolean = false, onRead: ((ChatItem.Said) -> Unit)? = null) {
     when (item) {
         is ChatItem.You -> Bubble(Palette.Phosphor.copy(alpha = 0.08f), Palette.Phosphor.copy(alpha = 0.35f)) {
             Stamp(listOf(if (item.voice) "YOU 🎤" else "YOU", item.by, whenSaid(item.time)).filter { it.isNotEmpty() }.joinToString("  ·  "),
@@ -1333,7 +1348,12 @@ private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean, Map<String, Stri
             Text(spans(Markdown.links(item.text)), style = MaterialTheme.typography.bodyMedium)
         }
         is ChatItem.Said -> Bubble(Palette.Panel) {
-            Stamp(whenSaid(item.time), copy = item.text)
+            Stamp(whenSaid(item.time), copy = item.text) {
+                // Read aloud, or stop reading (Speech).
+                if (onRead != null) Text(if (reading) "■ stop" else "▶ listen", style = MaterialTheme.typography.labelSmall,
+                    color = if (reading) Palette.Rust else Palette.Sky,
+                    modifier = Modifier.clickable { onRead(item) }.padding(start = 6.dp, end = 10.dp, top = 2.dp, bottom = 2.dp))
+            }
             MarkdownText(item.text)
         }
         is ChatItem.Earlier -> if (item.user) {

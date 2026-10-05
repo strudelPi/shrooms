@@ -110,21 +110,23 @@ object History {
     /**
      * Brings the copy of one session up to date from its machine, reading only
      * what it lacks — so a conversation is there offline without having been
-     * opened first. Called by the watcher in the background.
+     * opened first. Called by the watcher in the background. Returns the
+     * events it read, for auto-play (Speech.heard).
      */
-    fun refresh(ctx: Context, client: AgentClient, host: String, session: String, lastSeq: Long) {
+    fun refresh(ctx: Context, client: AgentClient, host: String, session: String, lastSeq: Long): List<AgentEvent> {
         val kept = load(ctx, host, session)
-        val after = after(kept, lastSeq) ?: return
+        val after = after(kept, lastSeq) ?: return emptyList()
         val more = ArrayList<AgentEvent>()
         var last = after
         client.follow(session, after, stop = { last >= lastSeq }, tail = EVENTS) { e ->
             if (e.kind != "partial") { more += e; last = e.seq }
         }
-        if (more.isEmpty()) return
+        if (more.isEmpty()) return more
         val earlier = if (after == 0L || kept == null) {
             runCatching { client.history(session, 30) }.getOrDefault(emptyList())
         } else kept.earlier
         save(ctx, host, session, extend(kept, after, more), earlier)
+        return more
     }
 
     fun forget(ctx: Context, host: String, session: String) {

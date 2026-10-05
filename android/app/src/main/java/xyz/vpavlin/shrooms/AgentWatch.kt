@@ -130,6 +130,7 @@ class AgentWatcher(private val ctx: Context) {
                     // Kept up to date for offline; the one on screen keeps itself.
                     if (AgentWatch.visible != key) {
                         runCatching { History.refresh(ctx, AgentClient(h.address), h.name, s.name, s.lastSeq) }
+                            .onSuccess { Speech.heard(ctx, h.name, s.name, it) }
                     }
                 }
             }

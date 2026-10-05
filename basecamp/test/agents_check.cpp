@@ -61,6 +61,45 @@ int main(int argc, char** argv)
         CHECK(trimStrings("{\"a\":\"\\\"q\\\"\"}", 4096) == "{\"a\":\"\\\"q\\\"\"}", "a short string with escapes changed");
     }
 
+    // Reading aloud: the engine runs as a process group of its own, says it
+    // is speaking until it ends, and stop ends all of it. A stand-in Piper in
+    // a data folder of its own, silent, so the check makes no sound.
+    {
+        char tmpl[] = "/tmp/speak-check-XXXXXX";
+        std::string data = ::mkdtemp(tmpl);
+        std::string saved = std::getenv("XDG_DATA_HOME") ? std::getenv("XDG_DATA_HOME") : "";
+        setenv("XDG_DATA_HOME", data.c_str(), 1);
+        std::string dir = data + "/shrooms/piper";
+        std::system(("mkdir -p " + dir + " && printf '#!/bin/sh\\ncat > " + data + "/said\\nsleep ${FAKE_PIPER_SLEEP:-30}\\n' > " + dir +
+                     "/piper && chmod +x " + dir + "/piper && : > " + dir + "/en.onnx && : > " + dir + "/cs.onnx").c_str());
+        Hub h;
+        std::string engine;
+        std::string why = h.speak("Hello from the mesh.", false);
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        bool on = h.speaking(engine);
+        CHECK(why.empty() && on && engine == "piper", "speak: why=%s on=%d engine=%s", why.c_str(), on, engine.c_str());
+        FILE* f = std::fopen((data + "/said").c_str(), "r");
+        char buf[128] = {0};
+        if (f) { std::fread(buf, 1, sizeof buf - 1, f); std::fclose(f); }
+        CHECK(std::string(buf) == "Hello from the mesh.", "the engine was given: %s", buf);
+        auto t0 = std::chrono::steady_clock::now();
+        h.speakStop();
+        long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+        CHECK(!h.speaking(engine) && ms < 2000, "stop took %ld ms, still speaking %d", ms, h.speaking(engine));
+        // One that ends by itself is reported done.
+        setenv("FAKE_PIPER_SLEEP", "0", 1);
+        h.speak("Short.", false);
+        bool done = false;
+        for (int i = 0; i < 30 && !done; i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            done = !h.speaking(engine);
+        }
+        CHECK(done, "a finished reading still says speaking");
+        unsetenv("FAKE_PIPER_SLEEP");
+        if (saved.empty()) unsetenv("XDG_DATA_HOME"); else setenv("XDG_DATA_HOME", saved.c_str(), 1);
+        std::system(("rm -rf " + data).c_str());
+    }
+
     std::string out, err;
     bool ok = request(addr, "GET", "/v1/sessions", "", 5, out, err);
     CHECK(ok && out.find("\"sessions\"") != std::string::npos, "%s %s", err.c_str(), out.substr(0, 80).c_str());

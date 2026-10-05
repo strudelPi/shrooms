@@ -59,6 +59,8 @@ Item {
     // 1: the core shows the copy kept on disk; 2: the machine's events have
     // replaced it (a new epoch).
     property int keptPhase: 0
+    property var spoken: []          // what the view asked the core to read
+    property bool speakingNow: false
     function findByName(item, name) {
         if (item.objectName === name) return item
         for (var i = 0; i < item.children.length; i++) {
@@ -102,6 +104,11 @@ Item {
                 if (method === "agentSearched") return JSON.stringify({ id: 1, done: true, error: "", found: [
                     { seq: 3, time: "2026-10-03T14:22:00+02:00", role: "assistant", snippet: "All **tests** pass." },
                     { seq: 0, time: "2026-10-02T10:00:00+02:00", role: "user", snippet: "the tests, in a terminal", text: "Earlier: the tests, in a terminal." } ] })
+                if (method === "agentSpeak") {
+                    if (args[0] === "say") { top.spoken = top.spoken.concat([args[2] + ":" + args[1]]); top.speakingNow = true }
+                    if (args[0] === "stop") top.speakingNow = false
+                    return JSON.stringify(args[0] === "state" ? { speaking: top.speakingNow, engine: "spd-say" } : { ok: true })
+                }
                 if (method === "agentWatch") { top.lastWatch = args.join(" "); return JSON.stringify({ ok: true }) }
                 if (method === "agentEvents" && top.keptPhase === 1) return JSON.stringify({ next: 3, more: false, connected: false,
                     error: "connect: no route to host", kept: 1759500000000, epoch: 4, events: Number(args[0]) >= 3 ? [] : top.events.slice(0, 3) })
@@ -320,6 +327,36 @@ Item {
             console.error("KEPT seqs=" + keptSeqs + " kept=" + keptAt + " working=" + keptWorking
                           + " then=" + view.agentEventsList.map(function(e) { return e.seq }).join(",")
                           + " kept=" + view.agentKept + " rows=" + chatCount())
+            // Read aloud: markdown as prose, in the reply's language; auto-play
+            // reads only new replies, in order, one after another.
+            console.error("SPEAKABLE=" + JSON.stringify(view.speakable("## Results\nThe **agent** found [three papers](https://x.io/a) and `go test` passed.\n\n```go\nfunc main() {}\n```\nSee https://example.org/x for more.")))
+            console.error("CZECH=" + view.isCzech("Tak jo, to bylo fakt rychlé, tohle se mi líbí a Parakeet je rozhodně lepší.")
+                          + "," + view.isCzech("Václav asked for the release notes to be written up properly before Friday, with the changes grouped by component and the breaking ones first."))
+            view.openSession(view.agentHosts[0], "shrooms")
+            view.pumpAgent()
+            top.spoken = []
+            view.readAloud(3, "## Running them\n\nFirst `make test`.")
+            var first = top.spoken.join("|"), firstKey = view.speakingKey
+            view.readAloud(3, "## Running them")   // again: stops
+            var stopped = view.speakingKey === "" && !top.speakingNow
+            view.setAutoPlay(view.agentOpen, true)
+            top.spoken = []
+            view.heardEvents([
+                top.ev(2, "claude", { type: "assistant", message: { content: [ { type: "text", text: "Old, before auto-play." } ] } }),
+                top.ev(20, "claude", { type: "assistant", message: { content: [ { type: "tool_use", id: "t9", name: "Bash", input: {} } ] } }),
+                top.ev(21, "claude", { type: "user", message: { content: [ { type: "tool_result", tool_use_id: "t9", content: "ok" } ] } }),
+                top.ev(22, "claude", { type: "assistant", message: { content: [ { type: "text", text: "Hotovo, všechno běží." } ] } }),
+                top.ev(23, "claude", { type: "assistant", message: { content: [ { type: "thinking", thinking: "" }, { type: "text", text: "Second **reply**." } ] } }) ])
+            view.pumpSpeech()              // nothing reading: the first starts
+            var afterOne = top.spoken.join("|")
+            view.pumpSpeech()              // still reading: waits
+            top.speakingNow = false
+            view.pumpSpeech()              // finished: the next
+            view.heardEvents([ top.ev(23, "claude", { type: "assistant", message: { content: [ { type: "text", text: "Second **reply**." } ] } }) ])
+            console.error("SPEAK first=" + JSON.stringify(first) + " key=" + firstKey.split("/").slice(-2).join("/") + " stopped=" + stopped
+                          + " auto=[" + afterOne + "] then=[" + top.spoken.join("|") + "] queue=" + view.speakQueue.length)
+            view.setAutoPlay(view.agentOpen, false)
+
             // A click on a session card only schedules the opening. Run inside
             // the card, a refresh during the core call (Basecamp spins a nested
             // event loop for each) destroyed the card mid-handler and Qt

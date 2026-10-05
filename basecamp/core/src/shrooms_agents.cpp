@@ -766,6 +766,129 @@ long Hub::upload(const std::string& address, const std::string& session, const s
     return id;
 }
 
+namespace {
+
+bool executable(const std::string& p) { return ::access(p.c_str(), X_OK) == 0; }
+
+// The sample rate a Piper voice speaks at, from its .onnx.json; 22050, the
+// usual, when it does not say.
+int piperRate(const std::string& model)
+{
+    std::ifstream in(model + ".json");
+    std::stringstream ss;
+    ss << in.rdbuf();
+    std::string j = ss.str();
+    auto k = j.find("\"sample_rate\"");
+    if (k == std::string::npos) return 22050;
+    auto c = j.find(':', k);
+    int r = c == std::string::npos ? 0 : std::atoi(j.c_str() + c + 1);
+    return r > 0 ? r : 22050;
+}
+
+std::string shellQuote(const std::string& s)
+{
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\'') out += "'\\''";
+        else out += c;
+    }
+    return out + "'";
+}
+
+}  // namespace
+
+std::string Hub::speak(const std::string& text, bool czech)
+{
+    speakStop();
+    std::string piperDir = dataDir("piper");
+    std::string model = piperDir + (czech ? "/cs.onnx" : "/en.onnx");
+    std::string piper = piperDir + "/piper";
+    std::vector<std::string> argv;
+    std::string engine;
+    char tmpl[] = "/tmp/shrooms-say-XXXXXX";
+    int fd = ::mkstemp(tmpl);
+    if (fd < 0) return std::string("mkstemp: ") + std::strerror(errno);
+    ssize_t w = ::write(fd, text.data(), text.size());
+    ::close(fd);
+    if (w != static_cast<ssize_t>(text.size())) {
+        ::unlink(tmpl);
+        return "could not write the text";
+    }
+    std::string file = tmpl;
+    if (executable(piper) && ::access(model.c_str(), R_OK) == 0) {
+        // Raw audio straight to the sound server: pw-play, else aplay.
+        std::string rate = std::to_string(piperRate(model));
+        std::string cmd = shellQuote(piper) + " --model " + shellQuote(model) + " --output-raw < " + shellQuote(file) +
+            " 2>/dev/null | { pw-play --rate " + rate + " --channels 1 --format s16 - 2>/dev/null || aplay -q -r " + rate +
+            " -f S16_LE -c 1 -t raw - ; }; rm -f " + shellQuote(file);
+        argv = {"/bin/sh", "-c", cmd};
+        engine = "piper";
+    } else {
+        // -w: the client lives as long as the speech, so its exit says done.
+        std::string cmd = "spd-say -w -l " + std::string(czech ? "cs" : "en") + " -- \"$(cat " + shellQuote(file) + ")\"; rm -f " +
+            shellQuote(file);
+        argv = {"/bin/sh", "-c", cmd};
+        engine = "spd-say";
+    }
+    posix_spawnattr_t at;
+    posix_spawnattr_init(&at);
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP);
+    posix_spawnattr_setpgroup(&at, 0);
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    std::vector<char*> av;
+    for (auto& a : argv) av.push_back(const_cast<char*>(a.c_str()));
+    av.push_back(nullptr);
+    pid_t pid;
+    int rc = posix_spawn(&pid, av[0], &fa, &at, av.data(), childEnv().ptrs.data());
+    posix_spawn_file_actions_destroy(&fa);
+    posix_spawnattr_destroy(&at);
+    if (rc != 0) {
+        ::unlink(file.c_str());
+        return std::string("cannot start ") + engine + ": " + std::strerror(rc);
+    }
+    std::lock_guard<std::mutex> g(mu_);
+    speaker_ = pid;
+    speakEngine_ = engine;
+    return "";
+}
+
+void Hub::speakStop()
+{
+    int pid;
+    std::string engine;
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        pid = speaker_;
+        engine = speakEngine_;
+        speaker_ = -1;
+    }
+    if (pid <= 0) return;
+    ::kill(-pid, SIGTERM);
+    ::waitpid(pid, nullptr, 0);
+    // speech-dispatcher goes on with what it was given; tell it to stop.
+    if (engine == "spd-say") {
+        const char* av[] = {"spd-say", "-C", nullptr};
+        pid_t p;
+        if (posix_spawnp(&p, av[0], nullptr, nullptr, const_cast<char**>(av), childEnv().ptrs.data()) == 0)
+            ::waitpid(p, nullptr, 0);
+    }
+}
+
+bool Hub::speaking(std::string& engine)
+{
+    std::lock_guard<std::mutex> g(mu_);
+    engine = speakEngine_;
+    if (speaker_ <= 0) return false;
+    if (::waitpid(speaker_, nullptr, WNOHANG) == speaker_) {
+        speaker_ = -1;
+        return false;
+    }
+    return true;
+}
+
 std::string Hub::recordStart()
 {
     std::lock_guard<std::mutex> g(mu_);

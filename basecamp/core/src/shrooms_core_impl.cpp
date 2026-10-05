@@ -830,6 +830,23 @@ std::string ShroomsCoreImpl::agentUpload(const std::string& address, const std::
     return "{\"job\":" + std::to_string(hub().upload(address, session, localPath)) + "}";
 }
 
+std::string ShroomsCoreImpl::agentSpeak(const std::string& action, const std::string& text, const std::string& lang)
+{
+    if (action == "say") {
+        if (text.size() > 200 * 1024) return errorJson("too long to read", std::to_string(text.size()) + " bytes");
+        std::string why = hub().speak(text, lang == "cs");
+        return why.empty() ? "{\"ok\":true}" : errorJson("cannot read it aloud", why);
+    }
+    if (action == "stop") {
+        hub().speakStop();
+        return "{\"ok\":true}";
+    }
+    if (action != "state") return errorJson("unknown action", action);
+    std::string engine;
+    bool on = hub().speaking(engine);
+    return std::string("{\"speaking\":") + (on ? "true" : "false") + ",\"engine\":\"" + jsonEscape(engine) + "\"}";
+}
+
 std::string ShroomsCoreImpl::agentRecord(const std::string& action, const std::string& address, const std::string& session, const std::string& lang)
 {
     if (action == "start") {

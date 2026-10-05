@@ -379,6 +379,13 @@ public:
     std::string agentRecord(const std::string& action, const std::string& address, const std::string& session, const std::string& lang);
 
     /**
+     * @brief Reading the model's replies aloud on this machine: action "say"
+     * reads text (lang "cs" or "en"), "stop" stops, "state" returns
+     * {"speaking":bool,"engine":"piper|spd-say"}.
+     */
+    std::string agentSpeak(const std::string& action, const std::string& text, const std::string& lang);
+
+    /**
      * @brief Uploads and voice notes in progress or finished, and whether the
      * microphone is recording.
      */

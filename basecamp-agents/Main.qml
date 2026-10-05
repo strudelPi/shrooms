@@ -139,6 +139,10 @@ Item {
             var rd = JSON.parse(String(callCore("getPref", ["agent_read"]) || "{}"))
             if (rd && typeof rd === "object" && !Array.isArray(rd)) root.readTurns = rd
         } catch (e) {}
+        try {
+            var ap = JSON.parse(String(callCore("getPref", ["agent_autoplay"]) || "{}"))
+            if (ap && typeof ap === "object" && !Array.isArray(ap)) root.autoPlay = ap
+        } catch (e) {}
         var n = parseFloat(String(callCore("getPref", ["ui_nudge"]) || ""))
         if (!isNaN(n)) root.uiNudge = Math.max(-0.4, Math.min(1.0, n))
     }
@@ -433,6 +437,8 @@ Item {
             if (e.kind === "claude" && (t === "assistant" || t === "result")) streaming = ""
             evs.push(e)
         }
+        // The machine's own new events (not the copy kept here): auto-play.
+        if (!(r.kept > 0)) heardEvents(r.events)
         root.agentNext = r.next
         root.agentEventsList = evs
         root.agentStreaming = streaming
@@ -451,6 +457,119 @@ Item {
         // The core answers in pieces of about half a megabyte: keep reading
         // until caught up, without waiting for the next tick.
         if (r.more) Qt.callLater(pumpAgent)
+    }
+
+    // ========================================================================
+    // Reading the model's replies aloud (the phone's Speech): a ▶ on each, and
+    // per session auto-play of new ones — the model's text only, not tool
+    // calls, their output or its thinking. The core speaks (agentSpeak): Piper
+    // when it is set up, else spd-say.
+    // ========================================================================
+    property string speakingKey: ""      // "address/session/seq" being read
+    property var speakQueue: []          // [{key, text}] waiting to be read
+    property var autoPlay: ({})          // "address/session" -> last seq read
+    function speakKey(seq) { return agentOpen ? agentOpen.address + "/" + agentOpen.session + "/" + seq : "" }
+
+    // Markdown as it should sound: code named, links as their text, the marks
+    // of emphasis, headings, lists and tables gone. Kept in step with the
+    // phone's Speech.speakable.
+    function speakable(md) {
+        var s = String(md || "").replace(/\r/g, "")
+        s = s.replace(/```([A-Za-z0-9_+-]*)[^\n]*\n[\s\S]*?(```|$)/g, function(m, lang) { return lang ? "\n(" + lang + " code)\n" : "\n(code)\n" })
+        s = s.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+        s = s.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+        s = s.replace(/<(https?:\/\/[^>]+)>/g, "link")
+        s = s.replace(/https?:\/\/\S+/g, "link")
+        s = s.replace(/`([^`]*)`/g, "$1")
+        s = s.split("\n").map(function(l) {
+            l = l.replace(/^\s{0,3}#{1,6}\s+/, "").replace(/^\s*>\s?/, "").replace(/^\s*([-*+]|\d+[.)])\s+/, "")
+            if (/^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(l)) l = ""
+            l = l.replace(/\|/g, ", ")
+            if (/^\s*([-*_]\s*){3,}$/.test(l)) l = ""
+            return l
+        }).join("\n")
+        s = s.replace(/(\*\*|__|\*|_|~~)(\S(?:.*?\S)?)\1/g, "$2")
+        s = s.replace(/\n{3,}/g, "\n\n")
+        return s.trim()
+    }
+    // Czech or English: Czech has letters English never uses.
+    function isCzech(text) {
+        // Letters counted as what has a case: Qt's JavaScript has no \p{L}.
+        var t = String(text || ""), letters = 0
+        for (var i = 0; i < t.length; i++) if (t[i].toLowerCase() !== t[i].toUpperCase()) letters++
+        if (letters === 0) return false
+        return (t.match(/[ěščřžýůťďňĚŠČŘŽÝŮŤĎŇ]/g) || []).length * 100 >= letters
+    }
+    function replyText(e) {
+        if (!e || e.kind !== "claude" || !e.data || e.data.type !== "assistant") return ""
+        var c = (e.data.message && e.data.message.content) || [], parts = []
+        for (var i = 0; i < c.length; i++) if (c[i].type === "text" && String(c[i].text).trim() !== "") parts.push(String(c[i].text).trim())
+        return parts.join("\n\n")
+    }
+    function sayNow(key, text) {
+        var plain = speakable(text)
+        var r = agentCall("agentSpeak", ["say", plain, isCzech(plain) ? "cs" : "en"])
+        root.speakingKey = r ? key : ""
+    }
+    // ▶ on a reply: read it now (stopping anything else), or stop it.
+    function readAloud(seq, text) {
+        var key = speakKey(seq)
+        if (key === "") return
+        root.speakQueue = []
+        if (speakingKey === key) { agentCall("agentSpeak", ["stop", "", ""]); root.speakingKey = ""; return }
+        sayNow(key, text)
+    }
+    function autoKey(o) { return o ? o.address + "/" + o.session : "" }
+    function autoPlayOn(o) { return o !== null && autoPlay[autoKey(o)] !== undefined }
+    // Switched on, it reads what comes after the newest event shown now.
+    function setAutoPlay(o, on) {
+        if (!o) return
+        var a = {}
+        for (var k in autoPlay) a[k] = autoPlay[k]
+        if (on) {
+            var evs = agentEventsList
+            a[autoKey(o)] = evs.length > 0 ? evs[evs.length - 1].seq : 0
+        } else {
+            delete a[autoKey(o)]
+            root.speakQueue = []
+            if (speakingKey !== "") { agentCall("agentSpeak", ["stop", "", ""]); root.speakingKey = "" }
+        }
+        root.autoPlay = a
+        savePref("agent_autoplay", JSON.stringify(a))
+    }
+    // New events of the open session: its new replies queued, once, in order.
+    function heardEvents(events) {
+        var k = autoKey(agentOpen)
+        if (!events || events.length === 0 || autoPlay[k] === undefined) return
+        var last = autoPlay[k], q = speakQueue.slice(), newest = last
+        for (var i = 0; i < events.length; i++) {
+            var e = events[i]
+            if (e.kind === "partial" || !(e.seq > last)) continue
+            newest = Math.max(newest, e.seq)
+            var t = replyText(e)
+            if (t !== "") q.push({ key: k + "/" + e.seq, text: t })
+        }
+        if (newest === last) return
+        var a = {}
+        for (var kk in autoPlay) a[kk] = autoPlay[kk]
+        a[k] = newest
+        root.autoPlay = a
+        root.speakQueue = q
+        savePref("agent_autoplay", JSON.stringify(a))
+    }
+    // On the view's tick: notices a reading ending, and starts the next.
+    function pumpSpeech() {
+        if (speakingKey === "" && speakQueue.length === 0) return
+        if (speakingKey !== "") {
+            var st = unwrap(callCore("agentSpeak", ["state", "", ""]))
+            if (st && st.speaking) return
+            root.speakingKey = ""
+        }
+        if (speakQueue.length > 0) {
+            var next = speakQueue[0]
+            root.speakQueue = speakQueue.slice(1)
+            sayNow(next.key, next.text)
+        }
     }
 
     function keptWhen(ms) {
@@ -1005,7 +1124,7 @@ Item {
         interval: 300
         running: root.agentsOpen && root.agentOpen !== null && root.haveCore
         repeat: true
-        onTriggered: { root.pumpAgent(); root.pumpJobs(); root.pumpSearch() }
+        onTriggered: { root.pumpAgent(); root.pumpJobs(); root.pumpSearch(); root.pumpSpeech() }
     }
 
     // One session in the list: in its machine's group, or among the starred
@@ -1376,6 +1495,9 @@ Item {
                         }
                         Lnk { text: root.searchOpen ? "close search" : "search"; base: cSky
                               onClicked: { root.searchOpen = !root.searchOpen; if (root.searchOpen) searchField.forceActiveFocus() } }
+                        Lnk { readonly property bool on: root.autoPlayOn(root.agentOpen)
+                              text: on ? "AUTO-PLAY" : "auto-play"; base: on ? cPhosphor : cAsh
+                              onClicked: root.setAutoPlay(root.agentOpen, !on) }
                         Lnk { text: "delete"; base: cAsh; onClicked: root.askDelete() }
                         Lnk { visible: root.agentWorking; text: "■ stop"; base: cRust; onClicked: root.stopTurn() }
                     }
@@ -1660,6 +1782,10 @@ Item {
                                             font.family: "monospace"; font.pixelSize: root.fs(9); font.letterSpacing: 1
                                             Layout.fillWidth: true
                                         }
+                                        Lnk { visible: crow.kind === "said"
+                                              readonly property bool on: root.speakingKey === root.speakKey(crow.seq)
+                                              text: on ? "■ stop" : "▶ listen"; base: on ? cRust : cSky; font.pixelSize: root.fs(9)
+                                              onClicked: Qt.callLater(root.readAloud, crow.seq, crow.text) }
                                         Lnk { text: "copy"; base: cAsh; font.pixelSize: root.fs(9); onClicked: Qt.callLater(root.copyText, crow.text) }
                                     }
                                     TextEdit {

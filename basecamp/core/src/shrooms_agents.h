@@ -118,6 +118,18 @@ public:
     std::string recordStart();
 
     /**
+     * Reads text aloud on this machine, stopping whatever was being read:
+     * Piper when it is set up (~/.local/share/shrooms/piper: the piper binary
+     * and cs.onnx / en.onnx voices, each with its .onnx.json), otherwise
+     * speech-dispatcher's spd-say. Basecamp ships no Qt TextToSpeech, as it
+     * ships no Qt Multimedia. Returns "" or why it could not.
+     */
+    std::string speak(const std::string& text, bool czech);
+    void speakStop();
+    /** Whether something is being read, and with which engine. */
+    bool speaking(std::string& engine);
+
+    /**
      * Stops recording and, in the background, sends the note to be
      * transcribed on that machine (whisper.cpp, docs/agents.md). Returns the
      * job's id, or -1 with why in err. cancel drops the recording.
@@ -229,6 +241,8 @@ private:
     std::vector<Job> jobs_;
     long nextJob_ = 1;
     int recorder_ = -1;
+    int speaker_ = -1;        // process group of the speech pipeline
+    std::string speakEngine_;
     std::string recording_;
 
     long searchId_ = 0;

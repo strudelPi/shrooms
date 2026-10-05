@@ -718,8 +718,13 @@ class MeshVpnService : VpnService() {
         // background one is not, and it is also how somebody finds out that the
         // VPN they thought was running is not.
         runCatching { notifyGone(why) }
+        // So the next diagnostics say this end was the watchdog's, not a crash.
+        runCatching { Mobile.noteRestart(filesDir.absolutePath, "the watchdog: $why") }
 
-        runCatching { Mobile.stop() }
+        // Not Mobile.stop(): the process is about to end, which closes every
+        // socket and the tunnel anyway, and stopping the delivery library is
+        // where it crashed (SIGSEGV in Mobile.stop, 2026-10-04) — a crash
+        // Android then counts against restarting the app.
         runCatching { tunnel?.close() }
         android.os.Process.killProcess(android.os.Process.myPid())
     }

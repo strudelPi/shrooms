@@ -941,9 +941,18 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
             !(last is ChatItem.Prompt && !last.open)))
     val waiting = items.any { it is ChatItem.Prompt && it.open }
     // Read aloud: what is being read now, and whether new replies are.
-    val readingNow by Speech.playing.collectAsState()
+    val readingNow by Speech.reading.collectAsState()
     val autoTick by Speech.autoChanged.collectAsState()
     val autoPlay = remember(autoTick, o) { Speech.autoPlay(ctx, o.host, o.session) }
+    // A reply starting to be read is brought into view: it changes height as
+    // it turns into the reading view, and auto-play may start one off screen.
+    LaunchedEffect(readingNow?.id) {
+        val id = readingNow?.id ?: return@LaunchedEffect
+        val prefix = "${o.host}/${o.session}/"
+        if (!id.startsWith(prefix)) return@LaunchedEffect
+        val seq = id.removePrefix(prefix).toLongOrNull() ?: return@LaunchedEffect
+        AgentChat.listIndexOf(items, seq)?.let { list.animateScrollToItem(it) }
+    }
     // Ends the turn running now, as Esc does in Claude Code's terminal; the
     // session stays and takes the next message.
     fun stopTurn() { scope.launch(Dispatchers.IO) { runCatching { client.interrupt(o.session) } } }
@@ -1155,10 +1164,8 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
                                 runCatching { client.retryVoice(o.session, id) }
                                     .onFailure { actionError = it.message ?: "could not transcribe it again" }
                             }
-                        }, reading = readingNow == "${o.host}/${o.session}/${item.seq}", onRead = { said ->
-                            val id = "${o.host}/${o.session}/${said.seq}"
-                            if (readingNow == id) Speech.stop() else Speech.say(ctx, id, said.text)
-                        })
+                        }, reading = readingNow?.takeIf { item is ChatItem.Said && it.id == "${o.host}/${o.session}/${item.seq}" },
+                            onRead = { said -> Speech.say(ctx, "${o.host}/${o.session}/${said.seq}", said.text) })
                     }
                 }
                 // At the top (the list is laid out from the bottom): what was
@@ -1195,6 +1202,14 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
             }
         }
 
+        // Reading this session aloud: the controls stay here, in reach however
+        // far the reply being read is scrolled; "show" brings it back.
+        readingNow?.takeIf { it.id.startsWith("${o.host}/${o.session}/") }?.let { r ->
+            ReadingBar(r) {
+                val seq = r.id.substringAfterLast('/').toLongOrNull()
+                if (seq != null) AgentChat.listIndexOf(items, seq)?.let { at -> scope.launch { list.animateScrollToItem(at) } }
+            }
+        }
         if (actionError.isNotEmpty()) {
             Text(actionError, style = MaterialTheme.typography.bodySmall, color = Palette.Rust,
                 modifier = Modifier.padding(horizontal = 20.dp).clickable { actionError = "" })
@@ -1258,6 +1273,57 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit) {
         }
     }
 }
+
+/**
+ * A reply while it is read aloud: as the sentences being read, the current
+ * one lit, so a reply full of paths and line numbers can be followed by eye;
+ * and the controls — pause or resume, back and on a sentence, stop.
+ */
+@Composable
+private fun ReadingView(r: Speech.Reading) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        val text = androidx.compose.ui.text.buildAnnotatedString {
+            r.sentences.forEachIndexed { i, sentence ->
+                // A sentence that starts a line (Speech.sentences) keeps it.
+                if (i > 0 && !sentence.startsWith("\n")) append(" ")
+                if (i == r.index) {
+                    pushStyle(androidx.compose.ui.text.SpanStyle(color = Palette.Void, background = Palette.Sky))
+                    append(sentence)
+                    pop()
+                } else {
+                    pushStyle(androidx.compose.ui.text.SpanStyle(color = if (i < r.index) Palette.Ash else Palette.Bone))
+                    append(sentence)
+                    pop()
+                }
+            }
+        }
+        Text(text, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+/** The controls for what is being read, above the message box. */
+@Composable
+private fun ReadingBar(r: Speech.Reading, onShow: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)
+            .background(Palette.Panel, RoundedCornerShape(10.dp)).border(1.dp, Palette.Sky.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+            .padding(horizontal = 8.dp)) {
+        Pulse(if (r.paused) Palette.Ash else Palette.Sky, 6)
+        Spacer(Modifier.width(6.dp))
+        Text("${r.index + 1} / ${r.sentences.size}", style = MaterialTheme.typography.labelSmall, color = Palette.Ash, maxLines = 1)
+        ReadControl("show", Palette.Ash, onShow)
+        Spacer(Modifier.weight(1f))
+        ReadControl("⏮") { Speech.skip(-1) }
+        ReadControl(if (r.paused) "▶ resume" else "⏸ pause", Palette.Sky) { if (r.paused) Speech.resume() else Speech.pause() }
+        ReadControl("⏭") { Speech.skip(1) }
+        ReadControl("■", Palette.Rust) { Speech.stop() }
+    }
+}
+
+@Composable
+private fun ReadControl(label: String, colour: Color = Palette.Bone, onClick: () -> Unit) =
+    Text(label, style = MaterialTheme.typography.labelMedium, color = colour, maxLines = 1, softWrap = false,
+        modifier = Modifier.clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 6.dp))
 
 /**
  * Keys that do not change when an item does — a prompt being answered, say —
@@ -1340,7 +1406,7 @@ private fun CopyLink(text: String) {
 
 @Composable
 private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean, Map<String, String>?) -> Unit,
-                    onRetryVoice: (String) -> Unit = {}, reading: Boolean = false, onRead: ((ChatItem.Said) -> Unit)? = null) {
+                    onRetryVoice: (String) -> Unit = {}, reading: Speech.Reading? = null, onRead: ((ChatItem.Said) -> Unit)? = null) {
     when (item) {
         is ChatItem.You -> Bubble(Palette.Phosphor.copy(alpha = 0.08f), Palette.Phosphor.copy(alpha = 0.35f)) {
             Stamp(listOf(if (item.voice) "YOU 🎤" else "YOU", item.by, whenSaid(item.time)).filter { it.isNotEmpty() }.joinToString("  ·  "),
@@ -1349,12 +1415,12 @@ private fun ChatRow(item: ChatItem, onAnswer: (String, Boolean, Map<String, Stri
         }
         is ChatItem.Said -> Bubble(Palette.Panel) {
             Stamp(whenSaid(item.time), copy = item.text) {
-                // Read aloud, or stop reading (Speech).
-                if (onRead != null) Text(if (reading) "■ stop" else "▶ listen", style = MaterialTheme.typography.labelSmall,
-                    color = if (reading) Palette.Rust else Palette.Sky,
+                // Read aloud (Speech); while it is, the controls are below.
+                if (onRead != null && reading == null) Text("▶ listen", style = MaterialTheme.typography.labelSmall,
+                    color = Palette.Sky,
                     modifier = Modifier.clickable { onRead(item) }.padding(start = 6.dp, end = 10.dp, top = 2.dp, bottom = 2.dp))
             }
-            MarkdownText(item.text)
+            if (reading == null) MarkdownText(item.text) else ReadingView(reading)
         }
         is ChatItem.Earlier -> if (item.user) {
             Bubble(Palette.Phosphor.copy(alpha = 0.05f), Palette.Line) {

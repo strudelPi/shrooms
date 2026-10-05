@@ -223,17 +223,22 @@ Deleting a session deletes its copy.
 **Replies read aloud** (both apps): "▶ listen" on each of the model's
 replies reads it, and "auto-play" in a session's header reads its new replies
 as they come, in order — the model's text only, never tool calls, their
-output or its thinking, and nothing from before it was switched on. The text
-is read as prose: code blocks are named rather than spelled out, links read
-as their text, the marks of markdown dropped; Czech or English is chosen per
-reply from its letters. On the phone it is Android's own speech engine
-(offline, nothing to install), and the background watcher reads new replies
-with the phone in a pocket; screen and watcher share one mark of what was
-read, so nothing is read twice. In Basecamp the core speaks — Basecamp ships
-no Qt TextToSpeech — with Piper when it is set up in
-`~/.local/share/shrooms/piper` (the `piper` binary and `cs.onnx` / `en.onnx`
-voices, each with its `.onnx.json`), otherwise speech-dispatcher's
-`spd-say`; auto-play there reads the open session's replies.
+output or its thinking, and nothing from before it was switched on. It is
+read sentence by sentence, by the app rather than the engine, so it works the
+same with any engine: while a reply is read it shows as its sentences with
+the one being read lit, and a bar above the message box has pause/resume,
+back and on a sentence, stop, and "show" to scroll back to it. The text is
+read as prose: code blocks named rather than spelled out, links as their
+text, markdown marks dropped, and paths said as a person would
+("internal/agent/session.go:654" is "session.go, line 654"); Czech or
+English is chosen per reply from its letters. On the phone it is Android's
+system speech engine — a natural voice is one install away
+(docs/agents-voices.md) — and the background watcher reads new replies with
+the phone in a pocket; screen and watcher share one mark of what was read, so
+nothing is read twice. In Basecamp the core speaks — Basecamp ships no Qt
+TextToSpeech — with Piper when it is set up in `~/.local/share/shrooms/piper`
+(the `piper` binary and `en.onnx` / `cs.onnx` voices, each with its
+`.onnx.json`), otherwise speech-dispatcher's `spd-say`.
 
 **Unread replies** show as a count on each session in both apps: the
 session's turns (one per reply, counted by the agent) less those there were

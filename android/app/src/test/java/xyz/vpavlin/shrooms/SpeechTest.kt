@@ -32,6 +32,8 @@ class SpeechTest {
         assertFalse(s, s.contains("func main"))
         assertTrue(s, s.contains("See link for more."))
         assertFalse(s, s.contains("**") || s.contains("##") || s.contains("```") || s.contains("|---"))
+        // Underscores inside a word are the word; between words, emphasis.
+        assertEquals("built basecamp_voice_core.lgx for x86_64, really", Speech.speakable("built `basecamp_voice_core.lgx` for x86_64, _really_"))
     }
 
     @Test fun czechIsToldFromEnglish() {
@@ -43,14 +45,22 @@ class SpeechTest {
         assertFalse(Speech.isCzech("12345 ..."))
     }
 
-    @Test fun longTextIsCutAtParagraphsThenSentences() {
-        val para = "One sentence here. Another sentence there. "
-        val text = (1..5).joinToString("\n\n") { para.repeat(10).trim() }
-        val pieces = Speech.chunks(text, 600)
-        assertTrue(pieces.all { it.length <= 600 })
-        assertEquals(text.replace(Regex("\\s+"), " "), pieces.joinToString(" ").replace(Regex("\\s+"), " "))
-        assertTrue(pieces.all { it.endsWith(".") })
-        assertEquals(listOf("short"), Speech.chunks("short", 600))
+    @Test fun textIsReadSentenceBySentence() {
+        val s = Speech.sentences("Both are pushed. The release is v0.3.0. CI builds it, e.g. on arm64 too!\n" +
+            "Scala: still building\n\nDone? Yes. A.")
+        // A sentence that starts a line says so ("\n"): the screen keeps the lines.
+        assertEquals(listOf("Both are pushed.", "The release is v0.3.0.", "CI builds it, e.g. on arm64 too!",
+            "\nScala: still building", "\nDone? Yes. A."), s)
+        assertEquals(emptyList<String>(), Speech.sentences(" \n\n "))
+    }
+
+    @Test fun pathsAreSaidAsAPersonWould() {
+        assertEquals("see session.go, line 654 and server.go", Speech.spokenPaths("see internal/agent/session.go:654 and cmd/x/server.go"))
+        assertEquals("Agents.kt, line 1160", Speech.spokenPaths("android/app/src/main/java/xyz/vpavlin/shrooms/Agents.kt:1160:12"))
+        // Left alone: a bare name, a version, an abbreviation.
+        assertEquals("edit Main.qml for v0.3.0, e.g. today", Speech.spokenPaths("edit Main.qml for v0.3.0, e.g. today"))
+        // In a reply as read.
+        assertTrue(Speech.speakable("Fixed in `basecamp/core/src/shrooms_agents.cpp:412`.").contains("shrooms_agents.cpp, line 412."))
     }
 
     private fun assistant(seq: Long, vararg blocks: Pair<String, String>) = AgentEvent(seq, "claude", "",

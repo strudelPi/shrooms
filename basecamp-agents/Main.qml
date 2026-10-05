@@ -465,7 +465,11 @@ Item {
     // calls, their output or its thinking. The core speaks (agentSpeak): Piper
     // when it is set up, else spd-say.
     // ========================================================================
-    property string speakingKey: ""      // "address/session/seq" being read
+    // The reply being read — {key, sentences, index, paused, lang} — sentence
+    // by sentence, by the view: so it can be paused, skipped and followed (the
+    // bubble lights the sentence being read), whatever the engine.
+    property var aloud: null
+    readonly property string speakingKey: aloud ? aloud.key : ""
     property var speakQueue: []          // [{key, text}] waiting to be read
     property var autoPlay: ({})          // "address/session" -> last seq read
     function speakKey(seq) { return agentOpen ? agentOpen.address + "/" + agentOpen.session + "/" + seq : "" }
@@ -481,6 +485,7 @@ Item {
         s = s.replace(/<(https?:\/\/[^>]+)>/g, "link")
         s = s.replace(/https?:\/\/\S+/g, "link")
         s = s.replace(/`([^`]*)`/g, "$1")
+        s = spokenPaths(s)
         s = s.split("\n").map(function(l) {
             l = l.replace(/^\s{0,3}#{1,6}\s+/, "").replace(/^\s*>\s?/, "").replace(/^\s*([-*+]|\d+[.)])\s+/, "")
             if (/^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(l)) l = ""
@@ -488,7 +493,10 @@ Item {
             if (/^\s*([-*_]\s*){3,}$/.test(l)) l = ""
             return l
         }).join("\n")
-        s = s.replace(/(\*\*|__|\*|_|~~)(\S(?:.*?\S)?)\1/g, "$2")
+        s = s.replace(/(\*\*|\*|~~)(\S(?:.*?\S)?)\1/g, "$2")
+        // Underscores only as emphasis between words: inside one — x86_64 —
+        // they are the word.
+        s = s.replace(/(^|[^\w])(__|_)(\S(?:.*?\S)?)\2(?![\w])/g, "$1$3")
         s = s.replace(/\n{3,}/g, "\n\n")
         return s.trim()
     }
@@ -506,18 +514,114 @@ Item {
         for (var i = 0; i < c.length; i++) if (c[i].type === "text" && String(c[i].text).trim() !== "") parts.push(String(c[i].text).trim())
         return parts.join("\n\n")
     }
-    function sayNow(key, text) {
-        var plain = speakable(text)
-        var r = agentCall("agentSpeak", ["say", plain, isCzech(plain) ? "cs" : "en"])
-        root.speakingKey = r ? key : ""
+    // Paths said as a person would: "internal/agent/session.go:654" is
+    // "session.go, line 654". The phone's Speech.spokenPaths.
+    function spokenPaths(text) {
+        return String(text).replace(/(^|[^\w\/.-])((?:[\w.~-]+\/)*)([\w-]+(?:\.[\w-]+)*\.[A-Za-z]\w{0,9})(?::(\d+))?(?::\d+)?(?![\w\/])/g,
+            function(m, pre, dirs, name, line) {
+                if (line) return pre + name + ", line " + line
+                if (dirs) return pre + name
+                return m
+            })
     }
-    // ▶ on a reply: read it now (stopping anything else), or stop it.
+    // Sentences, the units read and lit: cut after . ! ? where a new one
+    // starts, and at line breaks. The phone's Speech.sentences.
+    function sentences(text) {
+        var out = [], lines = String(text).split("\n")
+        for (var i = 0; i < lines.length; i++) {
+            var l = lines[i].trim()
+            if (l === "") continue
+            // A sentence that starts a line keeps it ("\n"), for the display.
+            var re = /[.!?…]+["')\]]*\s+(?=["'(\[]?[A-Z0-9ÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ])/g, m, from = 0, lineStart = out.length > 0
+            var add = function(x) { if (x !== "") { out.push(lineStart ? "\n" + x : x); lineStart = false } }
+            while ((m = re.exec(l)) !== null) {
+                add(l.substring(from, m.index + m[0].length).trim())
+                from = m.index + m[0].length
+            }
+            if (from < l.length) add(l.substring(from).trim())
+        }
+        var merged = []
+        for (var j = 0; j < out.length; j++) {
+            var x = out[j]
+            if (x.trim() === "") continue
+            if (merged.length > 0 && (x.match(/[A-Za-z0-9\u00C0-\u017F]/g) || []).length <= 3) merged[merged.length - 1] += " " + x.trim()
+            else merged.push(x)
+        }
+        return merged
+    }
+    function startReading(key, text) {
+        var plain = speakable(text), s = sentences(plain)
+        if (s.length === 0) { root.aloud = null; return }
+        root.aloud = { key: key, sentences: s, index: 0, paused: false, lang: isCzech(plain) ? "cs" : "en" }
+        sayCurrent()
+    }
+    function sayCurrent() {
+        var r = aloud
+        if (!r) return
+        if (!agentCall("agentSpeak", ["say", String(r.sentences[r.index]).trim(), r.lang])) root.aloud = null
+    }
+    function setReading(changes) {
+        if (!aloud) return
+        var r = {}
+        for (var k in aloud) r[k] = aloud[k]
+        for (var c in changes) r[c] = changes[c]
+        root.aloud = r
+    }
+    // ▶ on a reply: read it now, stopping anything else.
     function readAloud(seq, text) {
         var key = speakKey(seq)
         if (key === "") return
         root.speakQueue = []
-        if (speakingKey === key) { agentCall("agentSpeak", ["stop", "", ""]); root.speakingKey = ""; return }
-        sayNow(key, text)
+        if (aloud) agentCall("agentSpeak", ["stop", "", ""])
+        startReading(key, text)
+    }
+    function pauseReading() {
+        if (!aloud || aloud.paused) return
+        agentCall("agentSpeak", ["stop", "", ""])
+        setReading({ paused: true })
+    }
+    // Resumes at the start of the sentence it was paused in.
+    function resumeReading() {
+        if (!aloud || !aloud.paused) return
+        setReading({ paused: false })
+        sayCurrent()
+    }
+    // The next sentence, or the one before (by -1); past the end, done.
+    function skipReading(by) {
+        if (!aloud) return
+        agentCall("agentSpeak", ["stop", "", ""])
+        var to = Math.max(0, aloud.index + by)
+        if (to >= aloud.sentences.length) { root.aloud = null; return }
+        setReading({ index: to, paused: false })
+        sayCurrent()
+    }
+    // Scrolls to the reply being read.
+    function showReading() {
+        if (!aloud) return
+        var seq = Number(aloud.key.substring(aloud.key.lastIndexOf("/") + 1))
+        for (var i = 0; i < chatModel.count; i++) {
+            if (chatModel.get(i).seq === seq) { root.chatStick = false; chatList.positionViewAtIndex(i, ListView.Beginning); return }
+        }
+    }
+    function stopReading() {
+        root.speakQueue = []
+        if (aloud) agentCall("agentSpeak", ["stop", "", ""])
+        root.aloud = null
+    }
+    // The reply as read: its sentences, the current one lit.
+    function aloudHtml() {
+        var r = aloud
+        if (!r) return ""
+        var out = []
+        for (var i = 0; i < r.sentences.length; i++) {
+            var raw = String(r.sentences[i]), br = i > 0 && raw.charAt(0) === "\n"
+            var t = raw.trim().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            if (br) out.push("<br>")
+            if (i === r.index) out.push('<span style="background-color:#5AA9FF; color:#07090B">' + t + '</span>')
+            else if (i < r.index) out.push('<span style="color:#6B7680">' + t + '</span>')
+            else out.push(t)
+        }
+        return out.join(" ").replace(/ <br> /g, "<br>")
     }
     function autoKey(o) { return o ? o.address + "/" + o.session : "" }
     function autoPlayOn(o) { return o !== null && autoPlay[autoKey(o)] !== undefined }
@@ -531,8 +635,7 @@ Item {
             a[autoKey(o)] = evs.length > 0 ? evs[evs.length - 1].seq : 0
         } else {
             delete a[autoKey(o)]
-            root.speakQueue = []
-            if (speakingKey !== "") { agentCall("agentSpeak", ["stop", "", ""]); root.speakingKey = "" }
+            stopReading()
         }
         root.autoPlay = a
         savePref("agent_autoplay", JSON.stringify(a))
@@ -557,18 +660,25 @@ Item {
         root.speakQueue = q
         savePref("agent_autoplay", JSON.stringify(a))
     }
-    // On the view's tick: notices a reading ending, and starts the next.
+    // On the view's tick: notices a aloud ending, and starts the next.
     function pumpSpeech() {
-        if (speakingKey === "" && speakQueue.length === 0) return
-        if (speakingKey !== "") {
+        if (!aloud && speakQueue.length === 0) return
+        if (aloud) {
+            if (aloud.paused) return
             var st = unwrap(callCore("agentSpeak", ["state", "", ""]))
             if (st && st.speaking) return
-            root.speakingKey = ""
+            // That sentence is said: the next, or the reply is done.
+            if (aloud.index + 1 < aloud.sentences.length) {
+                setReading({ index: aloud.index + 1 })
+                sayCurrent()
+                return
+            }
+            root.aloud = null
         }
         if (speakQueue.length > 0) {
             var next = speakQueue[0]
             root.speakQueue = speakQueue.slice(1)
-            sayNow(next.key, next.text)
+            startReading(next.key, next.text)
         }
     }
 
@@ -1782,17 +1892,17 @@ Item {
                                             font.family: "monospace"; font.pixelSize: root.fs(9); font.letterSpacing: 1
                                             Layout.fillWidth: true
                                         }
-                                        Lnk { visible: crow.kind === "said"
-                                              readonly property bool on: root.speakingKey === root.speakKey(crow.seq)
-                                              text: on ? "■ stop" : "▶ listen"; base: on ? cRust : cSky; font.pixelSize: root.fs(9)
+                                        Lnk { visible: crow.kind === "said" && root.speakingKey !== root.speakKey(crow.seq)
+                                              text: "▶ listen"; base: cSky; font.pixelSize: root.fs(9)
                                               onClicked: Qt.callLater(root.readAloud, crow.seq, crow.text) }
                                         Lnk { text: "copy"; base: cAsh; font.pixelSize: root.fs(9); onClicked: Qt.callLater(root.copyText, crow.text) }
                                     }
                                     TextEdit {
+                                        readonly property bool readingThis: crow.kind === "said" && root.speakingKey !== "" && root.speakingKey === root.speakKey(crow.seq)
                                         width: parent.width
                                         readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap
-                                        textFormat: crow.kind === "said" ? TextEdit.MarkdownText : TextEdit.RichText
-                                        text: crow.kind === "said" ? root.linkMarkdown(crow.text) : root.linkPlain(crow.text)
+                                        textFormat: readingThis ? TextEdit.RichText : (crow.kind === "said" ? TextEdit.MarkdownText : TextEdit.RichText)
+                                        text: readingThis ? root.aloudHtml() : (crow.kind === "said" ? root.linkMarkdown(crow.text) : root.linkPlain(crow.text))
                                         color: cBone; selectionColor: Qt.rgba(0.21, 0.94, 0.63, 0.35)
                                         font.family: "monospace"; font.pixelSize: root.fs(12)
                                         onLinkActivated: function(link) { root.openUrl(link) }
@@ -2026,6 +2136,33 @@ Item {
                         visible: root.agentTranscribing
                         Pulse { tint: cSky }
                         Text { text: "transcribing on " + (root.agentOpen ? root.agentOpen.name : "") + "…"; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                    }
+                }
+
+                // Reading this session aloud: the controls stay here, in reach
+                // however far the reply being read is scrolled (the phone's
+                // ReadingBar); "show" brings it back.
+                Rectangle {
+                    readonly property bool on: root.aloud !== null && root.agentOpen !== null
+                                                && root.speakingKey.indexOf(root.agentOpen.address + "/" + root.agentOpen.session + "/") === 0
+                    visible: on
+                    Layout.fillWidth: true
+                    implicitHeight: barRow.implicitHeight + root.sz(8)
+                    color: cPanel; radius: root.sz(8); border.color: Qt.rgba(0.35, 0.66, 1.0, 0.4)
+                    RowLayout {
+                        id: barRow
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: root.sz(8); anchors.rightMargin: root.sz(8)
+                        Pulse { tint: root.aloud && root.aloud.paused ? cAsh : cSky }
+                        Text { text: root.aloud ? (root.aloud.index + 1) + " / " + root.aloud.sentences.length : ""
+                               color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                        Lnk { text: "show"; base: cAsh; font.pixelSize: root.fs(10); onClicked: Qt.callLater(root.showReading) }
+                        Item { Layout.fillWidth: true }
+                        Lnk { text: "⏮"; base: cBone; font.pixelSize: root.fs(11); onClicked: Qt.callLater(root.skipReading, -1) }
+                        Lnk { text: root.aloud && root.aloud.paused ? "▶ resume" : "⏸ pause"; base: cSky; font.pixelSize: root.fs(11)
+                              onClicked: Qt.callLater(root.aloud && root.aloud.paused ? root.resumeReading : root.pauseReading) }
+                        Lnk { text: "⏭"; base: cBone; font.pixelSize: root.fs(11); onClicked: Qt.callLater(root.skipReading, 1) }
+                        Lnk { text: "■"; base: cRust; font.pixelSize: root.fs(11); onClicked: Qt.callLater(root.stopReading) }
                     }
                 }
 

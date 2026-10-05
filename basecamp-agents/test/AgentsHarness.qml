@@ -330,15 +330,24 @@ Item {
             // Read aloud: markdown as prose, in the reply's language; auto-play
             // reads only new replies, in order, one after another.
             console.error("SPEAKABLE=" + JSON.stringify(view.speakable("## Results\nThe **agent** found [three papers](https://x.io/a) and `go test` passed.\n\n```go\nfunc main() {}\n```\nSee https://example.org/x for more.")))
+            console.error("UNDERSCORE=" + view.speakable("built `basecamp_voice_core.lgx` for x86_64, _really_"))
             console.error("CZECH=" + view.isCzech("Tak jo, to bylo fakt rychlé, tohle se mi líbí a Parakeet je rozhodně lepší.")
                           + "," + view.isCzech("Václav asked for the release notes to be written up properly before Friday, with the changes grouped by component and the breaking ones first."))
             view.openSession(view.agentHosts[0], "shrooms")
             view.pumpAgent()
             top.spoken = []
-            view.readAloud(3, "## Running them\n\nFirst `make test`.")
-            var first = top.spoken.join("|"), firstKey = view.speakingKey
-            view.readAloud(3, "## Running them")   // again: stops
-            var stopped = view.speakingKey === "" && !top.speakingNow
+            view.readAloud(3, "## Running them\n\nFirst `internal/agent/session.go:654` is fixed. Then tests.")
+            var sents = view.aloud.sentences.join("|"), firstKey = view.speakingKey
+            view.pauseReading()
+            var paused = view.aloud.paused && !top.speakingNow
+            view.resumeReading()
+            view.skipReading(1)
+            var lit = view.aloudHtml().indexOf('#5AA9FF; color:#07090B">First session.go, line 654 is fixed.') > 0
+            top.speakingNow = false
+            view.pumpSpeech()              // that sentence said: the next
+            top.speakingNow = false
+            view.pumpSpeech()              // the last said: done
+            var readSeq = top.spoken.join("|"), done = view.aloud === null
             view.setAutoPlay(view.agentOpen, true)
             top.spoken = []
             view.heardEvents([
@@ -353,7 +362,8 @@ Item {
             top.speakingNow = false
             view.pumpSpeech()              // finished: the next
             view.heardEvents([ top.ev(23, "claude", { type: "assistant", message: { content: [ { type: "text", text: "Second **reply**." } ] } }) ])
-            console.error("SPEAK first=" + JSON.stringify(first) + " key=" + firstKey.split("/").slice(-2).join("/") + " stopped=" + stopped
+            console.error("SPEAK sentences=" + JSON.stringify(sents) + " key=" + firstKey.split("/").slice(-2).join("/") + " paused=" + paused
+                          + " lit=" + lit + " read=" + JSON.stringify(readSeq) + " done=" + done
                           + " auto=[" + afterOne + "] then=[" + top.spoken.join("|") + "] queue=" + view.speakQueue.length)
             view.setAutoPlay(view.agentOpen, false)
 

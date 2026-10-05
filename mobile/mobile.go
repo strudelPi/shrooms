@@ -1010,6 +1010,52 @@ func SetDNSServers(servers string) bool {
 	return f.Set(servers)
 }
 
+// NetworkChanged is called by the app when the phone's network changes, with
+// the device's addresses on the new network as a comma-separated list.
+//
+// The addresses are stored for every announce from now on
+// (mesh.ProvideLocalAddrs), and each running mesh drops the old observations
+// and announces at once (mesh.NetworkChanged). Values that do not parse are
+// skipped. Returns how many addresses were taken, for the app's log. Works
+// with no session running too, so the first announce after Start has them.
+func NetworkChanged(addresses string) int {
+	addrs := parseLocalAddresses(addresses)
+	mesh.ProvideLocalAddrs(addrs)
+
+	mu.Lock()
+	s := running
+	mu.Unlock()
+	if s != nil {
+		for _, in := range s.instances {
+			if in.mesh != nil {
+				in.mesh.NetworkChanged()
+			}
+		}
+	}
+	return len(addrs)
+}
+
+// parseLocalAddresses parses a comma-separated list of IP addresses, ignoring
+// whitespace and any zone suffix ("fe80::1%wlan0").
+func parseLocalAddresses(csv string) []netip.Addr {
+	var out []netip.Addr
+	for _, f := range strings.Split(csv, ",") {
+		f = strings.TrimSpace(f)
+		if i := strings.IndexByte(f, '%'); i >= 0 {
+			f = f[:i]
+		}
+		if f == "" {
+			continue
+		}
+		a, err := netip.ParseAddr(f)
+		if err != nil {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 // Start brings the mesh up on a TUN descriptor from VpnService.Builder.
 //
 // The descriptor is dup'd, because Go's os.File takes ownership and would close

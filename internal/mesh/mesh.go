@@ -454,6 +454,18 @@ func (m *Mesh) SetListenPort(p uint16) {
 		return
 	}
 	m.port.Store(uint32(p))
+	m.NetworkChanged()
+}
+
+// NetworkChanged tells the mesh this node is on a different network now, for
+// example a phone that moved from Wi-Fi to cellular, or a socket that moved to
+// a new port (SetListenPort).
+//
+// It drops the addresses peers reported seeing us at, since those belong to
+// the old network, and announces right away so peers learn the new ones
+// without waiting for the next tick. On Android the app calls this after
+// ProvideLocalAddrs; the desktop daemon notices a move on its own.
+func (m *Mesh) NetworkChanged() {
 	m.prober.ForgetReflexive()
 	m.requestAnnounce()
 }
@@ -1806,50 +1818,95 @@ func LocalAddrsProblem() error {
 	return nil
 }
 
-func localAddrs() []netip.Addr {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		localAddrsErr.Store(addrsProblem{err})
-		return nil
+// providedAddrs holds addresses the host app reported for this device.
+//
+// Android does not let apps call net.Interfaces, so on a phone localAddrs
+// finds nothing and the announce carries no endpoints. The app can read the
+// addresses from ConnectivityManager and passes them in here instead.
+var providedAddrs atomic.Value // []netip.Addr
+
+// ProvideLocalAddrs sets the addresses the host app reports for this device.
+// They are announced together with whatever net.Interfaces returns, after the
+// same filtering. Each call replaces the previous list, so an empty list means
+// "no addresses right now", which is correct between networks.
+func ProvideLocalAddrs(addrs []netip.Addr) {
+	keep := make([]netip.Addr, 0, len(addrs))
+	for _, ip := range addrs {
+		ip = ip.Unmap()
+		if ip.IsValid() && announceable(ip) {
+			keep = append(keep, ip)
+		}
 	}
-	localAddrsErr.Store(addrsProblem{})
+	providedAddrs.Store(keep)
+}
+
+func localAddrs() []netip.Addr {
 	var out []netip.Addr
-	for _, ifc := range ifaces {
-		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, err := ifc.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, a := range addrs {
-			pfx, ok := a.(*net.IPNet)
-			if !ok {
-				continue
-			}
-			ip, ok := netip.AddrFromSlice(pfx.IP)
-			if !ok {
-				continue
-			}
-			ip = ip.Unmap()
-			if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
-				continue
-			}
-			// Skip our own overlay addresses — announcing them is circular.
-			if ip.Is6() && ip.As16()[0] == 0xfd {
-				continue
-			}
-			// And the synthetic IPv4 ones (ADR-021), for the same reason. These
-			// live on the tunnel interface, so they were being announced as
-			// candidate endpoints — an address reachable only through the
-			// tunnel it is meant to establish.
-			if v4.Prefix.Contains(ip) {
-				continue
-			}
+	seen := map[netip.Addr]bool{}
+	add := func(ip netip.Addr) {
+		if !seen[ip] {
+			seen[ip] = true
 			out = append(out, ip)
 		}
 	}
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		localAddrsErr.Store(addrsProblem{err})
+	} else {
+		localAddrsErr.Store(addrsProblem{})
+		for _, ifc := range ifaces {
+			if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			addrs, err := ifc.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, a := range addrs {
+				pfx, ok := a.(*net.IPNet)
+				if !ok {
+					continue
+				}
+				ip, ok := netip.AddrFromSlice(pfx.IP)
+				if !ok {
+					continue
+				}
+				ip = ip.Unmap()
+				if announceable(ip) {
+					add(ip)
+				}
+			}
+		}
+	}
+
+	// After what we enumerated, so a host that can do both changes nothing
+	// about the order peers already know.
+	if v, ok := providedAddrs.Load().([]netip.Addr); ok {
+		for _, ip := range v {
+			add(ip)
+		}
+	}
 	return out
+}
+
+// announceable is the one filter for an address of ours, however it was found.
+func announceable(ip netip.Addr) bool {
+	if ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
+		return false
+	}
+	// Skip our own overlay addresses — announcing them is circular.
+	if ip.Is6() && ip.As16()[0] == 0xfd {
+		return false
+	}
+	// And the synthetic IPv4 ones (ADR-021), for the same reason. These live
+	// on the tunnel interface, so they were being announced as candidate
+	// endpoints — an address reachable only through the tunnel it is meant to
+	// establish.
+	if v4.Prefix.Contains(ip) {
+		return false
+	}
+	return true
 }
 
 // Deliver hands this mesh one event from a shared rendezvous node.

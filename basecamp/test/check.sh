@@ -244,6 +244,7 @@ expect 'SPEAKABLE="Results\nThe agent found three papers and go test passed.\n\n
 expect "UNDERSCORE=built basecamp_voice_core.lgx for x86_64, really" "underscores inside a word are dropped"
 expect "CZECH=true,false" "Czech is not told from English"
 expect 'SPEAK sentences="Running them|\nFirst session.go, line 654 is fixed.|Then tests." key=shrooms/3 paused=true lit=true read="en:Running them|en:Running them|en:First session.go, line 654 is fixed.|en:Then tests." done=true auto=[cs:Hotovo, všechno běží.] then=[cs:Hotovo, všechno běží.|en:Second reply.] queue=0' "replies are not read sentence by sentence, paused, resumed, skipped and lit, or auto-play reads the past, tool calls, or the same reply twice"
+expect "VOICE before=[Replies are read with speech-dispatcher (espeak), which sounds robotic.] during=[downloading Piper (25 MB)…] after=[Natural voice: Piper, en_US-lessac-medium. Replies are read with it.] calls=state,setup,state" "the voice section does not say what reads, or does not set the natural voice up"
 expect "CARDCLICK found=true deferred=true" "a click on a session card runs its work inside the card, which a refresh can destroy"
 expect "PLACEHOLDER first=[reaching laptop…] then=[no messages yet]" "an empty pane does not say it is loading, or that it is empty"
 expect "REMADE watch=fdb0:9afc:a5ef:388c:8264:7716:36fc:64eb shrooms -300 rows=0" "a copy of a session since made again is not dropped"

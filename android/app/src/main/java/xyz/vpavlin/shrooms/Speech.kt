@@ -269,6 +269,37 @@ object Speech {
         }
     }
 
+    /** SherpaTTS: offline Piper (and Coqui) voices as a system engine. */
+    const val SHERPA = "org.woheller69.ttsengine"
+
+    /**
+     * The system's speech engines, and the one it prefers — for the voice
+     * section, which says what reads now.
+     */
+    fun engines(ctx: Context, done: (List<TextToSpeech.EngineInfo>, String?) -> Unit) {
+        var probe: TextToSpeech? = null
+        probe = TextToSpeech(ctx.applicationContext) { _ ->
+            val p = probe ?: return@TextToSpeech
+            val list = runCatching { p.engines }.getOrDefault(emptyList())
+            val default = runCatching { p.defaultEngine }.getOrNull()
+            p.shutdown()
+            done(list, default)
+        }
+    }
+
+    /**
+     * Lets go of the engine, so the next reading binds to whichever the system
+     * prefers now: chosen in Android's settings, a new one is not picked up by
+     * an engine already bound.
+     */
+    @Synchronized
+    fun rebind() {
+        stop()
+        tts?.shutdown()
+        tts = null
+        ready = false
+    }
+
     @Synchronized
     fun stop() {
         queue.clear()

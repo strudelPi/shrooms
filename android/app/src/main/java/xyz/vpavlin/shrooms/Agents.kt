@@ -325,6 +325,8 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
     val prefs = remember { ctx.getSharedPreferences("agents", android.content.Context.MODE_PRIVATE) }
     var named by remember { mutableStateOf(prefs.getStringSet("named", emptySet())!!.sorted()) }
     var addingMachine by remember { mutableStateOf(false) }
+    var voiceOpen by remember { mutableStateOf(false) }
+    if (voiceOpen) VoiceDialog { voiceOpen = false }
     // A session awaiting confirmation that it should be deleted.
     var deleting by remember { mutableStateOf<Pair<AgentHost, AgentSession>?>(null) }
     val scope = rememberCoroutineScope()
@@ -372,6 +374,7 @@ fun AgentsScreen(peers: List<Peer>, onClose: () -> Unit, initial: OpenSession? =
                 Link("refresh") { refresh++ }
                 Link(if (addingMachine) "cancel" else "+ machine") { addingMachine = !addingMachine }
                 Spacer(Modifier.weight(1f))
+                Link("voice", Palette.Ash) { voiceOpen = true }
                 Link("close", Palette.Ash) { onClose() }
             }
 
@@ -1298,6 +1301,89 @@ private fun ReadingView(r: Speech.Reading) {
             }
         }
         Text(text, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+/**
+ * The read-aloud voice: which engine reads now, and how to get a natural one —
+ * SherpaTTS with a Piper voice, chosen as the system's engine — with a button
+ * for each step and one to try it (docs/agents-voices.md). The engine is the
+ * system's, so every app that reads aloud gains the voice too.
+ */
+@Composable
+private fun VoiceDialog(onClose: () -> Unit) {
+    val ctx = LocalContext.current
+    var engines by remember { mutableStateOf<List<android.speech.tts.TextToSpeech.EngineInfo>?>(null) }
+    var preferred by remember { mutableStateOf<String?>(null) }
+    var check by remember { mutableStateOf(0) }
+    // Checked again on coming back from the settings or F-Droid.
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val obs = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_RESUME) check++ }
+        lifecycle.addObserver(obs)
+        onDispose { lifecycle.removeObserver(obs) }
+    }
+    LaunchedEffect(check) {
+        Speech.rebind()
+        Speech.engines(ctx) { list, default -> engines = list; preferred = default }
+    }
+    val sherpa = engines?.any { it.name == Speech.SHERPA } == true
+    val usingSherpa = preferred == Speech.SHERPA
+    val label = engines?.firstOrNull { it.name == preferred }?.label ?: preferred ?: "…"
+    fun open(i: android.content.Intent) = runCatching { ctx.startActivity(i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onClose,
+        containerColor = Palette.Panel,
+        title = { Text("READ-ALOUD VOICE", style = MaterialTheme.typography.labelMedium, color = Palette.Sky) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Replies are read by $label" + if (usingSherpa) " — a natural voice." else ".",
+                    style = MaterialTheme.typography.bodyMedium, color = Palette.Bone)
+                if (!usingSherpa) {
+                    Text("For a natural voice, offline: SherpaTTS with a Piper voice, as Android's speech engine. " +
+                        "Every app that reads aloud gets it too.", style = MaterialTheme.typography.bodySmall, color = Palette.Ash)
+                    VoiceStep("1", if (sherpa) "SherpaTTS is installed ✓" else "Install SherpaTTS from F-Droid", done = sherpa,
+                        action = if (sherpa) null else "F-Droid") {
+                        // F-Droid's own page: the F-Droid app takes the link
+                        // when installed, a browser otherwise. Not market://,
+                        // which the Play Store claims — SherpaTTS is F-Droid's.
+                        val page = android.net.Uri.parse("https://f-droid.org/packages/${Speech.SHERPA}/")
+                        open(android.content.Intent(android.content.Intent.ACTION_VIEW, page).setPackage("org.fdroid.fdroid")) ||
+                            open(android.content.Intent(android.content.Intent.ACTION_VIEW, page))
+                    }
+                    VoiceStep("2", "In it, pick an English voice — en_US lessac or ryan (medium or high)", done = false,
+                        action = if (sherpa) "open" else null) {
+                        ctx.packageManager.getLaunchIntentForPackage(Speech.SHERPA)?.let { open(it) }
+                    }
+                    VoiceStep("3", "Make it the preferred engine: Text-to-speech → Preferred engine → SherpaTTS",
+                        done = usingSherpa, action = "settings") {
+                        open(android.content.Intent("com.android.settings.TTS_SETTINGS")) ||
+                            open(android.content.Intent(android.provider.Settings.ACTION_SETTINGS))
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Row {
+                Text("▶ try", style = MaterialTheme.typography.labelMedium, color = Palette.Sky,
+                    modifier = Modifier.clickable { Speech.say(ctx, "voice-test", "This is how replies will sound. Fixed in session.go, line 654.") }
+                        .padding(12.dp))
+                Text("CLOSE", style = MaterialTheme.typography.labelMedium, color = Palette.Bone,
+                    modifier = Modifier.clickable { Speech.stop(); onClose() }.padding(12.dp))
+            }
+        },
+    )
+}
+
+@Composable
+private fun VoiceStep(n: String, text: String, done: Boolean, action: String?, onAction: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(n, style = MaterialTheme.typography.labelMedium, color = if (done) Palette.Phosphor else Palette.Sky,
+            modifier = Modifier.padding(end = 10.dp))
+        Text(text, style = MaterialTheme.typography.bodySmall, color = if (done) Palette.Ash else Palette.Bone,
+            modifier = Modifier.weight(1f))
+        if (action != null) Text(action, style = MaterialTheme.typography.labelMedium, color = Palette.Phosphor,
+            modifier = Modifier.clickable(onClick = onAction).padding(start = 8.dp, top = 6.dp, bottom = 6.dp))
     }
 }
 

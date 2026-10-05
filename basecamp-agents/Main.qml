@@ -1139,6 +1139,69 @@ Item {
         return true
     }
 
+    // The read-aloud voice: what reads now, and the natural one set up in one
+    // click (agentVoice) — Piper and an English voice, downloaded by the core.
+    property var voice: null             // agentVoice's state
+    function openVoice() {
+        root.voice = unwrap(callCore("agentVoice", ["state"]))
+        voiceDialog.open()
+    }
+    function voiceAction(action) {
+        var r = agentCall("agentVoice", [action])
+        if (r) root.voice = r
+    }
+    function voiceText(v) {
+        if (!v) return ""
+        if (v.busy) return (v.step || "working") + "…"
+        if (v.error) return "Could not set it up: " + v.error
+        if (v.installed) return "Natural voice: Piper, " + v.voice + ". Replies are read with it."
+        return "Replies are read with " + (v.engine === "spd-say" ? "speech-dispatcher (espeak), which sounds robotic"
+                                                              : "nothing: no speech engine was found") + "."
+    }
+    Timer {
+        interval: 700; repeat: true
+        running: voiceDialog.visible && root.voice !== null && root.voice.busy
+        onTriggered: root.voice = root.unwrap(root.callCore("agentVoice", ["state"]))
+    }
+    Dialog {
+        id: voiceDialog
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(root.sz(520), root.width - root.sz(40))
+        padding: root.sz(20)
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: Qt.rgba(0, 0, 0, 0.6) }
+        background: Rectangle { color: cPanel; radius: root.sz(12); border.color: cSky }
+        header: Item {}
+        footer: Item {}
+        contentItem: ColumnLayout {
+            spacing: root.sz(14)
+            Text { text: "READ-ALOUD VOICE"; color: cSky; font.family: "monospace"; font.pixelSize: root.fs(12); font.letterSpacing: 1.5 }
+            Text {
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                text: root.voiceText(root.voice)
+                color: root.voice && root.voice.error ? cRust : cBone; font.family: "monospace"; font.pixelSize: root.fs(12)
+            }
+            Text {
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                visible: root.voice !== null && !root.voice.installed && !root.voice.busy
+                text: "Set up a natural voice: Piper, an offline speech engine, with an English voice — about 90 MB, downloaded once into ~/.local/share/shrooms/piper. Nothing is installed system-wide."
+                color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(11)
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                spacing: root.sz(20)
+                Lnk { visible: root.voice !== null && root.voice.installed && !root.voice.busy; text: "remove"; base: cAsh; font.pixelSize: root.fs(12)
+                      onClicked: root.voiceAction("remove") }
+                Lnk { visible: root.voice !== null && root.voice.installed && !root.voice.busy; text: "▶ try"; base: cSky; font.pixelSize: root.fs(12)
+                      onClicked: root.agentCall("agentSpeak", ["say", "This is how replies will sound.", "en"]) }
+                Lnk { visible: root.voice !== null && !root.voice.installed && !root.voice.busy; text: "SET UP"; base: cPhosphor; font.pixelSize: root.fs(12)
+                      onClicked: root.voiceAction("setup") }
+                Lnk { text: "CLOSE"; base: cBone; font.pixelSize: root.fs(12); onClicked: voiceDialog.close() }
+            }
+        }
+    }
+
     // Asks before deleting, and says what is lost and what is not.
     Dialog {
         id: deleteDialog
@@ -1365,6 +1428,7 @@ Item {
                     Pulse {}
                     Text { text: "AGENTS"; color: cPhosphor; font.family: "monospace"; font.pixelSize: root.fs(12); font.letterSpacing: 1.5 }
                     Item { Layout.fillWidth: true }
+                    Lnk { visible: root.haveCore; text: "voice"; base: cAsh; font.pixelSize: root.fs(10); onClicked: Qt.callLater(root.openVoice) }
                 }
                 Text {
                     Layout.fillWidth: true

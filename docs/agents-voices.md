@@ -1,8 +1,11 @@
 # Shrooms Agents: a natural voice for read-aloud
 
-**Status:** research and a recommendation, 2026-10-05. Nothing here is built
-beyond what `docs/agents.md` describes (read-aloud with whatever engine the
-device has). For a decision.
+**Status:** 2026-10-05 — option A is built: a "voice" section in each app
+(next to "close" on the phone, beside AGENTS in Basecamp). In Basecamp it sets
+Piper and an English voice up with one click; on the phone it says which
+engine reads and walks through SherpaTTS — install, pick a voice, make it the
+preferred engine — with a button for each step and one to try it. Option B is
+not built.
 
 ## What there is now
 
@@ -40,9 +43,13 @@ Both run through **sherpa-onnx** (k2-fsa), which also runs on Android.
   then on — offline, nothing sent anywhere, pause/skip/highlight unchanged.
   **VoxSherpa TTS** does the same with Kokoro too, for the better voice, if the
   phone keeps up.
-- *Basecamp:* put Piper and two voices in `~/.local/share/shrooms/piper`
-  (`piper`, `en.onnx` + `en.onnx.json`, optionally `cs.onnx`); the core uses
-  it already.
+- *Basecamp:* "voice" → SET UP: the core downloads rhasspy/piper's
+  standalone build (25 MB, for the machine's architecture) and
+  `en_US-lessac-medium` from rhasspy's own voice repository (63 MB) into
+  `~/.local/share/shrooms/piper`, and reads with them from then on; "remove"
+  goes back to spd-say. The voice is rhasspy's original, not the copy
+  repackaged for sherpa-onnx: under this Piper build the repackaged one ran at
+  half real time on a 20-core laptop, the original at about eleven times.
 
 **B. On the agent's machine — one voice everywhere (later, if A is not enough).**
 

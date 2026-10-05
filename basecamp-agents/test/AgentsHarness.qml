@@ -61,6 +61,8 @@ Item {
     property int keptPhase: 0
     property var spoken: []          // what the view asked the core to read
     property bool speakingNow: false
+    property var voiceCalls: []
+    property var voiceNow: ({ installed: false, busy: false, step: "", error: "", engine: "spd-say", voice: "en_US-lessac-medium" })
     function findByName(item, name) {
         if (item.objectName === name) return item
         for (var i = 0; i < item.children.length; i++) {
@@ -104,6 +106,11 @@ Item {
                 if (method === "agentSearched") return JSON.stringify({ id: 1, done: true, error: "", found: [
                     { seq: 3, time: "2026-10-03T14:22:00+02:00", role: "assistant", snippet: "All **tests** pass." },
                     { seq: 0, time: "2026-10-02T10:00:00+02:00", role: "user", snippet: "the tests, in a terminal", text: "Earlier: the tests, in a terminal." } ] })
+                if (method === "agentVoice") {
+                    top.voiceCalls = top.voiceCalls.concat([args[0]])
+                    if (args[0] === "setup") top.voiceNow = { installed: false, busy: true, step: "downloading Piper (25 MB)", error: "", engine: "spd-say", voice: "en_US-lessac-medium" }
+                    return JSON.stringify(top.voiceNow)
+                }
                 if (method === "agentSpeak") {
                     if (args[0] === "say") { top.spoken = top.spoken.concat([args[2] + ":" + args[1]]); top.speakingNow = true }
                     if (args[0] === "stop") top.speakingNow = false
@@ -366,6 +373,15 @@ Item {
                           + " lit=" + lit + " read=" + JSON.stringify(readSeq) + " done=" + done
                           + " auto=[" + afterOne + "] then=[" + top.spoken.join("|") + "] queue=" + view.speakQueue.length)
             view.setAutoPlay(view.agentOpen, false)
+
+            // The voice section: says what reads now, sets the natural one up.
+            view.openVoice()
+            var before = view.voiceText(view.voice)
+            view.voiceAction("setup")
+            var during = view.voiceText(view.voice)
+            top.voiceNow = { installed: true, busy: false, step: "", error: "", engine: "piper", voice: "en_US-lessac-medium" }
+            view.openVoice()
+            console.error("VOICE before=[" + before + "] during=[" + during + "] after=[" + view.voiceText(view.voice) + "] calls=" + top.voiceCalls.join(","))
 
             // A click on a session card only schedules the opening. Run inside
             // the card, a refresh during the core call (Basecamp spins a nested

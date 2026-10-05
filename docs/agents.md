@@ -237,8 +237,9 @@ system speech engine — a natural voice is one install away
 the phone in a pocket; screen and watcher share one mark of what was read, so
 nothing is read twice. In Basecamp the core speaks — Basecamp ships no Qt
 TextToSpeech — with Piper when it is set up in `~/.local/share/shrooms/piper`
-(the `piper` binary and `en.onnx` / `cs.onnx` voices, each with its
-`.onnx.json`), otherwise speech-dispatcher's `spd-say`.
+— set up with one click in its "voice" section — otherwise
+speech-dispatcher's `spd-say`. Both apps' "voice" section says what reads
+now and how to get a natural voice (docs/agents-voices.md).
 
 **Unread replies** show as a count on each session in both apps: the
 session's turns (one per reply, counted by the agent) less those there were

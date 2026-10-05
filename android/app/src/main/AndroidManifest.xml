@@ -29,6 +29,13 @@
          hides other apps unless they are named here. -->
     <queries>
         <package android:name="xyz.vpavlin.shrooms.agents" />
+        <!-- Shrooms Agents' voice section names the installed speech engines
+             and opens SherpaTTS (Speech, docs/agents-voices.md). -->
+        <package android:name="org.woheller69.ttsengine" />
+        <package android:name="org.fdroid.fdroid" />
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
     </queries>
 
     <application

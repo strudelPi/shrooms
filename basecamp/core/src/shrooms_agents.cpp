@@ -17,6 +17,7 @@
 #include <spawn.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/utsname.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -321,6 +322,10 @@ Hub::~Hub()
     // running into freed memory.
     stopping_ = true;
     if (sender_.joinable()) sender_.join();
+    // A voice download in progress: its child killed, then waited for.
+    int child = voiceChild_.load();
+    if (child > 0) ::kill(child, SIGTERM);
+    if (voiceThread_.joinable()) voiceThread_.join();
 }
 
 void Hub::find(const std::string& peers)
@@ -802,7 +807,9 @@ std::string Hub::speak(const std::string& text, bool czech)
     speakStop();
     std::string piperDir = dataDir("piper");
     std::string model = piperDir + (czech ? "/cs.onnx" : "/en.onnx");
-    std::string piper = piperDir + "/piper";
+    // Set up by voiceSetup, the official build unpacks into piper/ beside its
+    // libraries; a piper binary straight in the folder is the hand-made way.
+    std::string piper = executable(piperDir + "/piper/piper") ? piperDir + "/piper/piper" : piperDir + "/piper";
     std::vector<std::string> argv;
     std::string engine;
     char tmpl[] = "/tmp/shrooms-say-XXXXXX";
@@ -853,6 +860,118 @@ std::string Hub::speak(const std::string& text, bool czech)
     speaker_ = pid;
     speakEngine_ = engine;
     return "";
+}
+
+// Runs a program and waits for it, killable from ~Hub; its exit status, or
+// -1 when it could not be started or was stopped.
+int Hub::run(const std::vector<std::string>& args)
+{
+    if (stopping_) return -1;
+    std::vector<char*> av;
+    for (auto& a : args) av.push_back(const_cast<char*>(a.c_str()));
+    av.push_back(nullptr);
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    pid_t pid;
+    int rc = posix_spawnp(&pid, av[0], &fa, nullptr, av.data(), childEnv().ptrs.data());
+    posix_spawn_file_actions_destroy(&fa);
+    if (rc != 0) return -1;
+    voiceChild_ = pid;
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+    voiceChild_ = -1;
+    if (stopping_) return -1;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+namespace {
+
+// What voiceSetup fetches. The voice from rhasspy's own repository: the copy
+// repackaged for sherpa-onnx ran at half real time under this build of Piper,
+// the original at twelve times (2026-10-05, this laptop).
+const char* kPiperRelease = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_";
+const char* kVoiceBase = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx";
+
+std::string machineArch()
+{
+    struct utsname u {};
+    if (::uname(&u) != 0) return "";
+    std::string m = u.machine;
+    if (m == "x86_64" || m == "amd64") return "x86_64";
+    if (m == "aarch64" || m == "arm64") return "aarch64";
+    return "";
+}
+
+}  // namespace
+
+void Hub::voiceSetup()
+{
+    bool expected = false;
+    if (!voiceBusy_.compare_exchange_strong(expected, true)) return;
+    if (voiceThread_.joinable()) voiceThread_.join();
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        voiceError_.clear();
+        voiceStep_ = "starting";
+    }
+    voiceThread_ = std::thread([this]() {
+        auto step = [this](const std::string& s) { std::lock_guard<std::mutex> g(mu_); voiceStep_ = s; };
+        auto fail = [this](const std::string& why) {
+            std::lock_guard<std::mutex> g(mu_);
+            voiceError_ = why;
+            voiceStep_.clear();
+        };
+        std::string arch = machineArch();
+        std::string dir = dataDir("piper"), stage = dir + "/.setup";
+        run({"rm", "-rf", stage});
+        ::mkdir(stage.c_str(), 0700);
+        if (arch.empty()) {
+            fail("Piper has no build for this machine's architecture");
+        } else if (step("downloading Piper (25 MB)"),
+                   run({"curl", "-fsSL", "--retry", "2", "-o", stage + "/piper.tar.gz", std::string(kPiperRelease) + arch + ".tar.gz"}) != 0) {
+            fail(stopping_ ? "stopped" : "could not download Piper (is curl installed, and the network up?)");
+        } else if (step("unpacking Piper"), run({"tar", "-xzf", stage + "/piper.tar.gz", "-C", stage}) != 0) {
+            fail("could not unpack Piper");
+        } else if (step("downloading the voice (63 MB)"),
+                   run({"curl", "-fsSL", "--retry", "2", "-o", stage + "/en.onnx", kVoiceBase}) != 0 ||
+                       run({"curl", "-fsSL", "--retry", "2", "-o", stage + "/en.onnx.json", std::string(kVoiceBase) + ".json"}) != 0) {
+            fail(stopping_ ? "stopped" : "could not download the voice");
+        } else {
+            // Moved into place only when all of it is here: a half-done setup
+            // is never taken for a working one.
+            step("installing");
+            run({"rm", "-rf", dir + "/piper"});
+            bool ok = std::rename((stage + "/piper").c_str(), (dir + "/piper").c_str()) == 0 &&
+                      std::rename((stage + "/en.onnx").c_str(), (dir + "/en.onnx").c_str()) == 0 &&
+                      std::rename((stage + "/en.onnx.json").c_str(), (dir + "/en.onnx.json").c_str()) == 0;
+            if (!ok) fail(std::string("could not install it: ") + std::strerror(errno));
+            else step("");
+        }
+        run({"rm", "-rf", stage});
+        voiceBusy_ = false;
+    });
+}
+
+void Hub::voiceRemove()
+{
+    if (voiceBusy_) return;
+    speakStop();
+    std::string dir = dataDir("piper");
+    run({"rm", "-rf", dir + "/piper", dir + "/en.onnx", dir + "/en.onnx.json"});
+}
+
+std::string Hub::voiceState()
+{
+    std::string dir = dataDir("piper");
+    bool installed = (executable(dir + "/piper/piper") || executable(dir + "/piper")) && ::access((dir + "/en.onnx").c_str(), R_OK) == 0;
+    bool spd = false;
+    for (const char* p : {"/usr/bin/spd-say", "/usr/local/bin/spd-say", "/bin/spd-say"}) spd = spd || executable(p);
+    std::lock_guard<std::mutex> g(mu_);
+    return std::string("{\"installed\":") + (installed ? "true" : "false") + ",\"busy\":" + (voiceBusy_ ? "true" : "false") +
+           ",\"step\":\"" + jsonEscape(voiceStep_) + "\",\"error\":\"" + jsonEscape(voiceError_) + "\",\"engine\":\"" +
+           (installed ? "piper" : (spd ? "spd-say" : "none")) + "\",\"voice\":\"en_US-lessac-medium\"}";
 }
 
 void Hub::speakStop()

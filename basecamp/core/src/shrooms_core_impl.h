@@ -386,6 +386,13 @@ public:
     std::string agentSpeak(const std::string& action, const std::string& text, const std::string& lang);
 
     /**
+     * @brief The natural voice for reading aloud: action "state" reports it,
+     * "setup" downloads and installs Piper with an English voice in the
+     * background, "remove" deletes it.
+     */
+    std::string agentVoice(const std::string& action);
+
+    /**
      * @brief Uploads and voice notes in progress or finished, and whether the
      * microphone is recording.
      */

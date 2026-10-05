@@ -125,6 +125,18 @@ public:
      * ships no Qt Multimedia. Returns "" or why it could not.
      */
     std::string speak(const std::string& text, bool czech);
+
+    /**
+     * The natural voice, set up with one click rather than by hand: Piper
+     * (rhasspy/piper's standalone build, for this machine's architecture) and
+     * the en_US-lessac-medium voice, downloaded in the background into
+     * ~/.local/share/shrooms/piper. voiceState() says whether it is there,
+     * what is happening and why it failed: {"installed","busy","step","error",
+     * "engine"}. voiceRemove() deletes it, back to spd-say.
+     */
+    void voiceSetup();
+    void voiceRemove();
+    std::string voiceState();
     void speakStop();
     /** Whether something is being read, and with which engine. */
     bool speaking(std::string& engine);
@@ -209,6 +221,12 @@ private:
     std::once_flag senderStarted_;
     std::thread sender_;
     std::atomic<bool> stopping_{false};
+
+    std::thread voiceThread_;
+    std::atomic<bool> voiceBusy_{false};
+    std::atomic<int> voiceChild_{-1};     // the download running, killed on exit
+    std::string voiceStep_, voiceError_;  // under mu_
+    int run(const std::vector<std::string>& argv);
 
     struct Job {
         long id;

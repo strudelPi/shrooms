@@ -326,6 +326,12 @@ func cmdStatus(args []string) error {
 		if p.Online {
 			ann = "online"
 		}
+		// With the age of the last announce, as TUNNEL shows the handshake's:
+		// "online" alone cannot tell a second ago from nearly three minutes,
+		// and "offline" cannot tell four minutes from a day.
+		if t, err := time.Parse(time.RFC3339, p.LastSeen); err == nil && !t.IsZero() {
+			ann += " " + shortDur(max(int64(time.Since(t).Seconds()), 0))
+		}
 		// "up" only while the session is actually usable. A handshake that has
 		// gone stale means the peer is gone — reporting that as up is worse
 		// than reporting nothing, because status is what you check precisely

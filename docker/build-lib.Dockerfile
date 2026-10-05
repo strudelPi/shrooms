@@ -19,8 +19,12 @@
 FROM debian:bookworm AS builder
 
 # bookworm ships git 2.39, notably older than the host's 2.51.
+#
+# cmake is for upstream master, not the pinned rev: master depends on nim-leopard, which builds
+# its vendored Leopard-RS with cmake in the middle of the Nim compile, and without it the build
+# dies at "cmake: not found". The pinned nimble.lock has no leopard, so there it is unused.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential ca-certificates curl git \
+        build-essential ca-certificates cmake curl git \
         libpcre3-dev libssl-dev pkg-config \
         python3 which xz-utils \
     && rm -rf /var/lib/apt/lists/*
@@ -128,10 +132,34 @@ COPY docker/build-lib-nimblefree.sh /src/docker/build-lib-nimblefree.sh
 # On the originating host it worked only because nim was already installed system-wide.
 # nimble itself is deliberately still not bootstrapped: resolution is gone, so only the
 # compiler is needed.
-RUN cd /src && make install-nim
+#
+# All of the above is the OLD build system, the one the pinned LD_REF has. Upstream replaced it
+# on 2026-10-01 (d3941be1, "adopt nimble 0.26.0"): install-nim is gone, so on master this line
+# died with "No rule to make target 'install-nim'" and the build-from-source job broke.
+#
+# Which system a tree has is detected, not assumed from LD_REF, because the job builds whatever
+# master is that night. The test is the install-nim target itself — the one thing the old path
+# needs. A tree without it gets upstream's own build, not the nimble-free script: the new nimble
+# resolves nimble.lock itself (`nimble setup`, which upstream's CI runs), and the script's
+# hand-copied compile flags have already drifted from master's buildLibrary — it lacks the
+# ffiGenBindings flags that write library/generated/, and the leopard C library build-deps
+# now makes. Copying them again would just drift again.
+#
+# The pinned path runs exactly the commands it ran before.
+RUN cd /src \
+    && if grep -q '^install-nim:' Makefile; then \
+           make install-nim \
+           && make librln \
+           && bash /src/docker/build-lib-nimblefree.sh /src; \
+       else \
+           make liblogosdelivery; \
+       fi
 
-RUN make librln \
-    && bash /src/docker/build-lib-nimblefree.sh /src
+# tinycbor, on the new build system only: master's generated header includes <tinycbor/cbor.h>
+# and its request/reply encoding links it, so a consumer cannot even compile without it. Upstream
+# builds the archive from the copy nim-ffi vendors; it is staged out below. A separate step so
+# the slow one above stays cached when only this changes.
+RUN if ! grep -q '^install-nim:' Makefile; then make tinycbor; fi
 
 # The public header includes "generated/logosdelivery.h", which upstream says
 # plainly is "a build artifact, not checked in" — written by the build we just
@@ -152,7 +180,13 @@ RUN mkdir -p /out/generated \
     && cp build/liblogosdelivery.so /out/ \
     && cp library/liblogosdelivery.h /out/ \
     && cp .ld-rev /out/ \
-    && { cp -a library/generated/. /out/generated/ 2>/dev/null || true; }
+    && { cp -a library/generated/. /out/generated/ 2>/dev/null || true; } \
+    && if [ -f build/libtinycbor.a ]; then \
+           cbor=$(ls -dt nimbledeps/pkgs2/ffi-*/ffi/codegen/templates/cpp/vendor/tinycbor | head -1) \
+           && mkdir -p /out/tinycbor \
+           && cp build/libtinycbor.a /out/ \
+           && cp "$cbor"/*.h /out/tinycbor/; \
+       fi
 
 # Collect the artifacts.
 FROM scratch AS lib

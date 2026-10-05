@@ -1,0 +1,79 @@
+# Build liblogosdelivery from source against upstream MASTER rather than the
+# pinned revision everything else uses, then build logos-vpn against it.
+#
+# Nightly, not per push. Nothing in this repository is being tested here —
+# the question is whether upstream still builds with our Dockerfile, and that
+# changes when upstream commits, not when we do. Run per push it added a slow
+# Nim build to every commit and its failures were somebody else's.
+#
+# Its own workflow rather than a job in ci.yml because a schedule trigger is
+# workflow-wide: added there, every test, e2e and basecamp job would run
+# nightly too, or each would need a guard against it.
+#
+# No continue-on-error any more. That existed so this job did not turn ci.yml
+# red for an upstream breakage; alone in its workflow it gates nothing, and a
+# red nightly run is the whole signal. Non-gating was never meant as ignored —
+# this job caught the generated-header COPY that was missing on our side, and
+# the 2026-10-01 nimble 0.26 switch that removed install-nim upstream.
+name: upstream-master
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  # Forcing a run, e.g. to check whether an upstream fix has landed.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-from-source:
+    name: build from source (upstream master)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve logos-delivery revision
+        id: ld
+        run: |
+          rev=$(git ls-remote https://github.com/logos-messaging/logos-delivery.git refs/heads/master | cut -f1)
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+          echo "building against logos-delivery $rev"
+
+      # Cached by the upstream revision it was built from, so a night with no
+      # upstream commits costs nothing.
+      - name: Cache liblogosdelivery
+        id: libcache
+        uses: actions/cache@v4
+        with:
+          path: docker/build/lib
+          key: liblogosdelivery-${{ steps.ld.outputs.rev }}-${{ hashFiles('docker/build-lib.Dockerfile', 'docker/build-lib-nimblefree.sh') }}
+
+      - name: Build liblogosdelivery
+        if: steps.libcache.outputs.cache-hit != 'true'
+        run: |
+          docker build -f docker/build-lib.Dockerfile \
+            --build-arg LD_REF=${{ steps.ld.outputs.rev }} \
+            --target lib -o docker/build/lib .
+
+      - name: Build every package
+        run: make build-all LD_DIR=docker/build/lib
+
+      - name: Build logos-vpn
+        run: |
+          VERSION=${GITHUB_REF_NAME:-dev} docker build \
+            -f docker/build-vpn.Dockerfile \
+            --build-arg VERSION=${GITHUB_REF_NAME:-dev} \
+            --target dist -o dist .
+          cp packaging/shrooms.service dist/
+
+      - name: Report glibc requirement
+        run: |
+          echo "max glibc symbol required:"
+          objdump -T dist/bin/shrooms | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: logos-vpn-linux-amd64
+          path: dist/

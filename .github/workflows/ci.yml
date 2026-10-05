@@ -5,8 +5,8 @@ on:
     branches: [main, master]
     tags: ['v*']
   pull_request:
-  # So a run can be forced without an empty commit — useful when checking
-  # whether the upstream build has been fixed.
+  # So a run can be forced without an empty commit. The upstream-master
+  # source build is not here: it runs nightly, in upstream-master.yml.
   workflow_dispatch:
 
 permissions:
@@ -39,8 +39,8 @@ jobs:
   # Everything that links liblogosdelivery, built and tested against the
   # prebuilt library.
   #
-  # Without this the cgo-bound packages are only covered by build-from-source,
-  # which is continue-on-error — so internal/mesh's tests could fail and nothing
+  # Without this the cgo-bound packages are only covered by the nightly
+  # upstream-master source build, which builds somebody else's moving tree — so internal/mesh's tests could fail and nothing
   # would go red. Uses the release tarball rather than a source build precisely
   # so that this job can gate.
   test-cgo:
@@ -124,8 +124,8 @@ jobs:
 
   # Publish the container image.
   #
-  # Separate from build-from-source, which is continue-on-error and blocked
-  # upstream — so the only image build in this workflow was one that never
+  # Separate from the upstream-master source build (now nightly, in
+  # upstream-master.yml), which was continue-on-error and blocked upstream — so the only image build in this workflow was one that never
   # completed. Deploying therefore meant building locally and pushing ~200MB
   # over ssh to every host, which is the slow part of every deploy and of
   # scripts/m3-remote.sh.
@@ -246,7 +246,7 @@ jobs:
     #
     # The per-commit <sha>-<arch> images still publish early, for anyone who
     # wants to try a build before it is green; only the names that deploy wait.
-    # build-from-source and basecamp are not here: neither tests the node.
+    # basecamp is not here: it does not test the node.
     needs: [image, test, test-cgo, e2e, e2e-two-nodes]
     runs-on: ubuntu-latest
     # !cancelled() rather than always(): a cancelled workflow stays cancelled, but
@@ -422,76 +422,6 @@ jobs:
         run: |
           echo "pushed ${{ steps.tags.outputs.list }}"
           echo "redeploy with: docker pull ${{ steps.img.outputs.name }}:latest"
-
-  # Build liblogosdelivery from source in a pinned container, then build
-  # logos-vpn against it. The library build is slow, so it is cached by the
-  # upstream revision it was built from.
-  # Building liblogosdelivery from source, against upstream MASTER rather than
-  # the pinned revision everything else uses.
-  #
-  # Non-gating deliberately: master moves under us, and a red badge for somebody
-  # else's breakage teaches you to ignore the badge. But non-gating is not the
-  # same as ignored — this job caught its own name being wrong. It was called
-  # "blocked upstream" for the NestedPoll error, that error is now patched, and
-  # what remained was ours: the public header includes a generated header the
-  # Dockerfile never copied out. A job nobody reads because its name explains
-  # the failure in advance is worse than no job at all.
-  build-from-source:
-    name: build from source (upstream master)
-    continue-on-error: true
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Resolve logos-delivery revision
-        id: ld
-        run: |
-          rev=$(git ls-remote https://github.com/logos-messaging/logos-delivery.git refs/heads/master | cut -f1)
-          echo "rev=$rev" >> "$GITHUB_OUTPUT"
-          echo "building against logos-delivery $rev"
-
-      - name: Cache liblogosdelivery
-        id: libcache
-        uses: actions/cache@v4
-        with:
-          path: docker/build/lib
-          key: liblogosdelivery-${{ steps.ld.outputs.rev }}-${{ hashFiles('docker/build-lib.Dockerfile') }}
-
-      - name: Build liblogosdelivery
-        if: steps.libcache.outputs.cache-hit != 'true'
-        run: |
-          docker build -f docker/build-lib.Dockerfile \
-            --build-arg LD_REF=${{ steps.ld.outputs.rev }} \
-            --target lib -o docker/build/lib .
-
-      - name: Build every package
-        run: make build-all LD_DIR=docker/build/lib
-
-      - name: Build logos-vpn
-        run: |
-          VERSION=${GITHUB_REF_NAME:-dev} docker build \
-            -f docker/build-vpn.Dockerfile \
-            --build-arg VERSION=${GITHUB_REF_NAME:-dev} \
-            --target dist -o dist .
-          cp packaging/shrooms.service dist/
-
-      - name: Report glibc requirement
-        run: |
-          echo "max glibc symbol required:"
-          objdump -T dist/bin/shrooms | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: logos-vpn-linux-amd64
-          path: dist/
-
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          tar czf logos-vpn-linux-amd64.tar.gz -C dist .
-          echo "built logos-vpn-linux-amd64.tar.gz"
-        # Attaching to a GitHub Release needs contents:write; add it here and
-        # a release step when you are ready to publish.
 
   # The Basecamp monitoring module: a QML view, packaged as an LGX.
   #

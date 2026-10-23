@@ -33,8 +33,7 @@ A session in a sealed cage sends nothing itself: what it writes to /outbox in
 its cage (~/shrooms-outbox/SESSION on its machine) is carried out by this
 machine's agent, to the asker when a task finishes, or by hand with "outbox
 send" (docs/agents-files.md). Whether a session takes *tasks* from caged
-agents is its accept_caged setting, in the Agents apps or
-PATCH /v1/sessions/SESSION {"accept_caged": true}.`
+agents is "shrooms-agent caged", or its accept_caged setting for all of them.`
 
 // sendFile pushes the file at path to MACHINE/SESSION. Where it was kept.
 func (c a2aClient) sendFile(to, path, note string, tell bool) (string, error) {

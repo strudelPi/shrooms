@@ -341,6 +341,17 @@ Item {
             view.setAcceptCaged(true)
             var accepted = top.lastPostPath + " " + top.lastPost
             console.error("ACCEPTCAGED " + accepted + " said=" + view.said)
+            // One cage at a time (ADR-070): held tasks grouped per cage, then
+            // allowed by name or declined.
+            var asks = view.cagedAsks({ task_requests: [
+                { task: "shrooms:m1", from: "laptop/fileware", title: "Publish 0.6" },
+                { task: "shrooms:m2", from: "laptop/fileware", title: "" },
+                { task: "shrooms:m3", from: "atlas/x", title: "Hi" } ] })
+            view.setAcceptCagedFrom(["laptop/fileware"])
+            var allowedCage = top.lastPostPath + " " + top.lastPost
+            view.declineTasksFrom("atlas/x")
+            console.error("CAGEDASKS " + asks.map(function(a) { return a.from + "=" + a.titles.join("+") }).join(",")
+                          + " allow=" + allowedCage + " decline=" + top.lastPost)
             // Polled fast only while something moves; and still polled when
             // the host says the view is hidden (Basecamp says so on screen).
             var pollBusy = view.pollState()

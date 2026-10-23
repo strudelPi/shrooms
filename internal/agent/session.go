@@ -105,6 +105,11 @@ type Info struct {
 	// MACHINE/*; FileRequests, those refused lately, for the apps to offer
 	// (drop.go).
 	AcceptFilesFrom []string `json:"accept_files_from,omitempty"`
+	// AcceptCagedFrom: the caged agents it takes tasks from although
+	// AcceptCaged is off, MACHINE/SESSION or MACHINE/*; TaskRequests, the
+	// tasks held from others until the owner decides (cagedasks.go).
+	AcceptCagedFrom []string  `json:"accept_caged_from,omitempty"`
+	TaskRequests    []TaskAsk `json:"task_requests,omitempty"`
 	// Meshes: the meshes it is there for, by this machine's labels; none is
 	// all of them (meshes.go).
 	Meshes       []string  `json:"meshes,omitempty"`
@@ -156,13 +161,15 @@ type Session struct {
 	// default, which is yes for a caged session and no for one outside
 	// (ADR-044).
 	acceptCaged *bool
-	acceptFiles []string  // who it takes files from (drop.go)
-	fileAsks    []FileAsk // senders refused lately
-	meshes      []string  // the meshes it is there for; none is all (meshes.go)
-	modelSet    string    // the model chosen for it; "" for its harness's default
-	skills      []Skill   // what it is good at, as its owner set it (roles.go)
-	duties      []string  // what it owns and may do without asking
-	turns       uint64
+	acceptFiles []string // who it takes files from (drop.go)
+	// acceptCagedFrom: caged agents it takes tasks from (cagedasks.go)
+	acceptCagedFrom []string
+	fileAsks        []FileAsk // senders refused lately
+	meshes          []string  // the meshes it is there for; none is all (meshes.go)
+	modelSet        string    // the model chosen for it; "" for its harness's default
+	skills          []Skill   // what it is good at, as its owner set it (roles.go)
+	duties          []string  // what it owns and may do without asking
+	turns           uint64
 	// ids are the device-made ids of messages and voice notes already taken,
 	// so a device that sends again — it did not hear the answer, the
 	// network went — does not send twice. The last maxIDs, loaded from the
@@ -274,17 +281,18 @@ type record struct {
 	Harness string `json:"harness,omitempty"`
 	// ConvID is the harness's conversation id. Named for Claude Code, the
 	// only harness when the registry was first written.
-	ConvID      string   `json:"claude_id,omitempty"`
-	AutoApprove bool     `json:"auto_approve,omitempty"`
-	Starred     bool     `json:"starred,omitempty"`
-	KeepRunning bool     `json:"keep_running,omitempty"`
-	Cage        *Cage    `json:"cage,omitempty"`
-	AcceptCaged *bool    `json:"accept_caged,omitempty"`
-	AcceptFiles []string `json:"accept_files_from,omitempty"`
-	Meshes      []string `json:"meshes,omitempty"`
-	ModelSet    string   `json:"model_setting,omitempty"`
-	Skills      []Skill  `json:"skills,omitempty"`
-	Duties      []string `json:"responsibilities,omitempty"`
+	ConvID          string   `json:"claude_id,omitempty"`
+	AutoApprove     bool     `json:"auto_approve,omitempty"`
+	Starred         bool     `json:"starred,omitempty"`
+	KeepRunning     bool     `json:"keep_running,omitempty"`
+	Cage            *Cage    `json:"cage,omitempty"`
+	AcceptCaged     *bool    `json:"accept_caged,omitempty"`
+	AcceptFiles     []string `json:"accept_files_from,omitempty"`
+	AcceptCagedFrom []string `json:"accept_caged_from,omitempty"`
+	Meshes          []string `json:"meshes,omitempty"`
+	ModelSet        string   `json:"model_setting,omitempty"`
+	Skills          []Skill  `json:"skills,omitempty"`
+	Duties          []string `json:"responsibilities,omitempty"`
 }
 
 // NewManager loads the sessions kept in stateDir.
@@ -325,6 +333,7 @@ func NewManager(ctx context.Context, log *slog.Logger, stateDir, claudeBin strin
 			s.cage = r.Cage
 			s.acceptCaged = r.AcceptCaged
 			s.acceptFiles = r.AcceptFiles
+			s.acceptCagedFrom = r.AcceptCagedFrom
 			s.meshes = r.Meshes
 			s.modelSet = r.ModelSet
 			s.skills, s.duties = r.Skills, r.Duties
@@ -443,7 +452,7 @@ func (m *Manager) save() error {
 	for _, s := range m.sessions {
 		s.mu.Lock()
 		r := record{Name: s.Name(), Dir: s.dir, ConvID: s.convID, AutoApprove: s.autoApprove, Starred: s.starred,
-			KeepRunning: s.keepRunning, Cage: s.cage, AcceptCaged: s.acceptCaged, AcceptFiles: s.acceptFiles, Meshes: s.meshes, ModelSet: s.modelSet,
+			KeepRunning: s.keepRunning, Cage: s.cage, AcceptCaged: s.acceptCaged, AcceptFiles: s.acceptFiles, AcceptCagedFrom: s.acceptCagedFrom, Meshes: s.meshes, ModelSet: s.modelSet,
 			Skills: s.skills, Duties: s.duties}
 		if s.harness.Name() != "claude" {
 			r.Harness = s.harness.Name()
@@ -667,15 +676,22 @@ func (s *Session) eventsPath() string {
 
 // Info reports the session for the list.
 func (s *Session) Info() Info {
+	// Before the session's lock: the task store has its own, and is never
+	// taken inside this one.
+	var asks []TaskAsk
+	if s.m != nil && s.m.tasks != nil {
+		asks = s.m.taskAsks(s.Name())
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	in := Info{Name: s.Name(), Dir: s.dir, State: s.state, Pending: len(s.pending),
+	in := Info{TaskRequests: asks, Name: s.Name(), Dir: s.dir, State: s.state, Pending: len(s.pending),
 		Running: s.proc != nil, LastSeq: s.seq, AutoApprove: s.autoApprove,
 		ContextUsed: s.ctxUsed, ContextWindow: s.ctxWindow, Preview: s.preview, Model: s.model,
 		Harness: s.harness.Name(), Caps: s.harness.Caps(), Starred: s.starred, Turns: s.turns,
 		KeepRunning: s.keepRunning, AcceptCaged: s.acceptsCaged(),
 		AcceptFilesFrom: append([]string(nil), s.acceptFiles...), FileRequests: append([]FileAsk(nil), s.fileAsks...),
-		Meshes: append([]string(nil), s.meshes...), ModelSetting: s.modelSet, TokensPerSecond: s.tokRate,
+		AcceptCagedFrom: append([]string(nil), s.acceptCagedFrom...),
+		Meshes:          append([]string(nil), s.meshes...), ModelSetting: s.modelSet, TokensPerSecond: s.tokRate,
 		Skills: append([]Skill(nil), s.skills...), Responsibilities: append([]string(nil), s.duties...)}
 	if s.cage != nil {
 		in.Cage = &CageInfo{Image: s.cage.Image, Nix: s.cage.Nix, GitHub: s.cage.GitHub, Shared: s.sharedFor(), Sealed: s.cage.Sealed, Outbox: s.cage.Outbox,

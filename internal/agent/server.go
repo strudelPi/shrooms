@@ -269,6 +269,10 @@ func (h *handler) update(w http.ResponseWriter, r *http.Request) {
 		Meshes *[]string `json:"meshes"`
 		// A refused sender's request, set aside without allowing it.
 		IgnoreFileRequest *string `json:"ignore_file_request"`
+		// AcceptCagedFrom replaces the caged agents the session takes tasks
+		// from; DeclineTasksFrom rejects the tasks held from one (ADR-070).
+		AcceptCagedFrom  *[]string `json:"accept_caged_from"`
+		DeclineTasksFrom *string   `json:"decline_tasks_from"`
 		// The model it runs on; "" for its harness's default (SetModel).
 		Model *string `json:"model"`
 		// What it is for (ADR-063): its skills, and what it may do without asking.
@@ -322,6 +326,20 @@ func (h *handler) update(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusInternalServerError, err)
 			return
 		}
+		if *req.AcceptCaged {
+			h.m.releaseCaged(s)
+		}
+	}
+	if req.DeclineTasksFrom != nil {
+		n := h.m.DeclineCaged(s, *req.DeclineTasksFrom, h.caller(r))
+		h.log.Info("caged tasks declined", "session", s.Name(), "from", *req.DeclineTasksFrom, "tasks", n, "by", h.caller(r))
+	}
+	if req.AcceptCagedFrom != nil {
+		if err := s.SetAcceptCagedFrom(*req.AcceptCagedFrom, h.caller(r)); err != nil {
+			fail(w, http.StatusBadRequest, err)
+			return
+		}
+		h.log.Info("caged agents accepted", "session", s.Name(), "from", *req.AcceptCagedFrom, "by", h.caller(r))
 	}
 	if req.AutoApprove != nil {
 		if err := s.SetAutoApprove(*req.AutoApprove, h.caller(r)); err != nil {

@@ -63,21 +63,29 @@ func TestACageReachesAgentsOnlyThroughItsOwn(t *testing.T) {
 	// It claims to be another session; its agent says who it is.
 	lie := send("c1", "review this", false)
 	lie["message"].(map[string]any)["metadata"] = map[string]any{"shrooms/from": "laptop/not-caged"}
+	// By default it is held for the owner, not started and not refused
+	// (ADR-070): a request in the apps, naming the cage as its agent knows it.
 	_, out := do("POST", "/peer/fd00::2/a2a/proj", rpc("SendMessage", lie))
-	if !strings.Contains(out, "takes no tasks from caged agents") {
-		t.Fatalf("a session outside a cage took a task from a caged agent by default: %s", out)
+	if !strings.Contains(out, taskAuthRequired) {
+		t.Fatalf("a session outside a cage did not hold a caged agent's task for its owner: %s", out)
+	}
+	proj, _ := r.m.Get("proj")
+	if asks := proj.Info().TaskRequests; len(asks) != 1 || asks[0].From != "pi5/boxed" {
+		t.Fatalf("the held task is not offered to the owner: %+v", asks)
 	}
 
-	// Its owner lets it.
-	resp, err := http.Post(r.remote.URL+"/v1/sessions/proj/settings", "application/json", strings.NewReader(`{"accept_caged":true}`))
+	// Its owner lets it: the held task goes on.
+	resp, err := http.Post(r.remote.URL+"/v1/sessions/proj/settings", "application/json", strings.NewReader(`{"accept_caged_from":["pi5/boxed"]}`))
 	if err != nil || resp.StatusCode != 200 {
-		t.Fatalf("accept_caged not set: %v %v", err, resp)
+		t.Fatalf("accept_caged_from not set: %v %v", err, resp)
 	}
 	resp.Body.Close()
-	_, out = do("POST", "/peer/fd00::2/a2a/proj", rpc("SendMessage", lie))
 	ts := r.m.Tasks("proj")
-	if len(ts) != 1 || !strings.Contains(ts[0].From, "(laptop/boxed, in a cage)") {
-		t.Fatalf("the task does not name its caged asker as its agent knows it: %+v %s", ts, out)
+	if len(ts) != 1 || !strings.Contains(ts[0].From, "(laptop/boxed, in a cage)") || ts[0].State == taskAuthRequired {
+		t.Fatalf("the task does not name its caged asker as its agent knows it, or is still held: %+v %s", ts, out)
+	}
+	if asks := proj.Info().TaskRequests; len(asks) != 0 {
+		t.Errorf("an allowed sender's task is still a request: %+v", asks)
 	}
 	if !strings.Contains(out, `"shrooms/caged":true`) {
 		t.Errorf("the task does not say its asker is caged: %s", out)
@@ -129,5 +137,49 @@ func TestWhoTakesTasksFromCagedAgents(t *testing.T) {
 	free.SetAcceptCaged(false, "phone")
 	if free.AcceptsCaged() || free.Info().AcceptCaged {
 		t.Error("the owner's no is not kept")
+	}
+}
+
+// A caged sender the owner declines: its held tasks are rejected, its asker
+// can see why, and nothing of it is remembered, so its next task asks again.
+// A sender the owner allowed is not held; anyone else still is (ADR-070).
+func TestTheOwnerDecidesOnEachCage(t *testing.T) {
+	m := newTestManager(t, t.TempDir())
+	m.Create("publisher", t.TempDir())
+	pub, _ := m.Get("publisher")
+
+	held, err := m.SubmitHeld(pub, "m1", "laptop (laptop/fileware, in a cage)", "laptop/fileware", "publish this", "Publish", nil)
+	if err != nil || held.State != taskAuthRequired {
+		t.Fatalf("not held: %+v %v", held, err)
+	}
+	if n := m.DeclineCaged(pub, "laptop/fileware", "phone"); n != 1 {
+		t.Fatalf("declined %d tasks, want 1", n)
+	}
+	got, _ := m.tasks.get(held.ID)
+	if got.State != taskRejected || !strings.Contains(got.Summary, "declined by the owner") {
+		t.Errorf("a declined task: %+v", got)
+	}
+	if pub.AllowsCaged("laptop/fileware") {
+		t.Error("declining remembered the sender as allowed")
+	}
+
+	if err := pub.SetAcceptCagedFrom([]string{"laptop/fileware"}, "phone"); err != nil {
+		t.Fatal(err)
+	}
+	if !pub.AllowsCaged("laptop/fileware") || pub.AllowsCaged("laptop/other") || pub.AllowsCaged("pi5/fileware") {
+		t.Error("the allow list names one cage, and only it")
+	}
+	if err := pub.SetAcceptCagedFrom([]string{"laptop/*"}, "phone"); err != nil || !pub.AllowsCaged("laptop/other") {
+		t.Errorf("MACHINE/* does not allow that machine's cages: %v", err)
+	}
+	if err := pub.SetAcceptCagedFrom([]string{"fileware"}, "phone"); err == nil {
+		t.Error("an entry with no machine was accepted")
+	}
+
+	// Kept across a restart.
+	again := newTestManager(t, m.dir)
+	p2, ok := again.Get("publisher")
+	if !ok || !p2.AllowsCaged("laptop/other") {
+		t.Error("the allow list did not survive a restart")
 	}
 }

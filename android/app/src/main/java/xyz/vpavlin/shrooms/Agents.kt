@@ -963,6 +963,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit, onRenamed: (String
     var askDelete by remember { mutableStateOf(false) }
     var askRestart by remember { mutableStateOf(false) }
     var filesOpen by remember { mutableStateOf(false) }
+    var cagedOpen by remember { mutableStateOf(false) }
     var meshesOpen by remember { mutableStateOf(false) }
     // The cage dialog: the machine's offer, asked when it opens, and the options chosen.
     var cageAsk by remember { mutableStateOf(false) }
@@ -1254,6 +1255,7 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit, onRenamed: (String
         AgentChat.listIndexOf(items, seq)?.let { list.animateScrollToItem(it) }
     }
     if (filesOpen) FilesDialog(client, o.session, info, onChanged = { info = it }) { filesOpen = false }
+    if (cagedOpen) CagedTasksDialog(client, o.session, info, onChanged = { info = it }) { cagedOpen = false }
     if (meshesOpen) MeshesDialog(client, o.session, info?.meshes.orEmpty(), onSaved = { info = info?.copy(meshes = it) }) { meshesOpen = false }
     // Ends the turn running now, as Esc does in Claude Code's terminal; the
     // session stays and takes the next message.
@@ -1588,15 +1590,21 @@ private fun SessionScreen(o: OpenSession, onBack: () -> Unit, onRenamed: (String
                 }
                 if (working) Link("■ stop", Palette.Rust) { stopTurn() }
                 Link(if (searching) "close search" else "search", Palette.Sky) { searching = !searching }
-                // Whether it takes tasks from caged agents (ADR-044): lit when it does.
+                // Tasks from caged agents (ADR-044, ADR-070): lit when it takes them from
+                // every cage, amber while one waits for you to allow or decline it.
                 val takesCaged = info?.acceptCaged == true
-                Link(if (takesCaged) "CAGED TASKS" else "caged tasks", if (takesCaged) Palette.Violet else Palette.Ash) {
-                    scope.launch {
-                        withContext(Dispatchers.IO) { runCatching { client.setAcceptCaged(o.session, !takesCaged) } }
-                            .onSuccess { info = info?.copy(acceptCaged = !takesCaged) }
-                            .onFailure { actionError = it.message ?: "could not change it" }
-                    }
-                }
+                val held = info?.taskRequests?.size ?: 0
+                val named = info?.acceptCagedFrom?.size ?: 0
+                Link(when {
+                    held > 0 -> "caged tasks · $held asking"
+                    takesCaged -> "CAGED TASKS"
+                    named > 0 -> "caged tasks · $named"
+                    else -> "caged tasks"
+                }, when {
+                    held > 0 -> Palette.Amber
+                    takesCaged || named > 0 -> Palette.Violet
+                    else -> Palette.Ash
+                }) { cagedOpen = true }
                 // Files from other agents (ADR-048): amber while someone asks to send some.
                 val asking = info?.fileRequests?.size ?: 0
                 Link(if (asking > 0) "files · $asking asking" else "files", if (asking > 0) Palette.Amber else Palette.Ash) { filesOpen = true }

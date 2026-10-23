@@ -49,8 +49,9 @@ TASK is what send printed: MACHINE/SESSION:MESSAGE-ID. SESSION:MESSAGE-ID works
 too; the machine is then found by asking.
 
 A task's state: submitted (queued: the session is busy and has not read it
-yet), working, input-required (it asks you: answer with reply), completed,
-failed, rejected (refused, with why), canceled.`
+yet), working, input-required (it asks you: answer with reply), auth-required
+(from a cage: held until that session's owner allows or declines you),
+completed, failed, rejected (refused, with why), canceled.`
 
 // a2aClient reaches agents: machines found through the daemon's socket.
 type a2aClient struct {

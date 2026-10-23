@@ -1651,7 +1651,35 @@ Item {
         return true
     }
 
-    // Whether the open session takes tasks from caged agents.
+    // The caged agents the open session takes tasks from by name (ADR-070):
+    // the whole list. Their held tasks start.
+    function setAcceptCagedFrom(list) {
+        if (!agentOpen) return false
+        if (agentCall("agentPost", [agentOpen.address, "/v1/sessions/" + agentOpen.session + "/settings",
+                                    JSON.stringify({ accept_caged_from: list })]) === null) return false
+        Qt.callLater(refreshAgents)
+        return true
+    }
+    // Rejects the tasks held from one caged agent, and its asker is told.
+    function declineTasksFrom(from) {
+        if (!agentOpen) return false
+        if (agentCall("agentPost", [agentOpen.address, "/v1/sessions/" + agentOpen.session + "/settings",
+                                    JSON.stringify({ decline_tasks_from: from })]) === null) return false
+        Qt.callLater(refreshAgents)
+        return true
+    }
+    // The held tasks, one entry per cage: allowing or declining acts on all of a cage's.
+    function cagedAsks(info) {
+        var by = {}, out = []
+        var list = info && info.task_requests ? info.task_requests : []
+        for (var i = 0; i < list.length; i++) {
+            var a = list[i]
+            if (!by[a.from]) { by[a.from] = { from: a.from, titles: [] }; out.push(by[a.from]) }
+            by[a.from].titles.push(a.title || a.task)
+        }
+        return out
+    }
+    // Whether the open session takes tasks from every caged agent.
     function setAcceptCaged(on) {
         if (!agentOpen) return false
         if (agentCall("agentPost", [agentOpen.address, "/v1/sessions/" + agentOpen.session + "/settings", JSON.stringify({ accept_caged: on })]) === null) return false
@@ -3545,6 +3573,88 @@ Item {
         }
     }
     Dialog {
+        id: cagedDialog
+        objectName: "cagedDialog"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(root.sz(560), root.width - root.sz(40))
+        height: Math.min(root.sz(560), root.height - root.sz(40))
+        padding: root.sz(20)
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: Qt.rgba(0, 0, 0, 0.6) }
+        background: Rectangle { color: cPanel; radius: root.sz(12); border.color: cLine }
+        header: Item {}
+        footer: Item {}
+        contentItem: ScrollView {
+            clip: true
+            contentWidth: availableWidth
+            ColumnLayout {
+                width: parent.width - root.sz(18)
+                spacing: root.sz(8)
+                Text { text: "CAGED TASKS · " + (root.agentOpen ? root.agentOpen.session : ""); color: cPhosphor
+                       font.family: "monospace"; font.pixelSize: root.fs(12); font.letterSpacing: 1.5 }
+                // Tasks held from cages it does not take tasks from yet (ADR-070).
+                Text { visible: root.cagedAsks(root.agentInfo).length > 0
+                       text: "WANTS TO GIVE IT A TASK"; color: cAmber; font.family: "monospace"; font.pixelSize: root.fs(10) }
+                Repeater {
+                    model: root.cagedAsks(root.agentInfo)
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Text { Layout.fillWidth: true; elide: Text.ElideRight; color: cBone; font.family: "monospace"; font.pixelSize: root.fs(11)
+                               text: modelData.from + "  " + modelData.titles.join(" · ") }
+                        Lnk { text: "allow"; base: cPhosphor; font.pixelSize: root.fs(10)
+                              onClicked: Qt.callLater(root.setAcceptCagedFrom, root.filesAllow(root.agentInfo.accept_caged_from, modelData.from)) }
+                        Lnk { text: "decline"; base: cRust; font.pixelSize: root.fs(10)
+                              onClicked: Qt.callLater(root.declineTasksFrom, modelData.from) }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: root.sz(8)
+                    readonly property bool on: !!(root.agentInfo && root.agentInfo.accept_caged)
+                    Text { Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "monospace"; font.pixelSize: root.fs(10)
+                           color: parent.on ? cViolet : cAsh
+                           text: parent.on ? "FROM EVERY CAGED AGENT — on: any cage on the mesh may give it tasks"
+                                           : "FROM EVERY CAGED AGENT — off: only those below" }
+                    Lnk { text: parent.on ? "turn off" : "turn on"; base: parent.on ? cRust : cViolet; font.pixelSize: root.fs(10)
+                          onClicked: Qt.callLater(root.setAcceptCaged, !parent.on) }
+                }
+                Text { text: "TAKES TASKS FROM"; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(10); Layout.topMargin: root.sz(8) }
+                Text { visible: !(root.agentInfo && root.agentInfo.accept_caged_from && root.agentInfo.accept_caged_from.length)
+                       text: "no cage by name"; color: cAsh; font.family: "monospace"; font.pixelSize: root.fs(11) }
+                Repeater {
+                    model: root.agentInfo && root.agentInfo.accept_caged_from ? root.agentInfo.accept_caged_from : []
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Text { Layout.fillWidth: true; text: modelData; color: cBone; font.family: "monospace"; font.pixelSize: root.fs(11) }
+                        Lnk { text: "×"; base: cRust; font.pixelSize: root.fs(12)
+                              onClicked: Qt.callLater(root.setAcceptCagedFrom, root.filesDeny(root.agentInfo.accept_caged_from, modelData)) }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    TextField {
+                        id: cagedAdd
+                        Layout.fillWidth: true
+                        placeholderText: "machine/session, or machine/ and a star for all of it"
+                        color: cBone; placeholderTextColor: cAsh; font.family: "monospace"; font.pixelSize: root.fs(11)
+                        background: Rectangle { color: cVoid; radius: 6; border.color: cagedAdd.activeFocus ? cPhosphor : cLine }
+                        onAccepted: addCaged.clicked()
+                    }
+                    Lnk { id: addCaged; text: "ADD"; base: root.filesValid(cagedAdd.text) ? cPhosphor : cAsh; font.pixelSize: root.fs(10)
+                          onClicked: if (root.filesValid(cagedAdd.text) && root.setAcceptCagedFrom(root.filesAllow(root.agentInfo ? root.agentInfo.accept_caged_from : [], cagedAdd.text))) cagedAdd.text = "" }
+                }
+                RowLayout {
+                    Layout.alignment: Qt.AlignRight
+                    Layout.topMargin: root.sz(10)
+                    Lnk { text: "CLOSE"; base: cBone; font.pixelSize: root.fs(12); onClicked: cagedDialog.close() }
+                }
+            }
+        }
+    }
+    Dialog {
         id: restartDialog
         modal: true
         anchors.centerIn: parent
@@ -4891,11 +5001,15 @@ Item {
                               onClicked: root.setAutoPlay(root.agentOpen, !on) }
                         Lnk { objectName: "cageLink"; text: root.agentInfo && root.agentInfo.cage ? "caged" : "cage"
                               base: root.agentInfo && root.agentInfo.cage ? cPhosphor : cAsh; onClicked: Qt.callLater(root.askCage) }
-                        // Whether it takes tasks from caged agents (ADR-044):
-                        // lit when it does.
+                        // Tasks from caged agents (ADR-044, ADR-070): lit when it takes them
+                        // from every cage or some by name, amber while one waits for you.
                         Lnk { readonly property bool on: !!(root.agentInfo && root.agentInfo.accept_caged)
-                              objectName: "acceptCagedLink"; text: on ? "CAGED TASKS" : "caged tasks"; base: on ? cViolet : cAsh
-                              onClicked: Qt.callLater(root.setAcceptCaged, !on) }
+                              readonly property int held: root.agentInfo && root.agentInfo.task_requests ? root.agentInfo.task_requests.length : 0
+                              readonly property int named: root.agentInfo && root.agentInfo.accept_caged_from ? root.agentInfo.accept_caged_from.length : 0
+                              objectName: "acceptCagedLink"
+                              text: held > 0 ? "caged tasks · " + held + " asking" : on ? "CAGED TASKS" : named > 0 ? "caged tasks · " + named : "caged tasks"
+                              base: held > 0 ? cAmber : (on || named > 0) ? cViolet : cAsh
+                              onClicked: cagedDialog.open() }
                         // Files from other agents (ADR-048): amber while a refused sender asks.
                         Lnk { readonly property int asking: root.agentInfo && root.agentInfo.file_requests ? root.agentInfo.file_requests.length : 0
                               objectName: "filesLink"; text: asking > 0 ? "files · " + asking + " asking" : "files"

@@ -34,14 +34,17 @@ type Task struct {
 	// Where the asker is, when it is an agent's session: its machine's mesh
 	// address and the session it said it is. Notes about the task go there
 	// (asker.go); empty for a person asking from an app.
-	AskerAddr    string    `json:"asker_addr,omitempty"`
-	AskerSession string    `json:"asker_session,omitempty"`
-	Refs         []string  `json:"refs,omitempty"` // tasks this one follows on from (A2A referenceTaskIds)
-	Created      time.Time `json:"created"`
-	Started      time.Time `json:"started,omitempty"` // sent to the session; zero while queued
-	Updated      time.Time `json:"updated"`
-	State        string    `json:"state"`             // an A2A task state
-	Summary      string    `json:"summary,omitempty"` // the worker's: what was done, or what it needs
+	AskerAddr    string   `json:"asker_addr,omitempty"`
+	AskerSession string   `json:"asker_session,omitempty"`
+	Refs         []string `json:"refs,omitempty"` // tasks this one follows on from (A2A referenceTaskIds)
+	// CagedFrom is a caged sender, MACHINE/SESSION as its own agent says it,
+	// for a task held until the owner allows that sender (cagedasks.go).
+	CagedFrom string    `json:"caged_from,omitempty"`
+	Created   time.Time `json:"created"`
+	Started   time.Time `json:"started,omitempty"` // sent to the session; zero while queued
+	Updated   time.Time `json:"updated"`
+	State     string    `json:"state"`             // an A2A task state
+	Summary   string    `json:"summary,omitempty"` // the worker's: what was done, or what it needs
 	// More messages from the asker for this task (answers to "blocked"),
 	// waiting for the session to be free.
 	FollowUps []string `json:"follow_ups,omitempty"`

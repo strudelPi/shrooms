@@ -393,6 +393,7 @@ expect "COPYCODE links=2 first=ssh-keygen -t ed25519 copied=true said=copied 2 l
 expect "QUOTATAG shown=1 label=QUOTA · back T,,QUOTA" "a session out of quota is not set apart in the session list"
 expect "CAGETAG shown=1 words=desktop, GitHub login" "a caged session is not marked in the session list"
 expect 'ACCEPTCAGED /v1/sessions/shrooms/settings {"accept_caged":true} said=session shrooms takes tasks from caged agents' "whether a session takes tasks from caged agents cannot be set"
+expect 'CAGEDASKS laptop/fileware=Publish 0.6+shrooms:m2,atlas/x=Hi allow=/v1/sessions/shrooms/settings {"accept_caged_from":["laptop/fileware"]} decline={"decline_tasks_from":"atlas/x"}' "tasks held from caged agents cannot be allowed or declined one cage at a time"
 nd=$(echo "$out" | sed -n 's/.*NODOUBLE before=\([0-9]*\) after=\([0-9]*\).*/\1 \2/p')
 [ -n "$nd" ] && [ "${nd% *}" = "${nd#* }" ] || { echo "FAIL: a read from where one had already read shows events twice (replies doubled, 2026-10-16): $nd"; exit 1; }
 expect 'STREAMONLY rebuilt=0 grew=true' "pieces of a streaming reply rebuild the whole conversation (85% of a core on the Duet while streaming)"

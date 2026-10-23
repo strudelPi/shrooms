@@ -50,6 +50,9 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "files" {
 		return filesMain(os.Args[2:])
 	}
+	if len(os.Args) > 1 && os.Args[1] == "caged" {
+		return cagedMain(os.Args[2:])
+	}
 	if len(os.Args) > 1 && os.Args[1] == "llm-forward" {
 		os.Exit(llmForwardMain(os.Args[2:]))
 	}

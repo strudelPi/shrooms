@@ -32,7 +32,8 @@ var mcpTools = []map[string]any{
 		"name": "ask_agent",
 		"description": "Send a message to another agent session (MACHINE/SESSION, from list_agents) and, by default, wait for its reply — " +
 			"up to 10 minutes. It becomes a task, which stays open until the other agent finishes it (done) or needs something " +
-			"(input-required: answer with ask_agent and task set); a busy session queues it. With wait false it returns a task id " +
+			"(input-required: answer with ask_agent and task set); a busy session queues it. From a cage, a session whose owner has " +
+			"not allowed you holds it (auth-required) until they allow or decline you; nothing to do but wait. With wait false it returns a task id " +
 			"for task_status. When you have what you needed, close it with task_ack.",
 		"inputSchema": map[string]any{"type": "object", "required": []string{"to", "text"}, "properties": map[string]any{
 			"to":   map[string]any{"type": "string", "description": "MACHINE/SESSION, e.g. proteus/proteus"},
@@ -45,7 +46,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "task_status",
-		"description": "Where a task from ask_agent stands — working, completed, failed, input-required, canceled — and its reply so far.",
+		"description": "Where a task from ask_agent stands — working, completed, failed, input-required, auth-required (held for the other side's owner), rejected, canceled — and its reply so far.",
 		"inputSchema": map[string]any{"type": "object", "required": []string{"task"}, "properties": map[string]any{
 			"task": map[string]any{"type": "string", "description": "MACHINE/SESSION:MESSAGE-ID, as ask_agent returned it (machine, slash, task id)"},
 		}},
@@ -189,7 +190,7 @@ const mcpWait = 45 * time.Second
 // a question back.
 func done(state string) bool {
 	switch state {
-	case "completed", "failed", "canceled", "rejected", "input_required":
+	case "completed", "failed", "canceled", "rejected", "input_required", "auth_required":
 		return true
 	}
 	return false

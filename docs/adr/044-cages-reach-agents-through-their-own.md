@@ -41,7 +41,11 @@ settle locally.
   agent except through its own.
 - **The receiver decides**, per session (`accept_caged`): by default a caged
   session takes tasks from caged agents and a session outside a cage does
-  not. A refused task is answered with why.
+  not. A refused task is answered with why. *Amended by ADR-070
+  (2026-10-23):* a session that does not take tasks from every caged agent
+  may take them from those its owner allows by name (`accept_caged_from`),
+  and a task from any other is held for the owner to allow or decline,
+  rather than refused.
 
 ## Consequences
 

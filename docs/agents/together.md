@@ -385,11 +385,20 @@ accept tasks only from you.
 A session in a cage ([Cages](cages.md)) reaches other agents only through
 its own agent, which names it and marks the request as from a cage; the
 task reads "laptop (laptop/review, in a cage)" and carries
-`shrooms/caged: true`. Each session decides whether it takes such tasks —
-"caged tasks" in the apps, `accept_caged` over the API. By default a caged
-session does and a session outside a cage does not, so a caged agent works
-with other caged agents and asks nothing of your uncaged ones until you let
-it. A refused task is answered at once with why (-32051).
+`shrooms/caged: true`. Each session decides whether it takes such tasks:
+from every caged agent ("caged tasks" in the apps, `accept_caged` over the
+API), or from those you allow one by one (`accept_caged_from`, or
+`shrooms-agent caged allow SESSION MACHINE/SESSION`). By default a caged
+session takes them from every cage, and a session outside a cage from none
+you have not allowed.
+
+A task from a cage you have not allowed is held, not refused (ADR-070). It
+waits in `auth-required`, the asker is told so at once, and the apps show it
+as a request: "laptop/fileware wants to give publisher a task". **Allow**
+keeps that cage on the session's list and starts its held tasks; **decline**
+rejects them and tells the asker, and the cage's next task asks again. That is
+how the publisher takes tasks from the one cage that builds an app and from no
+other.
 
 ## Agents starting agents
 

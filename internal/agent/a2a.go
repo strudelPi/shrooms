@@ -411,11 +411,22 @@ func (h *handler) a2aSend(w http.ResponseWriter, r *http.Request, req rpcRequest
 			by = by + " (" + from + ")"
 		}
 	}
-	// The receiver decides whether it works for caged agents (ADR-044). A
-	// task already taken goes on.
-	if caged && m.TaskID == "" && !s.AcceptsCaged() {
-		rpcReply(w, req.ID, nil, &rpcError{a2aCagedRefused, "session " + s.Name() + " takes no tasks from caged agents"})
-		return
+	// The receiver decides whether it works for caged agents (ADR-044): all
+	// of them, or those its owner allowed one by one. Any other is held for
+	// the owner rather than refused (ADR-070); one its agent cannot name is
+	// refused. A task already taken goes on.
+	held, sender := false, ""
+	if caged && m.TaskID == "" {
+		sender, _ = h.sender(r)
+		switch {
+		case sender != "" && s.AllowsCaged(sender):
+		case s.AcceptsCaged():
+		case sender == "":
+			rpcReply(w, req.ID, nil, &rpcError{a2aCagedRefused, "session " + s.Name() + " takes no tasks from caged agents"})
+			return
+		default:
+			held = true
+		}
 	}
 	var params struct {
 		ReferenceTaskIDs []string `json:"referenceTaskIds"`
@@ -441,7 +452,15 @@ func (h *handler) a2aSend(w http.ResponseWriter, r *http.Request, req rpcRequest
 			return
 		}
 		title, _ := m.Metadata["shrooms/title"].(string)
-		t, err = h.m.Submit(s, m.MessageID, by, strings.Join(text, "\n\n"), taskTitle(title), params.ReferenceTaskIDs)
+		if held {
+			t, err = h.m.SubmitHeld(s, m.MessageID, by, sender, strings.Join(text, "\n\n"), taskTitle(title), params.ReferenceTaskIDs)
+			if err == nil {
+				h.log.Info("task held for the owner: a caged agent this session does not take tasks from yet",
+					"session", s.Name(), "from", sender, "task", t.ID)
+			}
+		} else {
+			t, err = h.m.Submit(s, m.MessageID, by, strings.Join(text, "\n\n"), taskTitle(title), params.ReferenceTaskIDs)
+		}
 		if err == nil {
 			t = h.m.noteAsker(t, r, m.Metadata)
 		}
@@ -461,8 +480,11 @@ func (h *handler) a2aSend(w http.ResponseWriter, r *http.Request, req rpcRequest
 // task is followed with GetTask or SubscribeToTask instead.
 var a2aWait = 10 * time.Minute
 
-// settled is a state a waiting asker hears about: finished, or needing it.
-func settled(state string) bool { return terminal(state) || state == taskInputRequired }
+// settled is a state a waiting asker hears about: finished, or needing it, or
+// waiting on the owner's leave (a caged sender's task held, ADR-070).
+func settled(state string) bool {
+	return terminal(state) || state == taskInputRequired || state == taskAuthRequired
+}
 
 // awaitTask is the task now, or, when wait, once it is settled (or a2aWait).
 func (h *handler) awaitTask(r *http.Request, id string, wait bool) a2aTask {

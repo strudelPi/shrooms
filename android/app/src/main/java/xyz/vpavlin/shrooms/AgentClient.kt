@@ -50,8 +50,12 @@ data class AgentSession(
     val cage: SessionCage? = null,
     /** Why it cannot work now for want of quota, and until when (epoch millis, 0 unknown); null when it can. */
     val limited: Limited? = null,
-    /** Whether it takes tasks from caged agents (ADR-044). */
+    /** Whether it takes tasks from every caged agent (ADR-044). */
     val acceptCaged: Boolean = false,
+    /** The caged agents it takes tasks from by name: a session, or a whole machine (ADR-070). */
+    val acceptCagedFrom: List<String> = emptyList(),
+    /** Tasks from other caged agents, held until the owner allows or declines them. */
+    val taskRequests: List<TaskRequest> = emptyList(),
     /** Who it takes files from: MACHINE/SESSION, or a whole machine (ADR-048). */
     val acceptFilesFrom: List<String> = emptyList(),
     /** Senders refused lately, for the app to offer to allow. */
@@ -102,6 +106,9 @@ fun parseDuties(text: String): List<String> = text.lines().map { it.trim() }.fil
 
 /** A sender a session refused files from, and what it tried to send. */
 data class FileRequest(val from: String, val name: String, val size: Long)
+
+/** A task a caged agent gave, held for the owner (ADR-070). */
+data class TaskRequest(val task: String, val from: String, val title: String)
 
 /** A file another agent sent a session (ADR-048). */
 data class DroppedFile(val from: String, val name: String, val path: String, val size: Long, val time: Long)
@@ -252,6 +259,10 @@ class AgentClient(private val address: String) {
                 limited = Limited.parse(s.optJSONObject("limited")),
                 acceptCaged = s.optBoolean("accept_caged"),
                 acceptFilesFrom = s.optJSONArray("accept_files_from")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty(),
+                acceptCagedFrom = s.optJSONArray("accept_caged_from")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty(),
+                taskRequests = s.optJSONArray("task_requests")?.let { a ->
+                    (0 until a.length()).map { val t = a.getJSONObject(it); TaskRequest(t.optString("task"), t.optString("from"), t.optString("title")) }
+                }.orEmpty(),
                 meshes = s.optJSONArray("meshes")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty(),
                 modelSetting = s.optString("model_setting"),
                 tokensPerSecond = s.optDouble("tokens_per_second", 0.0),
@@ -349,6 +360,17 @@ class AgentClient(private val address: String) {
 
     fun setAcceptCaged(session: String, on: Boolean) {
         request("POST", "/v1/sessions/${enc(session)}/settings", JSONObject().put("accept_caged", on).toString())
+    }
+
+    /** The caged agents the session takes tasks from by name: the whole list. Their held tasks start. */
+    fun setAcceptCagedFrom(session: String, from: List<String>) {
+        request("POST", "/v1/sessions/${enc(session)}/settings",
+            JSONObject().put("accept_caged_from", org.json.JSONArray(from)).toString())
+    }
+
+    /** Rejects the tasks held from one caged agent, without allowing or denying it. */
+    fun declineTasksFrom(session: String, from: String) {
+        request("POST", "/v1/sessions/${enc(session)}/settings", JSONObject().put("decline_tasks_from", from).toString())
     }
 
     /** Who the session takes files from: the whole list. */

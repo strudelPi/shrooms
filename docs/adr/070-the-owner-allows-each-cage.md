@@ -49,6 +49,13 @@ agent is held for the owner, not refused.**
 - **A held task still expires** with every other open task, after a day.
 - **A sender its agent cannot name** (no machine or no session) is refused as
   before.
+- **Files follow the same names** (amended the same day). A caged agent's file
+  is taken when the session takes files from it and the owner named that cage,
+  on the files list or among the caged agents it takes tasks from, or the
+  session takes from every cage. A whole machine's `MACHINE/*` on the files
+  list is not enough for a cage. As first built, files still asked for
+  `accept_caged` itself, so a cage allowed by name was refused its files, and
+  with no request to click.
 
 ## Consequences
 

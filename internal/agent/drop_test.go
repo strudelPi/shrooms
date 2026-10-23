@@ -136,20 +136,35 @@ func TestFilesHaveLimits(t *testing.T) {
 	}
 }
 
-// From a cage, the sender is the session its proxy names, and the receiver
-// must take from caged agents as well.
+// From a cage, the sender is the session its proxy names. A whole machine
+// on the files list is not enough for a cage: the cage itself must be named,
+// on the files list or among the caged agents the session takes tasks from
+// (ADR-070), or the session takes from every cage. Refused, it is a request.
 func TestACagedSenderNeedsAcceptCaged(t *testing.T) {
 	r := newA2A(t)
-	allowFiles(t, r.local.URL, "pi5/boxed")
+	allowFiles(t, r.local.URL, "pi5/*")
 	caged := map[string]string{cagedHeader: "boxed"}
 	if code, body := dropFile(t, r.remote.URL, "claims-other", "x.txt", "x", "&tell=0", caged); code != http.StatusForbidden ||
-		!strings.Contains(body, "caged") {
-		t.Errorf("a caged sender without accept_caged: %d %s", code, body)
+		!strings.Contains(body, "not from this cage") {
+		t.Errorf("a cage allowed only by its machine: %d %s", code, body)
 	}
-	r.m.sessions["proj"].SetAcceptCaged(true, "")
+	proj := r.m.sessions["proj"]
+	if asks := proj.Info().FileRequests; len(asks) != 1 || asks[0].From != "pi5/boxed" {
+		t.Errorf("a refused cage is not offered to the owner: %+v", asks)
+	}
+	// Named among the caged agents it takes tasks from: its files come too.
+	if err := proj.SetAcceptCagedFrom([]string{"pi5/boxed"}, ""); err != nil {
+		t.Fatal(err)
+	}
 	if code, body := dropFile(t, r.remote.URL, "claims-other", "x.txt", "x", "&tell=0", caged); code != http.StatusCreated ||
 		!strings.Contains(body, "from-pi5_boxed") {
-		t.Errorf("a caged sender, allowed: %d %s", code, body)
+		t.Errorf("a cage allowed by name: %d %s", code, body)
+	}
+	// Or named on the files list itself.
+	proj.SetAcceptCagedFrom(nil, "")
+	allowFiles(t, r.local.URL, "pi5/boxed")
+	if code, body := dropFile(t, r.remote.URL, "claims-other", "y.txt", "y", "&tell=0", caged); code != http.StatusCreated {
+		t.Errorf("a cage named on the files list: %d %s", code, body)
 	}
 	if !proxyAllowed(http.MethodPost, "/v1/sessions/x/drop", "") || proxyAllowed(http.MethodPost, "/v1/sessions/x/settings", "") {
 		t.Error("the proxy's rule for files")

@@ -56,6 +56,25 @@ func (s *Session) allowsFiles(sender string) bool {
 	return false
 }
 
+// allowsCagedFiles is whether a file from a caged sender is welcome beyond
+// the files list: the session takes tasks from that cage (accept_caged or
+// accept_caged_from, ADR-070), or the files list names the cage itself.
+// A whole machine's "/*" entry alone does not, as before: a cage is
+// allowed by name. This was accept_caged alone, all or nothing, so a cage
+// the owner had allowed by name was still refused its files (2026-10-23).
+// Caller holds s.mu.
+func (s *Session) allowsCagedFiles(sender string) bool {
+	if s.allowsCaged(sender) {
+		return true
+	}
+	for _, a := range s.acceptFiles {
+		if a == sender {
+			return true
+		}
+	}
+	return false
+}
+
 // SetAcceptFiles replaces who the session takes files from; asks from those
 // now allowed are dropped.
 func (s *Session) SetAcceptFiles(list []string, by string) error {
@@ -239,14 +258,16 @@ func (h *handler) drop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	allowed := s.allowsFiles(sender) && (!caged || s.acceptsCaged())
+	allowed := s.allowsFiles(sender) && (!caged || s.allowsCagedFiles(sender))
+	listed := s.allowsFiles(sender)
 	s.mu.Unlock()
 	if !allowed {
 		s.noteFileAsk(FileAsk{From: sender, Name: q.Get("name"), Size: r.ContentLength, At: time.Now()})
 		why := fmt.Sprintf("%s does not take files from %s: allow it in %s's settings (files from), "+
 			"or with shrooms-agent files allow %s %s on its machine", s.Name(), sender, s.Name(), s.Name(), sender)
-		if caged && s.allowsFiles(sender) {
-			why = fmt.Sprintf("%s does not take anything from caged agents (accept_caged)", s.Name())
+		if caged && listed {
+			why = fmt.Sprintf("%s takes files from %s's machine but not from this cage: allow %s by name, "+
+				"under files or caged tasks", s.Name(), sender, sender)
 		}
 		fail(w, http.StatusForbidden, errors.New(why))
 		return

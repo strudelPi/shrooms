@@ -1003,6 +1003,45 @@ private fun MeshScreen(
             )
         }
 
+        // Carries reachability, because a list outlives it on purpose: a
+        // service is a claim about what a device offers, and a device that is
+        // asleep still offers it. Drawn the same as a reachable one, though, it
+        // invites somebody to tap an address that cannot answer.
+        // The mesh rather than the device, because the URL already names the
+        // device — immich.k11.mesh — and which mesh a service is on is the
+        // thing you cannot read off it. Shown only when there is more than
+        // one, where it is the answer to "why can I not reach that".
+        val offered = remember(snap.peers) {
+            snap.peers.flatMap { p ->
+                val host = p.dnsName.ifEmpty { p.name }
+                p.services.map { svc ->
+                    Offer(svc, p.mesh, "http://$svc.$host", p.live, false)
+                } + p.bound.map { b ->
+                    // "ssh:22" — the name is advisory and the port is the fact,
+                    // so the port is what goes in the address. No scheme: this
+                    // is a socket on the mesh address, not a forwarded service,
+                    // and http:// would open the wrong thing convincingly.
+                    val port = b.substringAfterLast(':', "")
+                    Offer(
+                        b.substringBefore(':'), p.mesh,
+                        host + if (port.isEmpty()) "" else ":$port",
+                        p.live, true,
+                    )
+                }
+            }.sortedWith(compareBy({ !it.live }, { it.mesh }, { it.name }))
+        }
+        // On a screen of its own (2026-10-23): with many services and bound
+        // ports the list took most of this screen, and pushed the graph and
+        // the disconnect button off it, so the one thing you could not see was
+        // whether you were connected.
+        var servicesOpen by remember { mutableStateOf(false) }
+        if (servicesOpen) {
+            androidx.compose.ui.window.Dialog(
+                onDismissRequest = { servicesOpen = false },
+                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+            ) { ServicesScreen(snap, offered) { servicesOpen = false } }
+        }
+
         var asGraph by remember { mutableStateOf(true) }
         var selected by remember { mutableStateOf<Peer?>(null) }
 
@@ -1011,6 +1050,15 @@ private fun MeshScreen(
                 Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.End,
             ) {
+                if (offered.isNotEmpty()) {
+                    Text(
+                        "services · ${offered.size}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Palette.Phosphor,
+                        modifier = Modifier.clickable { servicesOpen = true },
+                    )
+                    Spacer(Modifier.width(16.dp))
+                }
                 Text(
                     if (asGraph) "list" else "graph",
                     style = MaterialTheme.typography.bodySmall,
@@ -1087,9 +1135,6 @@ private fun MeshScreen(
             }
         }
 
-        // Joining is an action and stays here; everything that was a preference
-        // moved behind the link next to it, because each one used to spend
-        // vertical space on this screen arguing for itself.
         // What the mesh offers, as a list rather than as something you find by
         // tapping a peer and reading its details.
         //
@@ -1098,114 +1143,6 @@ private fun MeshScreen(
         // that announces (ADR-023) contributes its names here, with the device
         // shown, because two devices may publish the same name and the device
         // is what tells them apart.
-        val svcCtx = LocalContext.current
-        // Carries reachability, because a list outlives it on purpose: a
-        // service is a claim about what a device offers, and a device that is
-        // asleep still offers it. Drawn the same as a reachable one, though, it
-        // invites somebody to tap an address that cannot answer.
-        data class Offer(
-            val name: String,
-            val mesh: String,
-            val url: String,
-            val live: Boolean,
-            /** A port merely listening on the mesh address, not a published service. */
-            val bound: Boolean,
-        )
-        // The mesh rather than the device, because the URL already names the
-        // device — immich.k11.mesh — and which mesh a service is on is the
-        // thing you cannot read off it. Shown only when there is more than
-        // one, where it is the answer to "why can I not reach that".
-        val offered = remember(snap.peers) {
-            snap.peers.flatMap { p ->
-                val host = p.dnsName.ifEmpty { p.name }
-                p.services.map { svc ->
-                    Offer(svc, p.mesh, "http://$svc.$host", p.live, false)
-                } + p.bound.map { b ->
-                    // "ssh:22" — the name is advisory and the port is the fact,
-                    // so the port is what goes in the address. No scheme: this
-                    // is a socket on the mesh address, not a forwarded service,
-                    // and http:// would open the wrong thing convincingly.
-                    val port = b.substringAfterLast(':', "")
-                    Offer(
-                        b.substringBefore(':'), p.mesh,
-                        host + if (port.isEmpty()) "" else ":$port",
-                        p.live, true,
-                    )
-                }
-            }.sortedWith(compareBy({ !it.live }, { it.mesh }, { it.name }))
-        }
-        val showMesh = snap.meshes.size > 1
-        if (offered.isNotEmpty()) {
-            Spacer(Modifier.height(18.dp))
-            Box(Modifier.padding(horizontal = 24.dp)) { Label("SERVICES") }
-            Spacer(Modifier.height(6.dp))
-            offered.forEach { (name, mesh, url, live, isBound) ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            // A bound port is a host and a port with no scheme
-                            // (ADR-026), so there is nothing to open — guessing
-                            // http:// for an ssh port would open the wrong
-                            // thing convincingly. It copies instead, which is
-                            // what you want it for on a phone anyway.
-                            if (isBound) {
-                                clipboard.setText(AnnotatedString(url))
-                                return@clickable
-                            }
-                            // Opening it is the whole point. A browser is the
-                            // right guess for a mesh service and the wrong one
-                            // for some, so a failure to resolve a handler is
-                            // ignored rather than reported: the address is
-                            // still on screen to copy.
-                            runCatching {
-                                svcCtx.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                )
-                            }
-                        }
-                        .padding(horizontal = 24.dp, vertical = 5.dp),
-                ) {
-                    Text(
-                        name,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (live) Palette.Phosphor else Palette.Ash,
-                        modifier = Modifier.width(96.dp),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (showMesh) {
-                        Text(
-                            mesh,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Palette.Ash,
-                            modifier = Modifier.width(64.dp),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    Text(
-                        url.removePrefix("http://")
-                            + (if (isBound) "  ·  bound" else "")
-                            + (if (live) "" else "  ·  unreachable"),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (live) Palette.Bone else Palette.Line,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            // Said once, under the list: this is what peers claim to publish,
-            // and only the publishing device knows whether the port answers.
-            Text(
-                "announced by their devices; not checked from here",
-                style = MaterialTheme.typography.labelSmall,
-                color = Palette.Ash,
-                modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 2.dp),
-            )
-        }
 
         Spacer(Modifier.height(18.dp))
         Row(
@@ -1482,3 +1419,111 @@ internal fun Action(text: String, enabled: Boolean, danger: Boolean = false, onC
         Text(text, style = MaterialTheme.typography.labelSmall, color = if (enabled) colour else Palette.Ash)
     }
 }
+
+// Peers' services and bound ports, as a list you open from the main screen
+// rather than one that crowds it out.
+//
+// What the mesh offers, as a list rather than as something you find by tapping
+// a peer and reading its details. A service name exists so you can go there,
+// and a name you have to go looking for is one you keep asking somebody for
+// instead. Every peer that announces (ADR-023) contributes its names here, with
+// the device shown, because two devices may publish the same name and the
+// device is what tells them apart.
+@Composable
+private fun ServicesScreen(snap: Snapshot, offered: List<Offer>, onClose: () -> Unit) {
+        val clipboard = LocalClipboardManager.current
+        val svcCtx = LocalContext.current
+        val showMesh = snap.meshes.size > 1
+        Column(Modifier.fillMaxSize().background(Palette.Void).safeDrawingPadding()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 8.dp),
+            ) {
+                Box(Modifier.weight(1f)) { Label("SERVICES · ${offered.size}") }
+                Text(
+                    "close",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Palette.Phosphor,
+                    modifier = Modifier.clickable { onClose() }.padding(6.dp),
+                )
+            }
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            offered.forEach { (name, mesh, url, live, isBound) ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            // A bound port is a host and a port with no scheme
+                            // (ADR-026), so there is nothing to open — guessing
+                            // http:// for an ssh port would open the wrong
+                            // thing convincingly. It copies instead, which is
+                            // what you want it for on a phone anyway.
+                            if (isBound) {
+                                clipboard.setText(AnnotatedString(url))
+                                return@clickable
+                            }
+                            // Opening it is the whole point. A browser is the
+                            // right guess for a mesh service and the wrong one
+                            // for some, so a failure to resolve a handler is
+                            // ignored rather than reported: the address is
+                            // still on screen to copy.
+                            runCatching {
+                                svcCtx.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                            }
+                        }
+                        .padding(horizontal = 24.dp, vertical = 5.dp),
+                ) {
+                    Text(
+                        name,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (live) Palette.Phosphor else Palette.Ash,
+                        modifier = Modifier.width(96.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (showMesh) {
+                        Text(
+                            mesh,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Palette.Ash,
+                            modifier = Modifier.width(64.dp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Text(
+                        url.removePrefix("http://")
+                            + (if (isBound) "  ·  bound" else "")
+                            + (if (live) "" else "  ·  unreachable"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (live) Palette.Bone else Palette.Line,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            // Said once, under the list: this is what peers claim to publish,
+            // and only the publishing device knows whether the port answers.
+            Text(
+                "announced by their devices; not checked from here",
+                style = MaterialTheme.typography.labelSmall,
+                color = Palette.Ash,
+                modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 2.dp, bottom = 24.dp),
+            )
+            }
+        }
+
+}
+
+private data class Offer(
+    val name: String,
+    val mesh: String,
+    val url: String,
+    val live: Boolean,
+    /** A port merely listening on the mesh address, not a published service. */
+    val bound: Boolean,
+)

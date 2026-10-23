@@ -1,0 +1,80 @@
+# Build the pinned liblogosdelivery for both architectures, natively, and
+# package it the way deps releases are (lib/, README.txt, LICENSE-UPSTREAM.txt).
+#
+# By hand, when the library build changes: the pin, a patch, a flag. The
+# tarballs come back as artifacts; publishing them as a deps-vN release, and
+# their checksums into deps/CHECKSUMS, stays a person's step, because every
+# daemon and the container image trust what that release holds.
+#
+# Native arm64 rather than emulation: under qemu the Nim bootstrap alone took
+# over half an hour on a laptop (deps-v3, 2026-10-23), and the whole build
+# hours; GitHub's arm64 runners are free for a public repository.
+name: deps
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The deps tag these are for, e.g. deps-v3 (written into README.txt)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    name: liblogosdelivery (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker build -f docker/build-lib.Dockerfile \
+            --secret id=github_token,env=GITHUB_TOKEN \
+            --target lib -o out/lib .
+
+      - name: No trace logging compiled in
+        run: |
+          # The level is fixed at compile time (2026-10-23): a trace-only
+          # message is compiled in only when trace is. "waiting for header" is
+          # libp2p yamux's, in deps-v2 and absent from an INFO build.
+          ! strings out/lib/liblogosdelivery.so | grep -q 'waiting for header'
+
+      - name: Package
+        run: |
+          rev=$(cat out/lib/.ld-rev)
+          cat > out/README.txt <<EOF
+          liblogosdelivery, for linux/${{ matrix.arch }}, ${{ inputs.tag }}.
+
+          Built from source in docker/build-lib.Dockerfile (debian bookworm), at
+          logos-delivery $rev (lib/.ld-rev), by the deps workflow on a native
+          ${{ matrix.arch }} runner, from shrooms ${{ github.sha }}. Changes to
+          upstream: docker/patches/0001-subscribe-only-configured-shards.patch
+          (a Core node relays only its configured shards, shrooms ADR-067), and
+          logging compiled at INFO rather than TRACE.
+
+          Upstream: https://github.com/logos-messaging/logos-delivery
+          Licensed Apache-2.0 OR MIT by its authors. See LICENSE-UPSTREAM.txt.
+
+          Fetch with:  make deps-release
+          EOF
+          sed -i 's/^          //' out/README.txt
+          curl -fsSL "https://raw.githubusercontent.com/logos-messaging/logos-delivery/$rev/LICENSE-APACHEv2" -o out/LICENSE-UPSTREAM.txt \
+            || curl -fsSL "https://raw.githubusercontent.com/logos-messaging/logos-delivery/$rev/LICENSE" -o out/LICENSE-UPSTREAM.txt
+          tar -C out -czf liblogosdelivery-linux-${{ matrix.arch }}.tar.gz README.txt LICENSE-UPSTREAM.txt lib
+          sha256sum liblogosdelivery-linux-${{ matrix.arch }}.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liblogosdelivery-linux-${{ matrix.arch }}
+          path: liblogosdelivery-linux-${{ matrix.arch }}.tar.gz

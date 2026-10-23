@@ -243,7 +243,7 @@ nim c --out:build/liblogosdelivery.so --threads:on --app:lib --opt:speed --noMai
     -d:disableMarchNative \
     -d:metrics --nimMainPrefix:liblogosdelivery --skipParentCfg:off -d:discv5_protocol_id=d5waku \
     $CPU $NIM_PARAMS -d:chronicles_line_numbers --warning:Deprecated:off --warning:UnusedImport:on \
-    -d:chronicles_log_level=TRACE $PATHS library/liblogosdelivery.nim
+    -d:chronicles_log_level=INFO $PATHS library/liblogosdelivery.nim
 
 echo
 echo "==> built: $(ls -lh build/liblogosdelivery.so | awk '{print $5, $NF}')"

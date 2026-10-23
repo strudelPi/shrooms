@@ -97,6 +97,16 @@ RUN set -eux; \
     fi; \
     ! grep -rq 'subscribeAllAutoshards()' logos_delivery/waku/
 
+# Logs at INFO, fixed at compile time: upstream builds the library with
+# -d:chronicles_log_level=TRACE written into its build task, after anything
+# NIMFLAGS adds, and a node's logLevel cannot lower it. deps-v2 logged ~650
+# lines a second on the VPS and filled journals fleet-wide (2026-10-23).
+# Rewritten wherever upstream sets it, and checked gone.
+RUN set -eux; \
+    grep -rlE 'chronicles_log_level[=:]TRACE' --include='*.nimble' --include='Makefile' --include='*.nims' --include='*.mk' . \
+        | xargs -r sed -i -E 's/chronicles_log_level([=:])TRACE/chronicles_log_level\1INFO/g'; \
+    ! grep -rqE 'chronicles_log_level[=:]TRACE' --include='*.nimble' --include='Makefile' --include='*.nims' --include='*.mk' .
+
 # The Makefile bootstraps its own pinned nim/nimble via install-nim/install-nimble.
 # Build serially: with -j, a real error surfaces as a 14000-line bogus
 # "Couldn't find a solution for the packages" solver dump.

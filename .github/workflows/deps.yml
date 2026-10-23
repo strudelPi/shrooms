@@ -69,8 +69,12 @@ jobs:
           Fetch with:  make deps-release
           EOF
           sed -i 's/^          //' out/README.txt
-          curl -fsSL "https://raw.githubusercontent.com/logos-messaging/logos-delivery/$rev/LICENSE-APACHEv2" -o out/LICENSE-UPSTREAM.txt \
-            || curl -fsSL "https://raw.githubusercontent.com/logos-messaging/logos-delivery/$rev/LICENSE" -o out/LICENSE-UPSTREAM.txt
+          # Both of upstream's licences, as it is offered under either.
+          for l in LICENSE-APACHE LICENSE-MIT; do
+            echo "==== $l"
+            curl -fsSL "https://raw.githubusercontent.com/logos-messaging/logos-delivery/$rev/$l"
+            echo
+          done > out/LICENSE-UPSTREAM.txt
           tar -C out -czf liblogosdelivery-linux-${{ matrix.arch }}.tar.gz README.txt LICENSE-UPSTREAM.txt lib
           sha256sum liblogosdelivery-linux-${{ matrix.arch }}.tar.gz
 

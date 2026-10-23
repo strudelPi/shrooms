@@ -9,6 +9,8 @@
 # deps-v2 (2026-10-20): both built from source at the pin, with the Core shard
 # patch (ADR-067). deps-v1 was Basecamp's library repackaged for amd64 and a
 # source build for arm64; DEPS_TAG=deps-v1 still fetches it.
+# deps-v3 (2026-10-23): the same, with logging compiled at INFO; deps-v2 logged
+# at trace whatever a node asked. Built by the deps workflow on native runners.
 #
 #   make deps-release
 set -euo pipefail
@@ -16,7 +18,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 REPO=${REPO:-vpavlin/shrooms}
-TAG=${DEPS_TAG:-deps-v2}
+TAG=${DEPS_TAG:-deps-v3}
 # Which prebuilt to fetch. Both architectures are published as release assets, so
 # this is the only thing that differs between them — the amd64 image, the tests and
 # the end-to-end jobs all take this path, and arm64 does now too.

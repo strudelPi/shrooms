@@ -38,3 +38,5 @@ f370aabc9e58c7b597983a95df9106d8c8ce4a98d241a2bf78e380957a5ed84f  deps-v1/liblog
 
 32a093e97ed99432c8cad0b0466d4c7309817a6738490710db7aaa7eb5aef34e  deps-v2/liblogosdelivery-linux-amd64.tar.gz
 0d47c3b1ef1098f80c4911679ab7955531874fac8451df1e3ad7e018a8af4a3e  deps-v2/liblogosdelivery-linux-arm64.tar.gz
+da4858b2d0cd143869dacadd5d94c3143fb773192d6bc273a67dcb0b914a4a28  deps-v3/liblogosdelivery-linux-amd64.tar.gz
+1ebd1339fa0fa3fed4c2251421b09f745f42168411b04c0393d37d23b1c44f1b  deps-v3/liblogosdelivery-linux-arm64.tar.gz

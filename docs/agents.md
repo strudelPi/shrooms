@@ -140,7 +140,9 @@ codec translates what it writes into the same stream-json messages, so the
 apps and the event log see one shape (docs/agents-harnesses.md).
 
 A process lives while the session is in use and is stopped after it has been
-idle for 30 minutes; the next message resumes it by id. A session marked
+idle for 30 minutes; one that has not ended 30 s later (Claude Code keeps
+running while a background job does) is killed. The next message resumes it
+by id. A session marked
 `keep_running` is never stopped as idle and is started again within 15 s
 whenever it ends. A session is a name and a directory — the same thing `cl`
 keys on. A name is letters, digits, `.`, `_` and `-`, starting with a letter

@@ -23,6 +23,8 @@ import (
 //	"slow"     → a turn that only ends when interrupted;
 //	"hang"     → a turn that never ends, deaf to interrupts and EOF alike —
 //	             a request stuck on a dropped connection;
+//	"linger"   → an ordinary reply, after which EOF no longer ends the
+//	             process: a background job of its own keeps it running;
 //	anything   → an assistant text echoing it;
 //	each turn ending with a result. EOF on stdin ends the process.
 func TestMain(m *testing.M) {
@@ -70,8 +72,12 @@ func fakeClaude() {
 		"skip_permissions": skip})
 
 	in := bufio.NewScanner(os.Stdin)
+	linger := false
 	next := func() map[string]any {
 		if !in.Scan() {
+			if linger {
+				time.Sleep(time.Hour) // a background job still running
+			}
 			os.Exit(0)
 		}
 		var m map[string]any
@@ -111,6 +117,11 @@ func fakeClaude() {
 		}
 		content, _ := m["message"].(map[string]any)["content"].(string)
 		switch {
+		case content == "linger":
+			linger = true
+			text("started a background job")
+			result("success")
+			continue
 		case strings.HasPrefix(content, "run "):
 			cmd := strings.TrimPrefix(content, "run ")
 			emit(map[string]any{"type": "assistant", "message": map[string]any{"role": "assistant",

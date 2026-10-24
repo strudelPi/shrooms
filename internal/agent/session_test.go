@@ -301,6 +301,39 @@ func TestOnlyAnIdleProcessIsStopped(t *testing.T) {
 	waitFor(t, s, 0, func(e Event) bool { return e.Kind == "stopped" })
 }
 
+// A process asked to finish for being idle that goes on running, as Claude
+// Code does while a background job of its own runs, does not leave the
+// session deaf: the next message ends it and starts another, and the old
+// one's ending does not disturb the new (proteus/basecampos, 2026-10-24: every
+// message failed with "stopped taking input" until a manual restart).
+func TestAnIdleProcessThatLingersDoesNotDeafenTheSession(t *testing.T) {
+	m := newTestManager(t, t.TempDir())
+	m.Create("proj", t.TempDir())
+	s, _ := m.Get("proj")
+	if err := s.Send("linger", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, s, 0, func(e Event) bool { return claudeType(e) == "result/success" })
+	m.idleGrace = time.Hour // the fallback kill must not be what saves it here
+	s.stopIfIdle(time.Now().Add(24*time.Hour), time.Minute)
+	time.Sleep(200 * time.Millisecond)
+	if !s.Info().Running {
+		t.Fatal("the lingering process ended by itself; the test does not test anything")
+	}
+
+	from := s.Info().LastSeq
+	if err := s.Send("hello again", ""); err != nil {
+		t.Fatalf("a message to a session whose process lingered: %v", err)
+	}
+	waitFor(t, s, from, func(e Event) bool {
+		return claudeType(e) == "assistant" && strings.Contains(string(e.Data), "hello again")
+	})
+	time.Sleep(300 * time.Millisecond)
+	if in := s.Info(); !in.Running {
+		t.Error("the replaced process's ending stopped the new one")
+	}
+}
+
 // Sessions and their history survive a restart of shrooms-agent, and the
 // numbering carries on where it stopped.
 func TestSessionsSurviveARestart(t *testing.T) {

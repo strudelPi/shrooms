@@ -156,6 +156,14 @@ func (p *proc) write(v any) error {
 	return err
 }
 
+// closed reports whether the input was ended: the process was asked to finish
+// and takes no more turns, however long it goes on running.
+func (p *proc) closed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stdin == nil
+}
+
 // close ends the input, which is how a stream-json process is asked to finish:
 // it completes the turn in hand and exits.
 func (p *proc) close() {

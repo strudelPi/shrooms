@@ -271,6 +271,8 @@ type Manager struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
+	// idleGrace overrides idleStopGrace; zero is the default.
+	idleGrace time.Duration
 }
 
 type record struct {
@@ -906,7 +908,22 @@ func (s *Session) fromDisk(after, before uint64) []Event {
 // ensureRunning starts the process if there is none. Called with s.mu held.
 func (s *Session) ensureRunning() error {
 	if s.proc != nil {
-		return nil
+		if !s.proc.closed() {
+			return nil
+		}
+		// Asked to finish and still running: Claude Code goes on while a
+		// background job of its own does, so a session stopped for being
+		// idle kept a process that took no input, and every message after
+		// it failed with "stopped taking input" until somebody restarted
+		// the session by hand (proteus/basecampos, 2026-10-24). It is set
+		// aside and ended; its reader sees it was replaced and leaves the
+		// new one alone.
+		old := s.proc
+		if old.cmd.Process != nil {
+			old.cmd.Process.Kill()
+		}
+		s.proc = nil
+		s.m.log.Info("replaced a process that had stopped taking input", "session", s.Name())
 	}
 	if mh, ok := s.harness.(missingHarness); ok {
 		return fmt.Errorf("this machine has no %s to run this session with", mh.name)
@@ -1319,9 +1336,12 @@ func (s *Session) read(p *proc) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.proc == p {
-		s.proc = nil
+	if s.proc != p {
+		// Replaced while it was ending (ensureRunning): the session's state
+		// and prompts are the new process's now.
+		return
 	}
+	s.proc = nil
 	reason := "finished"
 	if p.err != nil {
 		reason = p.err.Error()
@@ -1464,13 +1484,33 @@ func (s *Session) SetStarred(on bool) error {
 	return s.m.save()
 }
 
+// idleStopGrace is how long a process asked to finish for being idle has
+// before it is ended (Manager.idleGrace, which tests shorten or lengthen).
+const idleStopGrace = 30 * time.Second
+
 // stopIfIdle ends the process if nothing has happened for longer than after.
 // A turn in progress or a prompt waiting is not idle, however long it takes.
 func (s *Session) stopIfIdle(now time.Time, after time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.proc != nil && !s.keepRunning && s.state == Idle && now.Sub(s.lastUsed) >= after {
-		s.proc.close()
+		p := s.proc
+		p.close()
+		grace := s.m.idleGrace
+		if grace == 0 {
+			grace = idleStopGrace
+		}
+		// As stop does: a process that does not finish when its input ends,
+		// one with a background job still going, is ended after a grace.
+		go func() {
+			select {
+			case <-p.read:
+			case <-time.After(grace):
+				if p.cmd.Process != nil {
+					p.cmd.Process.Kill()
+				}
+			}
+		}()
 	}
 }
 
